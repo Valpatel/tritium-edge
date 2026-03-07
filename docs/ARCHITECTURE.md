@@ -92,6 +92,24 @@ The replication is opportunistic. Nodes don't push everything everywhere —
 they advertise what they have, and peers pull what they need. Background
 sync fills vaults incrementally when bandwidth is available.
 
+**Blind courier storage:** Nodes with spare capacity can store encrypted
+data for the mesh without being able to read it. A desktop with 2TB free
+holds encrypted model weights or firmware archives. It can't decrypt them.
+When another node needs the data, it pulls and decrypts locally. If the
+courier needs space, it evicts the oldest chunks and the mesh re-replicates
+them to other nodes with free capacity.
+
+- Each chunk is AES-256 encrypted by the source node before distribution.
+- Chunk metadata (hash, size, owner, replica count) is stored in cleartext
+  so the mesh can track what's where without exposing content.
+- The heartbeat reports `free_storage` so the server can identify courier
+  candidates.
+- Eviction is graceful: the courier announces eviction intent, the mesh
+  finds alternative hosts, then the chunk is released.
+- Minimum replica count (default: 2) ensures no data is lost on eviction.
+- Published to `tritium/{site}/mesh/{device_id}/storage` (capacity,
+  chunks held, eviction queue).
+
 ### Communications Philosophy: Every Channel is a Transport
 
 Tritium treats communication as a **multi-modal, opportunistic mesh**. The system
