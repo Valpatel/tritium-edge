@@ -205,18 +205,20 @@ bool send_now() {
     const esp_partition_t* running = esp_ota_get_running_partition();
     if (running) partition = running->label;
 
-    char body[512];
+    char body[768];
     snprintf(body, sizeof(body),
              "{\"version\":\"%s\",\"board\":\"%s\",\"partition\":\"%s\","
              "\"ip\":\"%s\",\"mac\":\"%s\",\"uptime_s\":%lu,\"free_heap\":%u,"
-             "\"rssi\":%d,\"fw_hash\":\"%s\"}",
+             "\"rssi\":%d,\"fw_hash\":\"%s\","
+             "\"reported_config\":{\"heartbeat_interval_s\":%lu}}",
              _fw_version, _board_name, partition,
              WiFi.localIP().toString().c_str(),
              WiFi.macAddress().c_str(),
              (unsigned long)(millis() / 1000),
              (unsigned)ESP.getFreeHeap(),
              WiFi.RSSI(),
-             _fw_hash);
+             _fw_hash,
+             (unsigned long)(_interval_ms / 1000));
 
     int code = http.POST(body);
     if (code == 200) {
@@ -237,6 +239,27 @@ bool send_now() {
                              (unsigned long)(_interval_ms / 1000), newInterval);
                     _interval_ms = newMs;
                 }
+            }
+        }
+
+        // Check for desired_config — apply server-pushed settings
+        if (response.indexOf("\"desired_config\"") >= 0) {
+            // Parse heartbeat_interval_s from desired_config
+            int cfgIdx = response.indexOf("\"desired_config\"");
+            if (cfgIdx >= 0) {
+                int intervalIdx = response.indexOf("\"heartbeat_interval_s\":", cfgIdx);
+                if (intervalIdx >= 0) {
+                    int valStart = intervalIdx + 23;
+                    int newInterval = response.substring(valStart).toInt();
+                    if (newInterval > 0 && newInterval <= 3600) {
+                        uint32_t newMs = (uint32_t)newInterval * 1000;
+                        if (newMs != _interval_ms) {
+                            DBG_INFO(TAG, "Config: heartbeat_interval=%ds", newInterval);
+                            _interval_ms = newMs;
+                        }
+                    }
+                }
+                DBG_DEBUG(TAG, "Received desired_config from server");
             }
         }
 

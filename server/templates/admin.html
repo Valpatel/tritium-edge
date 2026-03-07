@@ -616,6 +616,8 @@ function renderDashboard() {
             <div class="stat-card ${s.offline_devices?'danger':''}"><div class="val">${s.offline_devices||0}</div><div class="lbl">Offline</div><div class="hint">No recent heartbeat</div></div>
             <div class="stat-card blue"><div class="val">${s.total_firmware||0}</div><div class="lbl">Firmware Images</div><div class="hint">${s.signed_firmware||0} signed</div></div>
             <div class="stat-card ${s.unattested_devices?'danger':''}"><div class="val">${s.attested_devices||0}/${s.total_devices||0}</div><div class="lbl">Attested</div><div class="hint">Firmware verified by hash</div></div>
+            <div class="stat-card purple"><div class="val">${s.total_profiles||0}</div><div class="lbl">Profiles</div><div class="hint">${s.profiled_devices||0} devices assigned</div></div>
+            <div class="stat-card ${s.config_drift?'warn':''}"><div class="val">${s.config_drift||0}</div><div class="lbl">Config Drift</div><div class="hint">Devices out of sync</div></div>
         </div>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
