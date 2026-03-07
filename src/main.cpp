@@ -4,6 +4,12 @@
 #include "app.h"
 #include "hal_heartbeat.h"
 
+// WiFi auto-connect (optional, enabled via build flags)
+#if !defined(SIMULATOR) && defined(DEFAULT_WIFI_SSID)
+#include <WiFi.h>
+#define AUTO_WIFI 1
+#endif
+
 // Boot-time SD card OTA check (works with any app)
 #if !defined(SIMULATOR) && HAS_SDCARD && defined(SD_MMC_D0) && defined(SD_MMC_CLK) && defined(SD_MMC_CMD)
 #define BOOT_SD_OTA_CHECK 1
@@ -201,9 +207,38 @@ void setup() {
     app->setup(display);
     DBG_INFO("main", "App '%s' started", app->name());
 
+    // WiFi auto-connect: if build flags provide credentials, connect before heartbeat
+#ifdef AUTO_WIFI
+    if (WiFi.status() != WL_CONNECTED) {
+        DBG_INFO("main", "WiFi: connecting to %s...", DEFAULT_WIFI_SSID);
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS);
+        uint32_t wifiStart = millis();
+        while (WiFi.status() != WL_CONNECTED && (millis() - wifiStart) < 10000) {
+            delay(100);
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            DBG_INFO("main", "WiFi: connected, IP=%s RSSI=%d",
+                     WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        } else {
+            DBG_INFO("main", "WiFi: connection failed (will retry in background)");
+        }
+    }
+#endif
+
     // Initialize fleet heartbeat (auto-loads config from provisioning/NVS).
-    // Silently skips if not provisioned or WiFi not available.
+    // If AUTO_WIFI connected and DEFAULT_SERVER_URL is set, use those.
+#if defined(DEFAULT_SERVER_URL) && defined(DEFAULT_DEVICE_ID)
+    {
+        hal_heartbeat::HeartbeatConfig cfg;
+        cfg.server_url = DEFAULT_SERVER_URL;
+        cfg.device_id = DEFAULT_DEVICE_ID;
+        cfg.interval_ms = 30000;  // 30s for active development
+        hal_heartbeat::init(cfg);
+    }
+#else
     hal_heartbeat::init();
+#endif
 }
 
 // Serial command buffer for board identification
