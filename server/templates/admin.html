@@ -383,13 +383,17 @@ tr.clickable { cursor: pointer; }
             <span class="icon">&#9733;</span>
             <div><div>Add Device</div><div class="desc">Set up new hardware</div></div>
         </a>
+        <a href="#" data-page="mesh">
+            <span class="icon">&#9673;</span>
+            <div><div>Mesh Network</div><div class="desc">Topology &amp; connectivity</div></div>
+        </a>
         <a href="#" data-page="events">
             <span class="icon">&#9776;</span>
             <div><div>Activity Log</div><div class="desc">Everything that happened</div></div>
         </a>
     </nav>
     <div class="sidebar-footer">
-        v2.2 // Tritium-Edge Fleet<br>
+        v3.0 // Tritium-Edge Fleet<br>
         <a href="#">Part of the Tritium Cybernetic OS</a>
     </div>
 </div>
@@ -531,7 +535,7 @@ async function refresh() {
 
 function render() {
     const pages = { dashboard: renderDashboard, devices: renderDevices, firmware: renderFirmware,
-                    security: renderSecurity, commission: renderCommission, events: renderEvents };
+                    security: renderSecurity, commission: renderCommission, mesh: renderMesh, events: renderEvents };
     (pages[S.page] || renderDashboard)();
     // Re-trigger fade animation
     const content = document.getElementById('pageContent');
@@ -1196,6 +1200,178 @@ async function generateProvision() {
 }
 
 // ===============================================
+//  MESH NETWORK
+// ===============================================
+function renderMesh() {
+    setPage('Mesh Network', 'Topology visualization of your device fleet', '<button class="btn btn-primary" onclick="refresh()">Refresh</button>');
+
+    const onlineCount = S.devices.filter(d => d._online).length;
+    const offlineCount = S.devices.length - onlineCount;
+
+    document.getElementById('pageContent').innerHTML = `
+        <div class="stats-row">
+            <div class="stat-card"><div class="val">${S.devices.length}</div><div class="lbl">Nodes</div><div class="hint">Total mesh participants</div></div>
+            <div class="stat-card"><div class="val">${onlineCount}</div><div class="lbl">Online</div><div class="hint">Responding to heartbeat</div></div>
+            <div class="stat-card ${offlineCount?'danger':''}"><div class="val">${offlineCount}</div><div class="lbl">Unreachable</div><div class="hint">No recent heartbeat</div></div>
+            <div class="stat-card blue"><div class="val">${new Set(S.devices.map(d=>d.board).filter(Boolean)).size}</div><div class="lbl">Board Types</div><div class="hint">Unique hardware platforms</div></div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header"><h3>Network Topology</h3><span class="panel-desc">Each node represents a device. Server is the central hub.</span></div>
+            <div style="padding:0;position:relative;overflow:hidden">
+                <canvas id="meshCanvas" width="900" height="500" style="width:100%;background:var(--bg);cursor:grab"></canvas>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header"><h3>Transport Capabilities</h3><span class="panel-desc">Available communication channels per device</span></div>
+            <table><thead><tr><th>Device</th><th>Board</th><th>WiFi</th><th>ESP-NOW</th><th>BLE</th><th>Signal</th><th>IP</th></tr></thead>
+            <tbody>${S.devices.map(d => '<tr>' +
+                '<td><strong>' + esc(d.device_name||d.device_id) + '</strong></td>' +
+                '<td>' + esc(d.board||'--') + '</td>' +
+                '<td><span class="badge badge-on">Active</span></td>' +
+                '<td><span class="badge badge-blue">Available</span></td>' +
+                '<td><span class="badge badge-blue">Available</span></td>' +
+                '<td>' + (d.rssi!=null ? d.rssi+' dBm' : '--') + '</td>' +
+                '<td class="mono">' + esc(d.ip||'--') + '</td>' +
+            '</tr>').join('')}</tbody></table>
+        </div>`;
+
+    drawMesh();
+}
+
+function drawMesh() {
+    const canvas = document.getElementById('meshCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const cx = W/2, cy = H/2;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Grid lines
+    ctx.strokeStyle = 'rgba(0,240,255,0.04)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+    for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+    // Server node (center)
+    const serverNode = { x: cx, y: cy, label: 'TRITIUM-EDGE', sub: 'Fleet Server', color: '#00f0ff', r: 28 };
+
+    // Device nodes arranged in a circle around server
+    const devices = S.devices.map((d, i) => {
+        const angle = (i / Math.max(S.devices.length, 1)) * Math.PI * 2 - Math.PI/2;
+        const radius = 160;
+        return {
+            x: cx + Math.cos(angle) * radius,
+            y: cy + Math.sin(angle) * radius,
+            label: d.device_name || d.device_id,
+            sub: d.board || 'unknown',
+            color: d._online ? '#05ffa1' : '#ff2a6d',
+            r: 20,
+            online: d._online,
+            rssi: d.rssi,
+        };
+    });
+
+    // Draw connections (server to each device)
+    devices.forEach(node => {
+        // Connection line
+        const grad = ctx.createLinearGradient(serverNode.x, serverNode.y, node.x, node.y);
+        grad.addColorStop(0, 'rgba(0,240,255,0.3)');
+        grad.addColorStop(1, node.online ? 'rgba(5,255,161,0.3)' : 'rgba(255,42,109,0.15)');
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = node.online ? 2 : 1;
+        ctx.setLineDash(node.online ? [] : [4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(serverNode.x, serverNode.y);
+        ctx.lineTo(node.x, node.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Signal strength indicator on the line
+        if (node.online && node.rssi != null) {
+            const mx = (serverNode.x + node.x) / 2;
+            const my = (serverNode.y + node.y) / 2;
+            ctx.fillStyle = 'rgba(0,240,255,0.6)';
+            ctx.font = '9px JetBrains Mono, monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(node.rssi + ' dBm', mx, my - 6);
+        }
+    });
+
+    // Draw mesh connections between nearby devices
+    for (let i = 0; i < devices.length; i++) {
+        for (let j = i+1; j < devices.length; j++) {
+            if (devices[i].online && devices[j].online) {
+                ctx.strokeStyle = 'rgba(176,124,255,0.12)';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([2, 6]);
+                ctx.beginPath();
+                ctx.moveTo(devices[i].x, devices[i].y);
+                ctx.lineTo(devices[j].x, devices[j].y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+    }
+
+    // Draw device nodes
+    devices.forEach(node => {
+        // Glow
+        ctx.shadowColor = node.color;
+        ctx.shadowBlur = node.online ? 15 : 5;
+        // Circle
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2);
+        ctx.fillStyle = '#0a0a0f';
+        ctx.fill();
+        ctx.strokeStyle = node.color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        // Label
+        ctx.fillStyle = node.color;
+        ctx.font = 'bold 10px JetBrains Mono, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(node.label.length > 16 ? node.label.substring(0,14)+'..' : node.label, node.x, node.y + node.r + 16);
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.font = '8px JetBrains Mono, monospace';
+        ctx.fillText(node.sub, node.x, node.y + node.r + 27);
+        // Inner icon text
+        ctx.fillStyle = node.color;
+        ctx.font = 'bold 11px JetBrains Mono, monospace';
+        ctx.fillText(node.online ? 'ON' : 'OFF', node.x, node.y + 4);
+    });
+
+    // Draw server node
+    ctx.shadowColor = serverNode.color;
+    ctx.shadowBlur = 25;
+    ctx.beginPath();
+    ctx.arc(serverNode.x, serverNode.y, serverNode.r, 0, Math.PI * 2);
+    ctx.fillStyle = '#0a0a0f';
+    ctx.fill();
+    ctx.strokeStyle = serverNode.color;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    // Outer ring pulse
+    ctx.beginPath();
+    ctx.arc(serverNode.x, serverNode.y, serverNode.r + 6, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(0,240,255,0.15)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Server label
+    ctx.fillStyle = serverNode.color;
+    ctx.font = 'bold 9px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('SERVER', serverNode.x, serverNode.y + 4);
+    ctx.fillStyle = 'rgba(0,240,255,0.7)';
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.fillText(serverNode.label, serverNode.x, serverNode.y + serverNode.r + 16);
+}
+
+// ===============================================
 //  EVENTS
 // ===============================================
 function renderEvents() {
@@ -1229,6 +1405,7 @@ function setPage(title, desc, actionsHtml) {
 
 // ─── WebSocket for real-time updates ───
 let ws = null;
+let wsHeartbeats = 0;
 function connectWS() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/ws`);
@@ -1240,31 +1417,37 @@ function connectWS() {
             const msg = JSON.parse(e.data);
             if (msg.type === 'pong') return;
             if (msg.type === 'device_heartbeat' || msg.type === 'device_registered') {
-                // Update device in local state
+                wsHeartbeats++;
                 const dev = msg.data;
                 const idx = S.devices.findIndex(d => d.device_id === dev.device_id);
                 if (idx >= 0) S.devices[idx] = dev;
                 else S.devices.unshift(dev);
-                if (S.page === 'dashboard' || S.page === 'devices') renderPage();
+                if (S.page === 'dashboard' || S.page === 'devices' || S.page === 'mesh') render();
+                // Update pulse counter in topbar
+                const label = document.getElementById('connLabel');
+                label.textContent = 'Live // ' + wsHeartbeats + ' pulses';
             }
             if (msg.type === 'firmware_uploaded') {
                 S.firmware.unshift(msg.data);
-                if (S.page === 'firmware') renderPage();
+                if (S.page === 'firmware') render();
+            }
+            if (msg.type === 'ota_scheduled') {
+                if (S.page === 'dashboard' || S.page === 'devices') refresh();
             }
             // Flash the connection dot on any message
             const dot = document.getElementById('connDot');
-            dot.style.boxShadow = '0 0 8px var(--green)';
-            setTimeout(() => { dot.style.boxShadow = ''; }, 300);
+            dot.style.boxShadow = '0 0 14px var(--green)';
+            setTimeout(() => { dot.style.boxShadow = ''; }, 500);
         } catch (err) {}
     };
-    // Keep alive
-    setInterval(() => { if (ws && ws.readyState === 1) ws.send('ping'); }, 30000);
 }
 
 // ─── Init ───
 refresh();
 connectWS();
-setInterval(refresh, 30000);  // Fallback polling (slower since WS handles real-time)
+// Keep WS alive + fallback polling
+setInterval(() => { if (ws && ws.readyState === 1) ws.send('ping'); }, 25000);
+setInterval(refresh, 30000);
 </script>
 </body>
 </html>
