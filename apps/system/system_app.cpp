@@ -128,6 +128,22 @@ void SystemApp::setup(LGFX& display) {
     DBG_INFO("system", "Audio: %s (codec=%d, mic=%d, spk=%d)",
              _audio->available() ? "OK" : "FAIL",
              _audio->hasCodec(), _audio->hasMic(), _audio->hasSpeaker());
+
+    // Voice command detection
+    if (_audio->available()) {
+        _voice = new VoiceHAL();
+        _voiceOwned = true;
+        if (_voice->init(_audio)) {
+            // Register default commands for testing
+            _voice->addCommand("yes", VOICE_CMD_YES);
+            _voice->addCommand("no", VOICE_CMD_NO);
+            _voice->addCommand("stop", VOICE_CMD_STOP);
+            _voice->addCommand("go", VOICE_CMD_GO);
+            DBG_INFO("system", "Voice: OK (%d commands registered)", _voice->getCommandCount());
+        } else {
+            DBG_WARN("system", "Voice: init failed");
+        }
+    }
 #endif
 
     // WiFi manager (singleton pattern)
@@ -163,6 +179,40 @@ void SystemApp::loop(LGFX& display) {
 
     handleTouch(display);
 
+    // Process voice HAL when on voice screen
+#if HAS_AUDIO_CODEC
+    if (_currentScreen == SystemScreen::VOICE_COMMANDS && _voice) {
+        // Handle training request
+        if (_voiceTrainCmd >= 0) {
+            int cmdIdx = _voiceTrainCmd;
+            _voiceTrainCmd = -1;
+            // trainCommand blocks while recording
+            if (_voice->trainCommand(cmdIdx)) {
+                DBG_INFO("voice", "Training complete for command %d", cmdIdx);
+            } else {
+                DBG_WARN("voice", "Training failed for command %d", cmdIdx);
+            }
+        }
+
+        // Process VAD and recognition
+        _voice->process();
+
+        // Check for detection results
+        if (_voice->hasCommand()) {
+            _lastVoiceDet = _voice->getCommand();
+            _voiceHasResult = true;
+            _voiceResultTime = now;
+            DBG_INFO("voice", "Detected: '%s' (conf=%.2f)",
+                     _lastVoiceDet.label, _lastVoiceDet.confidence);
+        }
+
+        // Clear old results after 3 seconds
+        if (_voiceHasResult && now - _voiceResultTime > 3000) {
+            _voiceHasResult = false;
+        }
+    }
+#endif
+
     // Camera preview renders directly to display (no sprite buffer needed)
     if (_currentScreen == SystemScreen::CAMERA_PREVIEW) {
 #if HAS_CAMERA
@@ -177,8 +227,9 @@ void SystemApp::loop(LGFX& display) {
             case SystemScreen::BATTERY: drawBattery(*_canvas); break;
             case SystemScreen::NETWORK: drawNetwork(*_canvas); break;
             case SystemScreen::STORAGE:    drawStorage(*_canvas);   break;
-            case SystemScreen::AUDIO_TEST: drawAudioTest(*_canvas); break;
-            case SystemScreen::SETTINGS:   drawSettings(*_canvas);  break;
+            case SystemScreen::AUDIO_TEST:     drawAudioTest(*_canvas);     break;
+            case SystemScreen::VOICE_COMMANDS: drawVoiceCommands(*_canvas); break;
+            case SystemScreen::SETTINGS:       drawSettings(*_canvas);      break;
             default: break;
         }
 
@@ -245,6 +296,14 @@ void SystemApp::buildMenuItems() {
     };
 
     _menuItems[_menuCount++] = {"Audio / Mic",      SystemScreen::AUDIO_TEST,
+#if HAS_AUDIO_CODEC
+                                true
+#else
+                                false
+#endif
+    };
+
+    _menuItems[_menuCount++] = {"Voice Commands",   SystemScreen::VOICE_COMMANDS,
 #if HAS_AUDIO_CODEC
                                 true
 #else
@@ -355,6 +414,38 @@ void SystemApp::handleTouch(LGFX& display) {
         }
 
 #if HAS_AUDIO_CODEC
+        // Voice commands screen
+#if HAS_AUDIO_CODEC
+        if (_currentScreen == SystemScreen::VOICE_COMMANDS && _voice) {
+            int contentY = ty - NAV_BAR_H;
+
+            // Command list area: each command row is 36px, starting at y~80
+            int listStartY = 80;
+            int rowH = 36;
+            int cmdCount = _voice->getCommandCount();
+            if (contentY >= listStartY && contentY < listStartY + cmdCount * rowH) {
+                _voiceSelectedCmd = (contentY - listStartY) / rowH;
+            }
+
+            // Train button area (below list)
+            int trainBtnY = listStartY + cmdCount * rowH + 12;
+            if (contentY >= trainBtnY && contentY <= trainBtnY + 36) {
+                if (tx < _w / 2) {
+                    // Train button
+                    if (_voiceSelectedCmd >= 0 && _voiceSelectedCmd < cmdCount) {
+                        _voiceTrainCmd = _voiceSelectedCmd;
+                        DBG_INFO("voice", "Training command %d...", _voiceSelectedCmd);
+                    }
+                } else {
+                    // Listen/Test button
+                    _voice->setEnabled(!_voice->isEnabled());
+                    DBG_INFO("voice", "Voice detection: %s",
+                             _voice->isEnabled() ? "enabled" : "disabled");
+                }
+            }
+        }
+#endif
+
         // Audio test screen: tone buttons and volume slider
         if (_currentScreen == SystemScreen::AUDIO_TEST && _audio && _audio->available()) {
             int contentY = ty - NAV_BAR_H;
@@ -400,6 +491,7 @@ const char* SystemApp::screenTitle(SystemScreen s) {
         case SystemScreen::STORAGE:        return "Storage / SD";
         case SystemScreen::CAMERA_PREVIEW: return "Camera Preview";
         case SystemScreen::AUDIO_TEST:     return "Audio / Mic";
+        case SystemScreen::VOICE_COMMANDS: return "Voice Commands";
         case SystemScreen::SETTINGS:       return "Settings";
         default:                           return "Unknown";
     }
@@ -1202,6 +1294,180 @@ void SystemApp::drawAudioTest(LGFX_Sprite& spr) {
     if (_toneRequested) {
         _toneRequested = false;
         _audio->playTone(_toneFreq, 200);
+    }
+
+#else
+    spr.setTextColor(COL_TEXT_DIM);
+    spr.setTextSize(2);
+    spr.setTextDatum(middle_center);
+    spr.drawString("Audio not present", _w / 2, _h / 2);
+    spr.setTextSize(1);
+    spr.drawString("(HAS_AUDIO_CODEC = 0)", _w / 2, _h / 2 + 24);
+#endif
+}
+
+// ============================================================================
+// Voice Commands Screen
+// ============================================================================
+
+void SystemApp::drawVoiceCommands(LGFX_Sprite& spr) {
+    drawNavBar(spr, "Voice Commands");
+
+#if HAS_AUDIO_CODEC
+    if (!_voice || !_audio || !_audio->available()) {
+        spr.setTextColor(COL_RED);
+        spr.setTextSize(2);
+        spr.setTextDatum(middle_center);
+        spr.drawString("Voice HAL not ready", _w / 2, _h / 2);
+        return;
+    }
+
+    int y = NAV_BAR_H + 8;
+    int barW = _w - 2 * MARGIN - 20;
+    char buf[80];
+
+    spr.setTextDatum(top_left);
+
+    // --- VAD Status ---
+    VoiceState vState = _voice->getState();
+    const char* stateStr = "IDLE";
+    uint32_t stateColor = COL_TEXT_DIM;
+    switch (vState) {
+        case VoiceState::IDLE:          stateStr = "Idle";          stateColor = COL_TEXT_DIM; break;
+        case VoiceState::LISTENING:     stateStr = "Listening...";  stateColor = COL_GREEN;    break;
+        case VoiceState::PROCESSING:    stateStr = "Processing..."; stateColor = COL_YELLOW;   break;
+        case VoiceState::COMMAND_READY: stateStr = "Detected!";     stateColor = COL_ACCENT;   break;
+    }
+
+    spr.setTextColor(stateColor);
+    spr.setTextSize(2);
+    snprintf(buf, sizeof(buf), "VAD: %s", stateStr);
+    spr.drawString(buf, MARGIN, y);
+    y += 24;
+
+    // Mic level bar
+    float level = _voice->getInstantLevel();
+    spr.setTextSize(1);
+    spr.setTextColor(COL_TEXT);
+    spr.drawString("Mic Level:", MARGIN, y);
+    uint32_t levelCol = COL_GREEN;
+    if (level > 0.7f) levelCol = COL_RED;
+    else if (level > 0.3f) levelCol = COL_YELLOW;
+    drawProgressBar(spr, MARGIN + 70, y, barW - 60, 12, level, levelCol, COL_BAR_BG);
+    y += 18;
+
+    // VAD threshold indicator
+    VADConfig vCfg = _voice->getVADConfig();
+    int threshX = MARGIN + 70 + (int)((barW - 60) * vCfg.energyThreshold);
+    spr.drawFastVLine(threshX, y - 18, 12, COL_RED);
+
+    // Detection enabled indicator
+    spr.setTextColor(_voice->isEnabled() ? COL_GREEN : COL_RED);
+    snprintf(buf, sizeof(buf), "Detection: %s", _voice->isEnabled() ? "ON" : "OFF");
+    spr.drawString(buf, MARGIN, y);
+    y += 16;
+
+    // Divider
+    spr.drawFastHLine(MARGIN, y, _w - 2 * MARGIN, COL_TEXT_DIM);
+    y += 8;
+
+    // --- Command List ---
+    spr.setTextColor(COL_ACCENT);
+    spr.setTextSize(2);
+    spr.drawString("Commands", MARGIN, y);
+    y += 24;
+
+    int cmdCount = _voice->getCommandCount();
+    int rowH = 36;
+    spr.setTextSize(1);
+
+    for (int i = 0; i < cmdCount; i++) {
+        int rowY = y + i * rowH;
+        bool selected = (i == _voiceSelectedCmd);
+
+        // Row background
+        spr.fillRect(0, rowY, _w, rowH, selected ? COL_MENU_SEL : ((i % 2) ? COL_BG : COL_MENU_BG));
+
+        // Command name
+        spr.setTextColor(COL_TEXT);
+        spr.setTextSize(2);
+        spr.setTextDatum(middle_left);
+        // Access command label from voice HAL
+        snprintf(buf, sizeof(buf), "%d: %s", i + 1,
+                 (i == 0) ? "yes" : (i == 1) ? "no" : (i == 2) ? "stop" : "go");
+        spr.drawString(buf, MARGIN + 4, rowY + rowH / 2);
+
+        // Training status indicator on right
+        spr.setTextDatum(middle_right);
+        spr.setTextSize(1);
+        spr.setTextColor(COL_TEXT_DIM);
+        spr.drawString("untrained", _w - MARGIN - 4, rowY + rowH / 2);
+
+        // Selection marker
+        if (selected) {
+            spr.fillRect(0, rowY, 4, rowH, COL_ACCENT);
+        }
+    }
+    y += cmdCount * rowH + 8;
+    spr.setTextDatum(top_left);
+
+    // Divider
+    spr.drawFastHLine(MARGIN, y, _w - 2 * MARGIN, COL_TEXT_DIM);
+    y += 8;
+
+    // --- Action Buttons ---
+    int btnW = (_w - 2 * MARGIN - 8) / 2;
+    int btnH = 36;
+
+    // Train button
+    spr.fillRect(MARGIN, y, btnW, btnH, COL_MENU_BG);
+    spr.drawRect(MARGIN, y, btnW, btnH, COL_YELLOW);
+    spr.setTextColor(COL_YELLOW);
+    spr.setTextSize(2);
+    spr.setTextDatum(middle_center);
+    spr.drawString("Train", MARGIN + btnW / 2, y + btnH / 2);
+
+    // Listen button
+    int listenX = MARGIN + btnW + 8;
+    bool listening = _voice->isEnabled();
+    spr.fillRect(listenX, y, btnW, btnH, listening ? COL_GREEN : COL_MENU_BG);
+    spr.drawRect(listenX, y, btnW, btnH, listening ? COL_GREEN : COL_ACCENT);
+    spr.setTextColor(listening ? COL_BG : COL_ACCENT);
+    spr.drawString(listening ? "Stop" : "Listen", listenX + btnW / 2, y + btnH / 2);
+
+    y += btnH + 12;
+    spr.setTextDatum(top_left);
+
+    // --- Detection Result ---
+    if (_voiceHasResult) {
+        spr.drawFastHLine(MARGIN, y, _w - 2 * MARGIN, COL_TEXT_DIM);
+        y += 8;
+
+        spr.setTextColor(COL_GREEN);
+        spr.setTextSize(2);
+        snprintf(buf, sizeof(buf), "Detected: %s", _lastVoiceDet.label ? _lastVoiceDet.label : "?");
+        spr.drawString(buf, MARGIN, y);
+        y += 24;
+
+        spr.setTextSize(1);
+        spr.setTextColor(COL_TEXT);
+        snprintf(buf, sizeof(buf), "Confidence: %.0f%%  Time: %lums ago",
+                 _lastVoiceDet.confidence * 100.0f,
+                 (unsigned long)(millis() - _lastVoiceDet.timestamp));
+        spr.drawString(buf, MARGIN, y);
+        y += 16;
+
+        // Confidence bar
+        drawProgressBar(spr, MARGIN + 10, y, barW, 14,
+                        _lastVoiceDet.confidence, COL_GREEN, COL_BAR_BG);
+    } else {
+        spr.drawFastHLine(MARGIN, y, _w - 2 * MARGIN, COL_TEXT_DIM);
+        y += 8;
+        spr.setTextColor(COL_TEXT_DIM);
+        spr.setTextSize(1);
+        spr.drawString("Speak a command to test detection", MARGIN, y);
+        y += 14;
+        spr.drawString("Train first, then enable listening", MARGIN, y);
     }
 
 #else

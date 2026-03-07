@@ -25,6 +25,7 @@
 
 #if HAS_AUDIO_CODEC
 #include "hal_audio.h"
+#include "hal_voice.h"
 #endif
 
 #include "wifi_manager.h"
@@ -37,6 +38,7 @@ enum class SystemScreen : uint8_t {
     STORAGE,
     CAMERA_PREVIEW,
     AUDIO_TEST,
+    VOICE_COMMANDS,
     SETTINGS
 };
 
@@ -61,6 +63,7 @@ private:
     void drawStorage(LGFX_Sprite& spr);
     void drawCameraPreview(LGFX& display);
     void drawAudioTest(LGFX_Sprite& spr);
+    void drawVoiceCommands(LGFX_Sprite& spr);
     void drawSettings(LGFX_Sprite& spr);
 
     // Navigation
@@ -80,7 +83,7 @@ private:
     // Navigation state
     SystemScreen _currentScreen = SystemScreen::HOME;
     int _menuCount = 0;
-    MenuItem _menuItems[8];
+    MenuItem _menuItems[9];
 
     // Display metrics
     int _w = 0;
@@ -148,6 +151,15 @@ private:
     uint16_t _toneFreq = 440;
     bool _micMonitoring = false;
     float _spectrumBins[16] = {};
+
+    // Voice command state
+    VoiceHAL* _voice = nullptr;
+    bool _voiceOwned = false;
+    int _voiceTrainCmd = -1;       // Command ID being trained (-1 = none)
+    int _voiceSelectedCmd = 0;     // Currently selected command in list
+    VoiceDetection _lastVoiceDet = {};
+    bool _voiceHasResult = false;
+    uint32_t _voiceResultTime = 0; // When last result was shown
 #endif
 
     WifiManager* _wifi = nullptr;
