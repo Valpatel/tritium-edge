@@ -29,14 +29,14 @@ path from standalone deployment to full ecosystem integration.
 The Tritium ecosystem consists of three components at different levels of the stack:
 
 ```
-tritium-sc          Battlespace management, AI Commander Amy, security monitoring
+tritium-sc          Battlespace management, Commander Amy, security monitoring
 tritium-edge        Edge device fleet management, OTA updates, remote configuration
 tritium-lib         Shared library (future): event bus, MQTT topics, config patterns
 ```
 
 **tritium-sc** is the central command and control platform. It manages sensor networks,
-runs AI-driven analysis pipelines (YOLO object detection, Whisper STT), and provides
-Commander Amy as the AI operator interface.
+runs analysis pipelines (YOLO object detection, Whisper STT), and provides
+Commander Amy as the operator interface. Models are tools in the loop, not the system itself.
 
 **tritium-edge** manages the ESP32 device fleet at the edge. It handles device
 registration, firmware OTA updates, remote configuration, heartbeat monitoring, and
@@ -49,7 +49,7 @@ both tritium-sc and tritium-edge into a reusable Python package.
 
 | Component | Scope | Key Features |
 |-----------|-------|-------------|
-| tritium-sc | Central platform | Sensor fusion, AI pipelines, target tracking, Amy |
+| tritium-sc | Central platform | Sensor fusion, model pipelines, target tracking, Amy |
 | tritium-edge | Edge fleet | Device registration, OTA, heartbeat, telemetry |
 | tritium-lib | Shared code | Event bus, MQTT codecs, config models, auth |
 
@@ -123,7 +123,7 @@ runs on-site near the ESP32 devices.
     |                                       |
 tritium-edge server                    tritium-sc
     |                                       |
-ESP32 devices                     AI pipelines, Amy
+ESP32 devices                     Model pipelines, Amy
 ```
 
 The `mqtt-bridge` plugin (see [PLUGIN-SYSTEM.md](PLUGIN-SYSTEM.md)) handles the
@@ -485,7 +485,7 @@ ESP32 fleet <-> tritium-sc (with tritium-edge plugin)
 At this stage:
 - Single deployment manages both platforms.
 - Amy has full command dispatch to ESP32 devices.
-- Camera and audio streams feed directly into AI pipelines.
+- Camera and audio streams feed directly into model pipelines.
 - Unified dashboard shows fleet status alongside sensor fusion data.
 
 ### Stage 4: Extract tritium-lib

@@ -53,6 +53,121 @@ points.
 | Multi-tenant first | Organizations, users, roles, and device scoping baked into the data model from the start. |
 | Config-as-code | Pydantic settings with environment variable overrides. No magic config files. |
 | CYBERCORE aesthetic | Cyan `#00f0ff`, magenta `#ff2a6d`, green `#05ffa1`, yellow `#fcee0a`. No frontend frameworks. |
+| Transport agnostic | The mesh communicates through *any* available channel. WiFi, BLE, LoRa, ESP-NOW, 4G, Zigbee, sound, light — if it can carry bits, it's a transport. |
+
+### Communications Philosophy: Every Channel is a Transport
+
+Tritium treats communication as a **multi-modal, opportunistic mesh**. The system
+does not privilege any single radio or protocol. Every available channel — whether
+it's a purpose-built radio or an improvised signaling path — is a potential
+transport for the feedback loop.
+
+**Purpose-built transports** (first-class drivers):
+
+| Transport | Range | Bandwidth | HAL | Use Case |
+|-----------|-------|-----------|-----|----------|
+| WiFi (802.11) | ~100m | High | hal_wifi | Primary data, OTA, streaming |
+| BLE 5.0 | ~50m | Medium | hal_ble | Provisioning, short-range mesh |
+| ESP-NOW | ~200m | Low-Medium | hal_espnow | Low-latency mesh, no AP needed |
+| LoRa | 2-15km | Very Low | future | Long-range telemetry, alerts |
+| Zigbee | ~100m | Low | future | Sensor mesh, home automation |
+| 4G/LTE | Cellular | High | future | WAN backhaul, remote sites |
+| Ethernet | Local | Very High | future | Fixed nodes, servers, gateways |
+| Meshtastic | 2-15km | Very Low | future | Community LoRa mesh relay |
+| Tailscale | Internet | High | future | Secure WAN overlay (servers, SBCs) |
+
+**Improvised transports** (the mesh finds a way):
+
+| Channel | Encoding | Sensor | Bandwidth | Use Case |
+|---------|----------|--------|-----------|----------|
+| Speaker → Microphone | FSK/DTMF audio tones | hal_audio | ~100 bps | Acoustic data link, air-gapped relay |
+| LED/Display → Camera | Flashing patterns, QR codes | hal_camera | ~10-1000 bps | Visual data link, optical relay |
+| IR LED → IR receiver | Modulated IR | future | ~1 kbps | Line-of-sight covert channel |
+| Vibration motor → IMU | Encoded vibration patterns | hal_imu | ~1-10 bps | Contact-based data transfer |
+
+The principle: **if a device has an output and another device has a matching
+sensor, that's a communication channel.** A speaker and a microphone are a
+modem. A flashing screen and a camera are a fiber-optic link without the fiber.
+An IMU pressed against a vibrating motor is a telegraph.
+
+> *"Life finds a way."* — And so will Tritium.
+
+This is cybernetics in its purest form — the feedback loop doesn't care about
+the medium. The mesh degrades gracefully across transport failures by falling
+back to whatever channel is available. A node that loses WiFi can still relay
+through ESP-NOW. If radio is jammed, it can encode data as audio tones or
+visual patterns. The mesh finds a way.
+
+#### Transport Abstraction Layer
+
+All transports present a unified interface to the mesh:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    MESH ROUTING LAYER                     │
+│  Destination-based routing, transport selection,          │
+│  multi-path redundancy, store-and-forward                 │
+├──────────┬──────────┬──────────┬──────────┬──────────────┤
+│  WiFi    │  BLE     │  ESP-NOW │  LoRa    │  Improvised  │
+│  MQTT    │  GATT    │  Flood   │  Mesh    │  Audio/Vis   │
+│          │          │  P2P     │  tastic  │  IR/Vibrate  │
+├──────────┴──────────┴──────────┴──────────┴──────────────┤
+│                  TRANSPORT ABSTRACTION                     │
+│  send(dest, payload, priority, constraints)               │
+│  recv() → (source, payload, transport, rssi)              │
+│  available_transports() → [{type, quality, bandwidth}]    │
+│  on_transport_change(callback)                            │
+└─────────────────────────────────────────────────────────┘
+```
+
+Each transport driver implements:
+- **send(dest, payload)** — transmit to a peer or broadcast
+- **recv(callback)** — receive incoming data
+- **quality()** — current link quality (RSSI, loss rate, latency)
+- **bandwidth()** — estimated throughput in bytes/sec
+- **available()** — whether the transport is currently usable
+
+The routing layer selects transports based on message priority, payload size,
+and available channel quality. High-priority alerts use the fastest available
+path. Large payloads (OTA, camera frames) prefer high-bandwidth channels.
+Telemetry and heartbeats can use any channel, including low-bandwidth ones.
+
+#### Multi-Path Mesh Topology
+
+```
+Node A ──WiFi──── Node B ──LoRa───── Node D
+  │                 │                   │
+  │ ESP-NOW         │ BLE               │ Audio
+  │                 │                   │ (speaker→mic)
+  v                 v                   v
+Node C ──────────────────────────── Node E
+         (visual: LED flash→camera)
+```
+
+Any node can reach any other node through multiple independent paths. The mesh
+maintains a **transport topology map** — each node advertises which transports
+it has and what peers it can reach through each one. Routing decisions happen
+per-message, adapting in real-time to transport availability.
+
+When a primary transport fails, the mesh **automatically falls back** to the
+next available channel without application-layer awareness. The heartbeat
+protocol, command delivery, and telemetry all work identically regardless of
+the underlying transport.
+
+#### MQTT Topic Convention for Transports
+
+Transport status is published to the mesh via MQTT (or relayed through
+whatever transport is available):
+
+```
+tritium/{site}/mesh/{device_id}/transports    ← Available transports + quality
+tritium/{site}/mesh/{device_id}/peers         ← Reachable peers per transport
+tritium/{site}/mesh/{device_id}/routing       ← Current routing table
+```
+
+This feeds into tritium-sc's situational awareness — the Command Center can
+visualize the mesh topology, see which links are active, and understand the
+communication health of the entire fleet.
 
 ---
 
