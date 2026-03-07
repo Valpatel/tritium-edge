@@ -13,35 +13,12 @@ static constexpr uint32_t CRUISE_DURATION_MS = 10000;
 static constexpr uint32_t WARP_DURATION_MS = 3000;
 static constexpr uint32_t SPLASH_DURATION_MS = 2000;
 static constexpr uint32_t FPS_UPDATE_MS = 1000;
+static constexpr uint32_t BAT_UPDATE_MS = 5000;
 
 uint16_t StarfieldApp::tintedColor(float b, StarTint tint) {
-    float r, g, bl;
-    switch (tint) {
-        case TINT_BLUE:
-            r = b * 0.6f;
-            g = b * 0.7f;
-            bl = b * 1.0f;
-            break;
-        case TINT_YELLOW:
-            r = b * 1.0f;
-            g = b * 0.9f;
-            bl = b * 0.4f;
-            break;
-        case TINT_RED:
-            r = b * 1.0f;
-            g = b * 0.4f;
-            bl = b * 0.3f;
-            break;
-        default: // TINT_WHITE - slight blue-white
-            r = b * 0.86f;
-            g = b * 0.90f;
-            bl = b * 1.0f;
-            break;
-    }
-    uint8_t ri = (uint8_t)(r * 255.0f);
-    uint8_t gi = (uint8_t)(g * 255.0f);
-    uint8_t bi = (uint8_t)(bl * 255.0f);
-    return ((ri >> 3) << 11) | ((gi >> 2) << 5) | (bi >> 3);
+    (void)tint;
+    uint8_t v = (uint8_t)(b * 255.0f);
+    return ((v >> 3) << 11) | ((v >> 2) << 5) | (v >> 3);
 }
 
 float StarfieldApp::currentSpeed() const {
@@ -83,18 +60,6 @@ void StarfieldApp::drawSplash(LGFX& display) {
     display.drawString("Starfield", w / 2, h / 2 + 40);
 }
 
-void StarfieldApp::drawFpsOverlay() {
-    if (!_canvas || _fps <= 0.0f) return;
-
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%.0f fps", _fps);
-
-    _canvas->setTextSize(1);
-    _canvas->setTextDatum(top_right);
-    _canvas->setTextColor(0x7BEF); // dim gray
-    _canvas->drawString(buf, _canvas->width() - 4, 4);
-}
-
 void StarfieldApp::setup(LGFX& display) {
     DBG_INFO("starfield", "App: %s", name());
 
@@ -105,9 +70,20 @@ void StarfieldApp::setup(LGFX& display) {
     _canvas->setPsram(true);
     _canvas->setColorDepth(16);
 
-    if (!_canvas->createSprite(w, h)) {
-        DBG_WARN("starfield", "Full sprite failed, trying half-height");
-        if (!_canvas->createSprite(w, h / 2)) {
+    // Half-res scaling only for RGB parallel panels (line-buffer push to DMA framebuffer)
+    // QSPI/SPI panels need full-res pushSprite — scaled pushImage causes blank screen
+#if defined(BOARD_TOUCH_LCD_43C_BOX)
+    bool large = true;
+#else
+    bool large = false;
+#endif
+    int sw = large ? w / 2 : w;
+    int sh = large ? h / 2 : h;
+    _render_scale = large ? 2 : 1;
+
+    if (!_canvas->createSprite(sw, sh)) {
+        DBG_WARN("starfield", "Sprite %dx%d failed, trying half-height", sw, sh);
+        if (!_canvas->createSprite(sw, sh / 2)) {
             DBG_ERROR("starfield", "Sprite allocation failed!");
             delete _canvas;
             _canvas = nullptr;
@@ -115,11 +91,44 @@ void StarfieldApp::setup(LGFX& display) {
     }
 
     if (_canvas) {
-        DBG_INFO("starfield", "Sprite: %dx%d in PSRAM", _canvas->width(), _canvas->height());
+        DBG_INFO("starfield", "Sprite: %dx%d (scale %dx)", _canvas->width(), _canvas->height(), _render_scale);
     }
 
-    _starfield = new StarField(w, h);
+    _starfield = new StarField(_canvas ? _canvas->width() : w, _canvas ? _canvas->height() : h);
     DBG_INFO("starfield", "%d stars", _starfield->getStarCount());
+
+    // Init battery monitor
+#ifndef SIMULATOR
+    _power_ok = _power.initLgfx(0);
+#endif
+    if (_power_ok) {
+        BatteryConfig batCfg;
+        batCfg.chemistry = BatteryChemistry::LI_ION;
+        batCfg.capacity_mah = 2600.0f;
+        batCfg.avg_draw_ma = 150.0f;
+        _battery.init(&_power, batCfg);
+        _battery.update();
+
+        BatteryWidgetConfig wCfg;
+        wCfg.style = BatteryWidgetStyle::ICON_PERCENT_VOLT;
+        wCfg.anchor = BatteryWidgetAnchor::TOP_CENTER;
+        wCfg.icon_width = 44;
+        wCfg.icon_height = 20;
+        wCfg.text_size = 2;
+        wCfg.margin = 8;
+        _battWidget.init(wCfg);
+
+        DBG_INFO("starfield", "Battery: %d%% %.2fV",
+                 _battery.getStatus().soc, _battery.getStatus().voltage);
+    }
+
+    // Init IMU for motion detection
+#ifndef SIMULATOR
+    _imu_ok = _imu.initLgfx(0);
+#endif
+    if (_imu_ok) {
+        DBG_INFO("starfield", "IMU ready (WHO_AM_I: 0x%02X)", _imu.whoAmI());
+    }
 
     // Show splash screen
     _start_time = millis();
@@ -128,6 +137,7 @@ void StarfieldApp::setup(LGFX& display) {
 
     _warp_timer = _start_time + SPLASH_DURATION_MS;
     _fps_timer = _start_time;
+    _bat_timer = _start_time;
 }
 
 void StarfieldApp::loop(LGFX& display) {
@@ -144,9 +154,24 @@ void StarfieldApp::loop(LGFX& display) {
         _frame_count = 0;
     }
 
-    // Warp while touching, cruise when released
+    // Check for touch or significant motion to show UI
+    // Skip IMU for first second after splash to avoid transient triggers
     lgfx::touch_point_t tp;
     bool touch_down = (display.getTouch(&tp) > 0);
+    bool motion = false;
+    if (_imu_ok && (now - _start_time > SPLASH_DURATION_MS + 1000)) {
+        motion = _imu.detectMotion(60.0f);
+    }
+
+    if (touch_down || motion) {
+        _ui_visible = true;
+        _ui_show_time = now;
+    }
+    if (_ui_visible && (now - _ui_show_time >= UI_TIMEOUT_MS)) {
+        _ui_visible = false;
+    }
+
+    // Warp while touching
     if (touch_down && !_warping) {
         _warping = true;
         _warp_timer = now;
@@ -161,7 +186,7 @@ void StarfieldApp::loop(LGFX& display) {
     uint32_t t_render_start = millis();
 
     int h = display.height();
-    if (_canvas && _canvas->height() == h) {
+    if (_canvas) {
         _canvas->fillScreen(TFT_BLACK);
 
         const Star* stars = _starfield->getStars();
@@ -171,17 +196,7 @@ void StarfieldApp::loop(LGFX& display) {
             int sx, sy;
             float brightness;
             if (_starfield->project(stars[i], sx, sy, brightness)) {
-                uint16_t color = tintedColor(brightness, stars[i].tint);
-
-                if (brightness > 0.7f) {
-                    _canvas->fillCircle(sx, sy, 2, color);
-                } else if (brightness > 0.35f) {
-                    _canvas->fillCircle(sx, sy, 1, color);
-                } else {
-                    _canvas->drawPixel(sx, sy, color);
-                }
-
-                // Trails - more prominent during warp
+                // Draw trail FIRST so star draws on top
                 float trail_threshold = _warping ? 0.2f : 0.5f;
                 if (brightness > trail_threshold && stars[i].prev_z > stars[i].z) {
                     int tx, ty;
@@ -193,20 +208,60 @@ void StarfieldApp::loop(LGFX& display) {
                         _canvas->drawLine(sx, sy, tx, ty, tail_color);
                     }
                 }
+
+                uint16_t color = tintedColor(brightness, stars[i].tint);
+                if (brightness > 0.7f) {
+                    _canvas->fillCircle(sx, sy, 2, color);
+                } else if (brightness > 0.35f) {
+                    _canvas->fillCircle(sx, sy, 1, color);
+                } else {
+                    _canvas->drawPixel(sx, sy, color);
+                }
             }
         }
 
-        drawFpsOverlay();
+        // Battery widget — only visible on touch/motion
+        if (_ui_visible && _power_ok) {
+            if (now - _bat_timer >= BAT_UPDATE_MS) {
+                _battery.update();
+                _bat_timer = now;
+            }
+            _battWidget.draw(*_canvas, _battery.getStatus());
+        }
 
         uint32_t t_push_start = millis();
-        _canvas->pushSprite(0, 0);
+        if (_render_scale > 1) {
+            // Scale 2x: double each pixel horizontally and each row vertically
+            int sw = _canvas->width();
+            int sh = _canvas->height();
+            int dw = sw * 2;
+            const uint16_t* buf = (const uint16_t*)_canvas->getBuffer();
+            // Reuse a line buffer for horizontal doubling
+            if (!_line_buf) _line_buf = (uint16_t*)heap_caps_malloc(dw * sizeof(uint16_t), MALLOC_CAP_DMA);
+            if (_line_buf) {
+                display.startWrite();
+                for (int y = 0; y < sh; y++) {
+                    const uint16_t* src = buf + y * sw;
+                    for (int x = 0; x < sw; x++) {
+                        _line_buf[x * 2] = src[x];
+                        _line_buf[x * 2 + 1] = src[x];
+                    }
+                    int dy = y * 2;
+                    display.pushImage(0, dy, dw, 1, _line_buf);
+                    display.pushImage(0, dy + 1, dw, 1, _line_buf);
+                }
+                display.endWrite();
+            }
+        } else {
+            _canvas->pushSprite(0, 0);
+        }
         uint32_t t_push_end = millis();
 
         _render_ms = t_push_start - t_render_start;
         _push_ms = t_push_end - t_push_start;
 
     } else {
-        // Direct rendering fallback (no sprite / sprite too small)
+        // Direct rendering — writes to display's DMA framebuffer (RGB panels)
         display.startWrite();
         display.fillScreen(TFT_BLACK);
 
@@ -218,18 +273,57 @@ void StarfieldApp::loop(LGFX& display) {
             float brightness;
             if (_starfield->project(stars[i], sx, sy, brightness)) {
                 uint16_t color = tintedColor(brightness, stars[i].tint);
-                if (brightness > 0.5f) {
+
+                if (brightness > 0.7f) {
+                    display.fillCircle(sx, sy, 2, color);
+                } else if (brightness > 0.35f) {
                     display.fillCircle(sx, sy, 1, color);
                 } else {
                     display.drawPixel(sx, sy, color);
                 }
+
+                // Trails
+                float trail_threshold = _warping ? 0.2f : 0.5f;
+                if (brightness > trail_threshold && stars[i].prev_z > stars[i].z) {
+                    int tx, ty;
+                    float tb;
+                    Star trail = stars[i];
+                    trail.z = stars[i].prev_z;
+                    if (_starfield->project(trail, tx, ty, tb)) {
+                        uint16_t tail_color = tintedColor(brightness * 0.3f, stars[i].tint);
+                        display.drawLine(sx, sy, tx, ty, tail_color);
+                    }
+                }
+            }
+        }
+
+        // Battery widget — draw directly on display
+        if (_ui_visible && _power_ok) {
+            if (now - _bat_timer >= BAT_UPDATE_MS) {
+                _battery.update();
+                _bat_timer = now;
+            }
+            // Widget needs a sprite — use a small temporary one
+            if (!_overlay) {
+                _overlay = new LGFX_Sprite(&display);
+                _overlay->setPsram(true);
+                _overlay->setColorDepth(16);
+                _overlay->createSprite(160, 50);
+            }
+            if (_overlay) {
+                _overlay->fillScreen(TFT_BLACK);
+                _battWidget.draw(*_overlay, _battery.getStatus());
+                int ox = (display.width() - _overlay->width()) / 2;
+                _overlay->pushSprite(ox, 8, TFT_BLACK);
             }
         }
 
         display.endWrite();
+        _render_ms = millis() - t_render_start;
+        _push_ms = 0;
     }
 
-    // FPS counter
+    // FPS counter (serial only)
     _frame_count++;
     if (now - _fps_timer >= FPS_UPDATE_MS) {
         _fps = _frame_count * 1000.0f / (now - _fps_timer);
