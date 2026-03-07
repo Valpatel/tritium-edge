@@ -1,0 +1,9 @@
+{
+    "name": "hal_ui",
+    "version": "0.1.0",
+    "description": "LVGL UI framework integration with LovyanGFX for ESP32 displays",
+    "dependencies": {
+        "lvgl/lvgl": "~9.2.0",
+        "lovyan03/LovyanGFX": "^1.2.0"
+    }
+}
