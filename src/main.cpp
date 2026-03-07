@@ -2,6 +2,16 @@
 #include "display_init.h"
 #include "debug_log.h"
 #include "app.h"
+#include "hal_heartbeat.h"
+
+// Boot-time SD card OTA check (works with any app)
+#if !defined(SIMULATOR) && HAS_SDCARD && defined(SD_MMC_D0) && defined(SD_MMC_CLK) && defined(SD_MMC_CMD)
+#define BOOT_SD_OTA_CHECK 1
+#include <SD_MMC.h>
+#include <Update.h>
+#include "ota_header.h"
+#include "ota_verify.h"
+#endif
 
 // --- App selection via build flag ---
 #if defined(APP_SYSTEM)
@@ -15,6 +25,10 @@ static WifiSetupApp app_instance;
 #elif defined(APP_UI_DEMO)
 #include "ui_demo_app.h"
 static UiDemoApp app_instance;
+
+#elif defined(APP_OTA)
+#include "ota_app.h"
+static OtaApp app_instance;
 
 #elif defined(APP_STARFIELD)
 #include "starfield_app.h"
@@ -56,8 +70,140 @@ void setup() {
     DBG_INFO("main", "Display ready: %dx%d (rotation %d)",
              display.width(), display.height(), DISPLAY_ROTATION);
 
+    // Boot-time SD card OTA: if firmware.bin exists on SD, flash it and reboot
+#ifdef BOOT_SD_OTA_CHECK
+    SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
+    if (SD_MMC.begin("/sdcard", true)) {
+        // Check for both firmware.bin (raw) and firmware.ota (packaged with header)
+        const char* fwPath = nullptr;
+        if (SD_MMC.exists("/firmware.ota")) fwPath = "/firmware.ota";
+        else if (SD_MMC.exists("/firmware.bin")) fwPath = "/firmware.bin";
+
+        if (fwPath) {
+            DBG_INFO("main", "Found %s on SD card — starting OTA", fwPath);
+            display.setTextSize(display.width() < 200 ? 1 : 2);
+            display.setTextColor(0xFFE0);
+            display.setTextDatum(textdatum_t::top_center);
+            display.drawString("SD OTA Update...", display.width() / 2, display.height() / 2 - 16);
+
+            File fw = SD_MMC.open(fwPath, FILE_READ);
+            if (fw && fw.size() > 0) {
+                size_t fileSize = fw.size();
+                size_t fwSize = fileSize;
+                size_t fwOffset = 0;
+
+                // Check for OTA header
+                bool hasSig = false;
+                OtaSignature sig = {};
+                OtaFirmwareHeader hdr = {};
+                uint32_t expectedCrc = 0;
+
+                if (fileSize > sizeof(OtaFirmwareHeader)) {
+                    fw.read((uint8_t*)&hdr, sizeof(hdr));
+                    if (hdr.isValid()) {
+                        DBG_INFO("main", "OTA header: v%s board=%s size=%u crc=0x%08X",
+                                 hdr.version, hdr.board, hdr.firmware_size, hdr.firmware_crc32);
+                        fwSize = hdr.firmware_size;
+                        expectedCrc = hdr.firmware_crc32;
+                        fwOffset = hdr.totalHeaderSize();
+
+                        // Read signature if signed
+                        if (hdr.isSigned()) {
+                            fw.read((uint8_t*)&sig, sizeof(sig));
+                            hasSig = true;
+                            DBG_INFO("main", "Signed firmware — will verify ECDSA P-256");
+                        }
+                    } else {
+                        // Not a packaged file, rewind
+                        fw.seek(0);
+                    }
+                }
+
+                if (Update.begin(fwSize)) {
+                    // Start streaming verification
+                    OtaVerify::crc32Begin();
+                    if (hasSig) {
+                        OtaVerify::beginVerify();
+                        // Signature covers firmware data only (not header)
+                    }
+
+                    uint8_t buf[1024];
+                    size_t written = 0;
+                    while (fw.available() && written < fwSize) {
+                        size_t toRead = fwSize - written;
+                        if (toRead > sizeof(buf)) toRead = sizeof(buf);
+                        size_t n = fw.read(buf, toRead);
+
+                        // Update CRC32 and signature hash
+                        OtaVerify::crc32Update(buf, n);
+                        if (hasSig) OtaVerify::updateVerify(buf, n);
+
+                        Update.write(buf, n);
+                        written += n;
+                        int pct = (written * 100) / fwSize;
+                        int barY = display.height() / 2 + 8;
+                        display.fillRect(10, barY, display.width() - 20, 16, TFT_BLACK);
+                        display.fillRect(10, barY,
+                                         (display.width() - 20) * pct / 100, 16, 0x07E0);
+                    }
+                    fw.close();
+
+                    // Verify CRC32
+                    uint32_t actualCrc = OtaVerify::crc32Finalize();
+                    if (expectedCrc != 0 && actualCrc != expectedCrc) {
+                        DBG_ERROR("main", "SD OTA CRC32 mismatch: expected 0x%08X, got 0x%08X",
+                                  expectedCrc, actualCrc);
+                        display.drawString("CRC ERROR!",
+                                           display.width() / 2, display.height() / 2 + 32);
+                        Update.abort();
+                        delay(3000);
+
+#ifdef OTA_REQUIRE_SIGNATURE
+                    } else if (!hasSig) {
+                        DBG_ERROR("main", "SD OTA rejected: unsigned firmware (signature required)");
+                        display.setTextColor(0xF800);
+                        display.drawString("UNSIGNED!",
+                                           display.width() / 2, display.height() / 2 + 32);
+                        Update.abort();
+                        delay(3000);
+#endif
+                    } else if (hasSig && !OtaVerify::finalizeVerify(sig.r, sig.s)) {
+                        DBG_ERROR("main", "SD OTA signature verification FAILED");
+                        display.setTextColor(0xF800);
+                        display.drawString("SIG INVALID!",
+                                           display.width() / 2, display.height() / 2 + 32);
+                        Update.abort();
+                        delay(3000);
+                    } else if (Update.end(true)) {
+                        DBG_INFO("main", "SD OTA success, %u bytes from %s%s", written, fwPath,
+                                 hasSig ? " (signature verified)" : "");
+                        char bakPath[64];
+                        snprintf(bakPath, sizeof(bakPath), "%s.bak", fwPath);
+                        SD_MMC.remove(bakPath);
+                        SD_MMC.rename(fwPath, bakPath);
+                        display.drawString(hasSig ? "Verified! Rebooting..." : "OTA OK! Rebooting...",
+                                           display.width() / 2, display.height() / 2 + 32);
+                        delay(1000);
+                        ESP.restart();
+                    } else {
+                        DBG_ERROR("main", "SD OTA verify failed: %s", Update.errorString());
+                    }
+                } else {
+                    fw.close();
+                    DBG_ERROR("main", "SD OTA begin failed: %s", Update.errorString());
+                }
+            }
+        }
+        SD_MMC.end();
+    }
+#endif
+
     app->setup(display);
     DBG_INFO("main", "App '%s' started", app->name());
+
+    // Initialize fleet heartbeat (auto-loads config from provisioning/NVS).
+    // Silently skips if not provisioned or WiFi not available.
+    hal_heartbeat::init();
 }
 
 // Serial command buffer for board identification
@@ -81,6 +227,9 @@ static void handleSerialCommands() {
 }
 
 void loop() {
+#if !defined(APP_OTA)
     handleSerialCommands();
+#endif
     app->loop(display);
+    hal_heartbeat::tick();
 }
