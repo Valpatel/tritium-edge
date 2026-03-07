@@ -120,6 +120,7 @@ public:
 class LGFX : public lgfx::LGFX_Device {
     lgfx::Bus_SPI _bus;
     lgfx::Panel_SH8601Z _panel;
+    lgfx::Touch_FT5x06 _touch;
 
 public:
     LGFX() {
@@ -147,6 +148,22 @@ public:
             cfg.bus_shared   = false;
             _panel.config(cfg);
         }
+        {
+            auto cfg = _touch.config();
+            cfg.i2c_port = 0;
+            cfg.pin_sda  = TOUCH_SDA;
+            cfg.pin_scl  = TOUCH_SCL;
+            cfg.pin_int  = TOUCH_INT;
+            cfg.i2c_addr = TOUCH_I2C_ADDR;
+            cfg.freq     = 400000;
+            cfg.x_min    = 0;
+            cfg.x_max    = DISPLAY_WIDTH - 1;
+            cfg.y_min    = 0;
+            cfg.y_max    = DISPLAY_HEIGHT - 1;
+            cfg.bus_shared = false;
+            _touch.config(cfg);
+        }
+        _panel.setTouch(&_touch);
         _panel.setBus(&_bus);
         setPanel(&_panel);
     }
@@ -154,11 +171,43 @@ public:
 
 // ============================================================================
 // Board: ESP32-S3-Touch-LCD-3.5B-C (AXS15231B, QSPI, 320x480)
+// The AXS15231B reset is controlled by TCA9554 I/O expander (0x20) pin 1.
+// Must toggle reset via I2C before display.init() will work.
 // ============================================================================
 #elif defined(BOARD_TOUCH_LCD_35BC)
 #include "boards/esp32_s3_touch_lcd_35bc.h"
 #include <Panel_AXS15231B.hpp>
 #include <Touch_AXS15231B.hpp>
+#include <Wire.h>
+
+// TCA9554 I/O expander for display reset (address 0x20 on shared I2C bus)
+static void tca9554_reset_display() {
+    Wire.begin(TOUCH_SDA, TOUCH_SCL);
+    // Set TCA9554 pin 1 as output (config register 0x03, clear bit 1)
+    Wire.beginTransmission(0x20);
+    Wire.write(0x03);  // Configuration register
+    Wire.write(0xFD);  // Pin 1 = output (bit 1 = 0), rest inputs
+    Wire.endTransmission();
+    // Pin 1 HIGH
+    Wire.beginTransmission(0x20);
+    Wire.write(0x01);  // Output register
+    Wire.write(0x02);  // Pin 1 = HIGH
+    Wire.endTransmission();
+    delay(10);
+    // Pin 1 LOW (active reset)
+    Wire.beginTransmission(0x20);
+    Wire.write(0x01);
+    Wire.write(0x00);  // Pin 1 = LOW
+    Wire.endTransmission();
+    delay(10);
+    // Pin 1 HIGH (release reset)
+    Wire.beginTransmission(0x20);
+    Wire.write(0x01);
+    Wire.write(0x02);  // Pin 1 = HIGH
+    Wire.endTransmission();
+    delay(200);
+    Wire.end();  // Release I2C so LovyanGFX can manage it
+}
 
 class LGFX : public lgfx::LGFX_Device {
     lgfx::Bus_SPI _bus;
