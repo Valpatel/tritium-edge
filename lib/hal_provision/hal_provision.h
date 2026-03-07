@@ -115,6 +115,7 @@ private:
     char _usbBuf[4096] = {};
     size_t _usbBufLen = 0;
 
+    void _ensureProvDir();
     bool _loadIdentity();
     bool _saveIdentity();
     bool _checkProvisioned();

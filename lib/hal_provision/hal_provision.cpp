@@ -167,6 +167,12 @@ bool ProvisionHAL::_checkProvisioned() {
     return _state == ProvisionState::PROVISIONED;
 }
 
+void ProvisionHAL::_ensureProvDir() {
+    char hp[512];
+    sim_fs_path(PROV_DIR, hp, sizeof(hp));
+    sim_mkdirs(hp);
+}
+
 bool ProvisionHAL::_loadIdentity() {
     char hp[512];
     sim_fs_path(IDENTITY_PATH, hp, sizeof(hp));
@@ -178,6 +184,7 @@ bool ProvisionHAL::_loadIdentity() {
 }
 
 bool ProvisionHAL::_saveIdentity() {
+    _ensureProvDir();
     char json[1024];
     snprintf(json, sizeof(json),
         "{\n"
@@ -361,12 +368,13 @@ bool ProvisionHAL::_processUSBCommand(const char* json, size_t len) {
     jsonGetInt(json, "mqtt_port", &port);
     _identity.mqtt_port = (uint16_t)port;
     _identity.provisioned = true;
-    _saveIdentity();
+    bool saved = _saveIdentity();
 
     _checkProvisioned();
     _usbActive = false;
     DBG_INFO(TAG, "USB provisioning complete");
-    return _state == ProvisionState::PROVISIONED;
+    // Consider success if identity was saved, even without certs (cert-less mode)
+    return saved && _identity.device_id[0] != '\0';
 }
 
 bool ProvisionHAL::getCACert(char* buf, size_t bufSize, size_t* outLen) {
@@ -575,7 +583,12 @@ bool ProvisionHAL::init() {
 
     // Create provisioning directory
     if (!LittleFS.exists(PROV_DIR)) {
-        LittleFS.mkdir(PROV_DIR);
+        if (!LittleFS.mkdir(PROV_DIR)) {
+            DBG_ERROR(TAG, "Failed to create %s directory", PROV_DIR);
+        }
+    }
+    if (!LittleFS.exists(PROV_DIR)) {
+        DBG_ERROR(TAG, "%s directory still missing after mkdir", PROV_DIR);
     }
 
     DBG_INFO(TAG, "Provision HAL init — LittleFS total: %zu  used: %zu",
@@ -616,6 +629,7 @@ bool ProvisionHAL::_loadIdentity() {
 }
 
 bool ProvisionHAL::_saveIdentity() {
+    _ensureProvDir();
     char json[1024];
     snprintf(json, sizeof(json),
         "{\n"
@@ -841,12 +855,13 @@ bool ProvisionHAL::_processUSBCommand(const char* json, size_t len) {
     jsonGetInt(json, "mqtt_port", &port);
     _identity.mqtt_port = (uint16_t)port;
     _identity.provisioned = true;
-    _saveIdentity();
+    bool saved = _saveIdentity();
 
     _checkProvisioned();
     _usbActive = false;
     DBG_INFO(TAG, "USB provisioning complete");
-    return _state == ProvisionState::PROVISIONED;
+    // Consider success if identity was saved, even without certs (cert-less mode)
+    return saved && _identity.device_id[0] != '\0';
 }
 
 bool ProvisionHAL::getCACert(char* buf, size_t bufSize, size_t* outLen) {
@@ -901,7 +916,14 @@ bool ProvisionHAL::clearFactoryWiFi() {
     return ok;
 }
 
+void ProvisionHAL::_ensureProvDir() {
+    if (!LittleFS.exists(PROV_DIR)) {
+        LittleFS.mkdir(PROV_DIR);
+    }
+}
+
 bool ProvisionHAL::importCACert(const char* pem, size_t len) {
+    _ensureProvDir();
     File f = LittleFS.open(CA_CERT_PATH, "w");
     if (!f) return false;
     size_t w = f.write((const uint8_t*)pem, len);
@@ -911,6 +933,7 @@ bool ProvisionHAL::importCACert(const char* pem, size_t len) {
 }
 
 bool ProvisionHAL::importClientCert(const char* pem, size_t len) {
+    _ensureProvDir();
     File f = LittleFS.open(CLIENT_CERT_PATH, "w");
     if (!f) return false;
     size_t w = f.write((const uint8_t*)pem, len);
@@ -920,6 +943,7 @@ bool ProvisionHAL::importClientCert(const char* pem, size_t len) {
 }
 
 bool ProvisionHAL::importClientKey(const char* pem, size_t len) {
+    _ensureProvDir();
     File f = LittleFS.open(CLIENT_KEY_PATH, "w");
     if (!f) return false;
     size_t w = f.write((const uint8_t*)pem, len);
