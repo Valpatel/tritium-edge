@@ -1,6 +1,12 @@
-# ESP32 Hardware Project
+# Tritium-Edge — Software Defined IoT
 
-Multi-board ESP32-S3 display firmware targeting 6 Waveshare development boards with different display technologies (AMOLED QSPI, LCD QSPI, RGB parallel).
+Multi-family edge device management platform. ESP32-S3 Waveshare boards are the first hardware family (6 boards: AMOLED QSPI, LCD QSPI, RGB parallel). Management server handles fleet provisioning, OTA, remote config, and monitoring.
+
+## Git Conventions
+
+- **No co-authors on commits** — never add "Co-Authored-By" lines
+- Remote: `git@github.com:Valpatel/tritium-edge.git`
+- Copyright: Created by Matthew Valancy / Copyright 2026 Valpatel Software LLC / AGPL-3.0
 
 ## Directory Structure
 
