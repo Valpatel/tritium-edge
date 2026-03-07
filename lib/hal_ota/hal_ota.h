@@ -54,6 +54,9 @@ public:
     // Reboot after successful update
     void reboot();
 
+    // Confirm app is working after OTA (prevents automatic rollback)
+    bool confirmApp();
+
     // Rollback to previous firmware (if dual OTA partitions)
     bool rollback();
     bool canRollback() const;
@@ -61,6 +64,11 @@ public:
     // Partition info
     const char* getRunningPartition() const;
     size_t getMaxFirmwareSize() const;
+
+    // Firmware attestation: SHA-256 hash of running firmware partition.
+    // Returns hex string (64 chars) into `out` buffer (must be >= 65 bytes).
+    // Fleet server can verify device integrity by comparing against known hashes.
+    bool getFirmwareHash(char* out, size_t outLen) const;
 
     // Test harness - tests OTA infrastructure without actually flashing
     struct TestResult {
@@ -74,6 +82,10 @@ public:
         uint32_t test_duration_ms;
     };
     TestResult runTest();
+
+    // Validate OTA header fields (board, version). Returns true if OK.
+    // Sets error message and returns false on rejection.
+    bool validateHeader(const char* board, const char* version);
 
 private:
     void _setState(OtaState state, const char* msg = nullptr);

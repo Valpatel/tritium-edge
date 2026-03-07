@@ -1,4 +1,6 @@
 #include "hal_ota.h"
+#include "ota_header.h"
+#include "ota_verify.h"
 #include "debug_log.h"
 #include <cstring>
 #include <cstdio>
@@ -18,6 +20,7 @@ static constexpr const char* TAG = "ota";
 #include <SD_MMC.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <mbedtls/sha256.h>
 
 static WebServer* _server = nullptr;
 static OtaHAL* _instance = nullptr;
@@ -115,6 +118,54 @@ void OtaHAL::_reportProgress(size_t current, size_t total) {
     }
 }
 
+bool OtaHAL::validateHeader(const char* board, const char* version) {
+    // Board target verification: reject firmware for a different board
+    if (board && board[0] != '\0' && strcmp(board, "any") != 0) {
+#ifdef DISPLAY_DRIVER
+        // Compare against the board's display driver as an identifier
+        if (strcmp(board, DISPLAY_DRIVER) != 0) {
+            // Also check the environment/board name
+            const char* thisBoard =
+#if defined(BOARD_TOUCH_LCD_35BC)
+                "touch-lcd-35bc";
+#elif defined(BOARD_TOUCH_LCD_349)
+                "touch-lcd-349";
+#elif defined(BOARD_TOUCH_AMOLED_241B)
+                "touch-amoled-241b";
+#elif defined(BOARD_AMOLED_191M)
+                "amoled-191m";
+#elif defined(BOARD_TOUCH_AMOLED_18)
+                "touch-amoled-18";
+#elif defined(BOARD_TOUCH_LCD_43C_BOX)
+                "touch-lcd-43c-box";
+#else
+                "unknown";
+#endif
+            if (strcmp(board, thisBoard) != 0) {
+                _setError("Board mismatch: firmware for '%s', this is '%s'", board, thisBoard);
+                return false;
+            }
+        }
+#endif
+    }
+
+#ifdef OTA_ANTI_ROLLBACK
+    // Version downgrade protection
+    if (version && version[0] != '\0') {
+        int cmp = otaVersionCompare(version, _version);
+        if (cmp < 0) {
+            _setError("Version downgrade rejected: %s < %s", version, _version);
+            return false;
+        }
+        if (cmp == 0) {
+            DBG_WARN(TAG, "Same version %s — allowing re-flash", version);
+        }
+    }
+#endif
+
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // HTTP server handlers (friend functions for private member access)
 // ---------------------------------------------------------------------------
@@ -136,36 +187,270 @@ void _otaHandleResult() {
     }
 }
 
+// Push OTA state for streaming header detection + verification
+static struct {
+    uint8_t headerBuf[128];
+    size_t headerBufLen;
+    bool headerParsed;
+    bool hasOtaHeader;
+    bool isSigned;
+    bool isEncrypted;
+    bool rejected;       // Set if header validation fails
+    size_t headerSize;
+    size_t fwSize;
+    OtaSignature sig;
+    // Encryption state
+    uint8_t iv[16];
+    size_t ivConsumed;
+    bool decryptActive;
+} _pushState;
+
 void _otaHandleUpload() {
     HTTPUpload& upload = _server->upload();
 
     if (upload.status == UPLOAD_FILE_START) {
         DBG_INFO(TAG, "Push OTA start: %s", upload.filename.c_str());
+        memset(&_pushState, 0, sizeof(_pushState));
         if (_instance) {
             _instance->_setState(OtaState::WRITING, "Receiving firmware");
             _instance->_progress = 0;
         }
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-            DBG_ERROR(TAG, "Update.begin failed: %s", Update.errorString());
-            if (_instance) {
-                _instance->_setError("Update.begin failed: %s", Update.errorString());
-            }
-        }
     } else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-            DBG_ERROR(TAG, "Update.write failed: %s", Update.errorString());
-            if (_instance) {
-                _instance->_setError("Update.write failed: %s", Update.errorString());
+        if (_pushState.rejected) return;  // Skip processing after rejection
+
+        // Buffer first 128 bytes to detect OTA header
+        if (!_pushState.headerParsed) {
+            size_t canCopy = sizeof(_pushState.headerBuf) - _pushState.headerBufLen;
+            if (canCopy > upload.currentSize) canCopy = upload.currentSize;
+            memcpy(_pushState.headerBuf + _pushState.headerBufLen, upload.buf, canCopy);
+            _pushState.headerBufLen += canCopy;
+
+            if (_pushState.headerBufLen >= sizeof(_pushState.headerBuf)) {
+                _pushState.headerParsed = true;
+                OtaFirmwareHeader hdr;
+                memcpy(&hdr, _pushState.headerBuf, sizeof(hdr));
+
+                _pushState.hasOtaHeader = hdr.isValid();
+                if (_pushState.hasOtaHeader) {
+                    _pushState.isSigned = hdr.isSigned();
+                    _pushState.isEncrypted = hdr.isEncrypted();
+                    _pushState.headerSize = hdr.totalHeaderSize();
+                    _pushState.fwSize = hdr.firmware_size;
+                    if (_pushState.isSigned) {
+                        memcpy(&_pushState.sig, _pushState.headerBuf + sizeof(OtaFirmwareHeader), sizeof(OtaSignature));
+                    }
+                    DBG_INFO(TAG, "Push OTA header: v%u, fw=%u, signed=%d, encrypted=%d, ver=%s",
+                             hdr.header_version, _pushState.fwSize, _pushState.isSigned,
+                             _pushState.isEncrypted, hdr.version);
+
+#ifdef OTA_REQUIRE_SIGNATURE
+                    if (!_pushState.isSigned) {
+                        DBG_ERROR(TAG, "Push OTA rejected: unsigned firmware");
+                        _pushState.rejected = true;
+                        if (_instance) _instance->_setError("Unsigned firmware rejected");
+                        return;
+                    }
+#endif
+                    if (_instance && !_instance->validateHeader(hdr.board, hdr.version)) {
+                        _pushState.rejected = true;
+                        return;
+                    }
+
+                    if (_pushState.isEncrypted && _pushState.fwSize <= 16) {
+                        _pushState.rejected = true;
+                        if (_instance) _instance->_setError("Encrypted payload too small");
+                        return;
+                    }
+
+                    size_t flashSize = _pushState.isEncrypted ? _pushState.fwSize - 16 : _pushState.fwSize;
+                    if (!Update.begin(flashSize)) {
+                        DBG_ERROR(TAG, "Update.begin failed: %s", Update.errorString());
+                        _pushState.rejected = true;
+                        if (_instance) _instance->_setError("Update.begin failed: %s", Update.errorString());
+                        return;
+                    }
+
+                    // Start streaming verification
+                    OtaVerify::crc32Begin();
+                    if (_pushState.isSigned) OtaVerify::beginVerify();
+
+                    // Write any firmware data from the header buffer
+                    if (_pushState.headerBufLen > _pushState.headerSize) {
+                        size_t extra = _pushState.headerBufLen - _pushState.headerSize;
+                        uint8_t* fwStart = _pushState.headerBuf + _pushState.headerSize;
+
+                        // CRC32/signature over ciphertext
+                        OtaVerify::crc32Update(fwStart, extra);
+                        if (_pushState.isSigned) OtaVerify::updateVerify(fwStart, extra);
+
+                        if (_pushState.isEncrypted) {
+                            // Extract IV
+                            size_t ivBytes = (extra < 16) ? extra : 16;
+                            memcpy(_pushState.iv, fwStart, ivBytes);
+                            _pushState.ivConsumed = ivBytes;
+
+                            if (_pushState.ivConsumed >= 16) {
+                                if (!OtaVerify::decryptBegin(_pushState.iv)) {
+                                    _pushState.rejected = true;
+                                    Update.abort();
+                                    if (_instance) _instance->_setError("Decryption init failed");
+                                    return;
+                                }
+                                _pushState.decryptActive = true;
+                                if (extra > 16) {
+                                    OtaVerify::decryptBlock(fwStart + 16, extra - 16);
+                                    Update.write(fwStart + 16, extra - 16);
+                                }
+                            }
+                        } else {
+                            Update.write(fwStart, extra);
+                        }
+                    }
+                } else {
+                    // Raw binary — no OTA header
+#ifdef OTA_REQUIRE_SIGNATURE
+                    DBG_ERROR(TAG, "Push OTA rejected: raw binary");
+                    _pushState.rejected = true;
+                    if (_instance) _instance->_setError("Raw firmware rejected");
+                    return;
+#endif
+                    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+                        _pushState.rejected = true;
+                        if (_instance) _instance->_setError("Update.begin failed: %s", Update.errorString());
+                        return;
+                    }
+                    Update.write(_pushState.headerBuf, _pushState.headerBufLen);
+                }
+
+                // Write remaining data from this chunk
+                size_t remaining = upload.currentSize - canCopy;
+                if (remaining > 0) {
+                    if (_pushState.hasOtaHeader) {
+                        OtaVerify::crc32Update(upload.buf + canCopy, remaining);
+                        if (_pushState.isSigned) OtaVerify::updateVerify(upload.buf + canCopy, remaining);
+
+                        if (_pushState.isEncrypted) {
+                            uint8_t* rPtr = upload.buf + canCopy;
+                            size_t rLen = remaining;
+
+                            if (_pushState.ivConsumed < 16) {
+                                size_t ivNeeded = 16 - _pushState.ivConsumed;
+                                size_t ivBytes = (rLen < ivNeeded) ? rLen : ivNeeded;
+                                memcpy(_pushState.iv + _pushState.ivConsumed, rPtr, ivBytes);
+                                _pushState.ivConsumed += ivBytes;
+                                rPtr += ivBytes;
+                                rLen -= ivBytes;
+                                if (_pushState.ivConsumed >= 16) {
+                                    if (!OtaVerify::decryptBegin(_pushState.iv)) {
+                                        _pushState.rejected = true;
+                                        Update.abort();
+                                        if (_instance) _instance->_setError("Decryption init failed");
+                                        return;
+                                    }
+                                    _pushState.decryptActive = true;
+                                }
+                            }
+                            if (_pushState.decryptActive && rLen > 0) {
+                                OtaVerify::decryptBlock(rPtr, rLen);
+                                Update.write(rPtr, rLen);
+                            }
+                        } else {
+                            Update.write(upload.buf + canCopy, remaining);
+                        }
+                    } else {
+                        Update.write(upload.buf + canCopy, remaining);
+                    }
+                }
             }
-        } else if (_instance) {
-            size_t written = Update.progress();
-            size_t total = Update.size();
-            _instance->_reportProgress(written, total > 0 ? total : written);
+            // Still buffering header — don't write yet
+        } else {
+            // Header already parsed, stream firmware data
+            if (_pushState.hasOtaHeader) {
+                // CRC32/signature over raw (possibly encrypted) data
+                OtaVerify::crc32Update(upload.buf, upload.currentSize);
+                if (_pushState.isSigned) OtaVerify::updateVerify(upload.buf, upload.currentSize);
+            }
+
+            if (_pushState.isEncrypted) {
+                uint8_t* dataPtr = upload.buf;
+                size_t dataLen = upload.currentSize;
+
+                // Still extracting IV?
+                if (_pushState.ivConsumed < 16) {
+                    size_t ivNeeded = 16 - _pushState.ivConsumed;
+                    size_t ivBytes = (dataLen < ivNeeded) ? dataLen : ivNeeded;
+                    memcpy(_pushState.iv + _pushState.ivConsumed, dataPtr, ivBytes);
+                    _pushState.ivConsumed += ivBytes;
+                    dataPtr += ivBytes;
+                    dataLen -= ivBytes;
+
+                    if (_pushState.ivConsumed >= 16) {
+                        if (!OtaVerify::decryptBegin(_pushState.iv)) {
+                            _pushState.rejected = true;
+                            Update.abort();
+                            if (_instance) _instance->_setError("Decryption init failed");
+                            return;
+                        }
+                        _pushState.decryptActive = true;
+                    }
+                }
+
+                if (_pushState.decryptActive && dataLen > 0) {
+                    OtaVerify::decryptBlock(dataPtr, dataLen);
+                    if (Update.write(dataPtr, dataLen) != dataLen) {
+                        DBG_ERROR(TAG, "Update.write failed: %s", Update.errorString());
+                        if (_instance) _instance->_setError("Update.write failed: %s", Update.errorString());
+                    }
+                }
+            } else {
+                if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+                    DBG_ERROR(TAG, "Update.write failed: %s", Update.errorString());
+                    if (_instance) _instance->_setError("Update.write failed: %s", Update.errorString());
+                }
+            }
+
+            if (_instance) {
+                size_t written = Update.progress();
+                size_t total = _pushState.fwSize > 0 ? _pushState.fwSize : Update.size();
+                _instance->_reportProgress(written, total > 0 ? total : written);
+            }
         }
     } else if (upload.status == UPLOAD_FILE_END) {
+        if (_pushState.decryptActive) OtaVerify::decryptEnd();
+        if (_pushState.rejected) {
+            Update.abort();
+            return;
+        }
         if (_instance) {
             _instance->_setState(OtaState::VERIFYING, "Verifying firmware");
         }
+
+        // Verify CRC32 and signature for OTA-headered uploads
+        if (_pushState.hasOtaHeader) {
+            OtaFirmwareHeader hdr;
+            memcpy(&hdr, _pushState.headerBuf, sizeof(hdr));
+            uint32_t actualCrc = OtaVerify::crc32Finalize();
+            if (actualCrc != hdr.firmware_crc32) {
+                DBG_ERROR(TAG, "Push OTA CRC mismatch: expected 0x%08X, got 0x%08X",
+                         hdr.firmware_crc32, actualCrc);
+                Update.abort();
+                if (_instance) _instance->_setError("CRC32 mismatch");
+                return;
+            }
+            DBG_INFO(TAG, "Push OTA CRC32 OK: 0x%08X", actualCrc);
+
+            if (_pushState.isSigned) {
+                bool sigOk = OtaVerify::finalizeVerify(_pushState.sig.r, _pushState.sig.s);
+                if (!sigOk) {
+                    DBG_ERROR(TAG, "Push OTA signature INVALID");
+                    Update.abort();
+                    if (_instance) _instance->_setError("ECDSA signature verification FAILED");
+                    return;
+                }
+                DBG_INFO(TAG, "Push OTA ECDSA signature verified OK");
+            }
+        }
+
         if (Update.end(true)) {
             DBG_INFO(TAG, "Push OTA success, %u bytes", upload.totalSize);
         } else {
@@ -260,49 +545,299 @@ bool OtaHAL::updateFromUrl(const char* url) {
         return false;
     }
 
-    DBG_INFO(TAG, "Firmware size: %d bytes", contentLength);
+    DBG_INFO(TAG, "Download size: %d bytes", contentLength);
 
-    if (!Update.begin(contentLength)) {
-        _setError("Not enough space for update: %s", Update.errorString());
+    WiFiClient* stream = http.getStreamPtr();
+
+    // Read first 128 bytes to check for OTA header
+    uint8_t headerBuf[128];
+    size_t headerRead = 0;
+    while (headerRead < sizeof(headerBuf) && http.connected()) {
+        size_t avail = stream->available();
+        if (avail) {
+            size_t toRead = ((sizeof(headerBuf) - headerRead) < avail) ?
+                            (sizeof(headerBuf) - headerRead) : avail;
+            size_t n = stream->readBytes(headerBuf + headerRead, toRead);
+            headerRead += n;
+        }
+        delay(1);
+    }
+
+    OtaFirmwareHeader hdr;
+    OtaSignature sig = {};
+    memcpy(&hdr, headerBuf, sizeof(hdr));
+
+    bool hasOtaHeader = hdr.isValid();
+    bool isSigned = hasOtaHeader && hdr.isSigned();
+    size_t headerSize = 0;
+    size_t fwSize = 0;
+
+    bool isEncrypted = false;
+
+    if (hasOtaHeader) {
+        headerSize = hdr.totalHeaderSize();
+        fwSize = hdr.firmware_size;
+        isEncrypted = hdr.isEncrypted();
+        DBG_INFO(TAG, "OTA header: v%u, fw=%u bytes, signed=%d, encrypted=%d, ver=%s",
+                 hdr.header_version, fwSize, isSigned, isEncrypted, hdr.version);
+
+        if (isSigned) {
+            memcpy(&sig, headerBuf + sizeof(OtaFirmwareHeader), sizeof(sig));
+        }
+
+#ifdef OTA_REQUIRE_SIGNATURE
+        if (!isSigned) {
+            _setError("Firmware not signed (OTA_REQUIRE_SIGNATURE)");
+            http.end();
+            return false;
+        }
+#endif
+
+        // Validate board target and version
+        if (!validateHeader(hdr.board, hdr.version)) {
+            http.end();
+            return false;
+        }
+
+        // Verify firmware size vs content length
+        if (fwSize + headerSize != (size_t)contentLength) {
+            _setError("Size mismatch: hdr says %u+%u, got %d", fwSize, headerSize, contentLength);
+            http.end();
+            return false;
+        }
+
+        // Encrypted payload: first 16 bytes are IV, rest is ciphertext
+        if (isEncrypted && fwSize <= 16) {
+            _setError("Encrypted payload too small: %u bytes", fwSize);
+            http.end();
+            return false;
+        }
+    } else {
+        // Raw binary — no header
+        fwSize = contentLength;
+        DBG_INFO(TAG, "Raw firmware (no OTA header), %u bytes", fwSize);
+
+#ifdef OTA_REQUIRE_SIGNATURE
+        _setError("Raw firmware rejected (OTA_REQUIRE_SIGNATURE)");
+        http.end();
+        return false;
+#endif
+    }
+
+    // Sanity check firmware size
+    static constexpr size_t MIN_FW_SIZE = 32768;  // 32KB minimum
+    size_t flashSize = isEncrypted ? fwSize - 16 : fwSize;  // Subtract IV for encrypted
+    if (flashSize < MIN_FW_SIZE) {
+        _setError("Firmware too small: %u bytes (min %u)", flashSize, MIN_FW_SIZE);
+        http.end();
+        return false;
+    }
+
+    if (!Update.begin(flashSize)) {
+        _setError("Not enough space: %s", Update.errorString());
         http.end();
         return false;
     }
 
     _setState(OtaState::WRITING, "Writing firmware to flash");
 
-    WiFiClient* stream = http.getStreamPtr();
-    uint8_t buf[1024];
-    size_t written = 0;
+    // Start streaming verification
+    OtaVerify::crc32Begin();
+    bool doSigVerify = isSigned;
+    if (doSigVerify) {
+        // Signature covers firmware data only (not header)
+        OtaVerify::beginVerify();
+    }
 
-    while (http.connected() && written < (size_t)contentLength) {
-        size_t available = stream->available();
-        if (available) {
-            size_t toRead = (available < sizeof(buf)) ? available : sizeof(buf);
-            size_t bytesRead = stream->readBytes(buf, toRead);
-            size_t bytesWritten = Update.write(buf, bytesRead);
-            if (bytesWritten != bytesRead) {
-                _setError("Write failed at %u bytes: %s", written, Update.errorString());
+    uint8_t buf[1024];
+    size_t written = 0;       // Bytes of payload consumed (including IV for encrypted)
+    size_t flashWritten = 0;  // Bytes written to flash (excludes IV)
+
+    // For encrypted firmware, we need to extract the 16-byte IV first
+    uint8_t iv[16];
+    bool decryptActive = false;
+    size_t ivConsumed = 0;  // How many IV bytes we've extracted so far
+
+    // Write any firmware data already buffered in headerBuf
+    if (hasOtaHeader && headerRead > headerSize) {
+        size_t extra = headerRead - headerSize;
+        uint8_t* fwStart = headerBuf + headerSize;
+
+        OtaVerify::crc32Update(fwStart, extra);
+        if (doSigVerify) OtaVerify::updateVerify(fwStart, extra);
+        written += extra;
+
+        if (isEncrypted) {
+            // Extract IV from the start of the payload
+            size_t ivBytes = (extra < 16) ? extra : 16;
+            memcpy(iv, fwStart, ivBytes);
+            ivConsumed = ivBytes;
+
+            if (ivConsumed >= 16) {
+                if (!OtaVerify::decryptBegin(iv)) {
+                    _setError("Decryption init failed");
+                    Update.abort();
+                    http.end();
+                    return false;
+                }
+                decryptActive = true;
+                // Write any data beyond IV
+                if (extra > 16) {
+                    size_t dataLen = extra - 16;
+                    OtaVerify::decryptBlock(fwStart + 16, dataLen);
+                    size_t w = Update.write(fwStart + 16, dataLen);
+                    if (w != dataLen) {
+                        _setError("Write failed at header overflow");
+                        Update.abort();
+                        http.end();
+                        OtaVerify::decryptEnd();
+                        return false;
+                    }
+                    flashWritten += w;
+                }
+            }
+        } else {
+            size_t w = Update.write(fwStart, extra);
+            if (w != extra) {
+                _setError("Write failed at header overflow");
                 Update.abort();
                 http.end();
                 return false;
             }
-            written += bytesWritten;
-            _reportProgress(written, contentLength);
+            flashWritten += w;
+        }
+    } else if (!hasOtaHeader) {
+        // Raw binary — write the header bytes as firmware
+        size_t w = Update.write(headerBuf, headerRead);
+        if (w != headerRead) {
+            _setError("Write failed at start");
+            Update.abort();
+            http.end();
+            return false;
+        }
+        OtaVerify::crc32Update(headerBuf, headerRead);
+        written += headerRead;
+        flashWritten += w;
+    }
+
+    // Stream remaining firmware data (with stall timeout)
+    static constexpr uint32_t STALL_TIMEOUT_MS = 30000;  // 30s stall timeout
+    uint32_t lastDataMs = millis();
+    while (http.connected() && written < fwSize) {
+        size_t available = stream->available();
+        if (available) {
+            lastDataMs = millis();
+            size_t toRead = (available < sizeof(buf)) ? available : sizeof(buf);
+            if (toRead > fwSize - written) toRead = fwSize - written;
+            size_t bytesRead = stream->readBytes(buf, toRead);
+
+            // CRC32 and signature cover the ciphertext (encrypt-then-sign)
+            OtaVerify::crc32Update(buf, bytesRead);
+            if (doSigVerify) OtaVerify::updateVerify(buf, bytesRead);
+            written += bytesRead;
+
+            if (isEncrypted) {
+                uint8_t* dataPtr = buf;
+                size_t dataLen = bytesRead;
+
+                // Still extracting IV?
+                if (ivConsumed < 16) {
+                    size_t ivNeeded = 16 - ivConsumed;
+                    size_t ivBytes = (dataLen < ivNeeded) ? dataLen : ivNeeded;
+                    memcpy(iv + ivConsumed, dataPtr, ivBytes);
+                    ivConsumed += ivBytes;
+                    dataPtr += ivBytes;
+                    dataLen -= ivBytes;
+
+                    if (ivConsumed >= 16) {
+                        if (!OtaVerify::decryptBegin(iv)) {
+                            _setError("Decryption init failed");
+                            Update.abort();
+                            http.end();
+                            return false;
+                        }
+                        decryptActive = true;
+                    }
+                }
+
+                // Decrypt and write remaining data
+                if (decryptActive && dataLen > 0) {
+                    OtaVerify::decryptBlock(dataPtr, dataLen);
+                    size_t w = Update.write(dataPtr, dataLen);
+                    if (w != dataLen) {
+                        _setError("Write failed at %u: %s", flashWritten, Update.errorString());
+                        Update.abort();
+                        http.end();
+                        OtaVerify::decryptEnd();
+                        return false;
+                    }
+                    flashWritten += w;
+                }
+            } else {
+                size_t bytesWritten = Update.write(buf, bytesRead);
+                if (bytesWritten != bytesRead) {
+                    _setError("Write failed at %u: %s", flashWritten, Update.errorString());
+                    Update.abort();
+                    http.end();
+                    return false;
+                }
+                flashWritten += bytesWritten;
+            }
+            _reportProgress(written, fwSize);
+        } else if (millis() - lastDataMs > STALL_TIMEOUT_MS) {
+            _setError("Download stalled at %u/%u bytes", written, fwSize);
+            Update.abort();
+            http.end();
+            if (decryptActive) OtaVerify::decryptEnd();
+            return false;
         }
         delay(1);
+    }
+
+    if (decryptActive) OtaVerify::decryptEnd();
+
+    if (written < fwSize) {
+        _setError("Download incomplete: %u/%u bytes", written, fwSize);
+        Update.abort();
+        http.end();
+        return false;
     }
 
     http.end();
 
     _setState(OtaState::VERIFYING, "Verifying firmware");
 
+    // CRC32 verification
+    if (hasOtaHeader) {
+        uint32_t actualCrc = OtaVerify::crc32Finalize();
+        if (actualCrc != hdr.firmware_crc32) {
+            _setError("CRC32 mismatch: expected 0x%08X, got 0x%08X",
+                      hdr.firmware_crc32, actualCrc);
+            Update.abort();
+            return false;
+        }
+        DBG_INFO(TAG, "CRC32 OK: 0x%08X", actualCrc);
+    }
+
+    // Signature verification
+    if (doSigVerify) {
+        bool sigOk = OtaVerify::finalizeVerify(sig.r, sig.s);
+        if (!sigOk) {
+            _setError("ECDSA signature verification FAILED");
+            Update.abort();
+            return false;
+        }
+        DBG_INFO(TAG, "ECDSA signature verified OK");
+    }
+
     if (!Update.end(true)) {
-        _setError("Update verification failed: %s", Update.errorString());
+        _setError("Flash verification failed: %s", Update.errorString());
         return false;
     }
 
     _setState(OtaState::READY_REBOOT, "Update complete, ready to reboot");
-    DBG_INFO(TAG, "Pull OTA complete, %u bytes written", written);
+    DBG_INFO(TAG, "Pull OTA complete: %u bytes written, signed=%d, encrypted=%d",
+             flashWritten, doSigVerify, isEncrypted);
     return true;
 }
 
@@ -333,9 +868,85 @@ bool OtaHAL::updateFromSD(const char* path) {
         return false;
     }
 
-    DBG_INFO(TAG, "Firmware file size: %u bytes", fileSize);
+    DBG_INFO(TAG, "SD file size: %u bytes", fileSize);
 
-    if (!Update.begin(fileSize)) {
+    // Read first 128 bytes to check for OTA header
+    uint8_t headerBuf[128];
+    size_t headerRead = firmware.read(headerBuf, sizeof(headerBuf));
+
+    OtaFirmwareHeader hdr;
+    OtaSignature sig = {};
+    memcpy(&hdr, headerBuf, sizeof(hdr));
+
+    bool hasOtaHeader = hdr.isValid();
+    bool isSigned = hasOtaHeader && hdr.isSigned();
+    size_t headerSize = 0;
+    size_t fwSize = 0;
+
+    bool isEncrypted = false;
+
+    if (hasOtaHeader) {
+        headerSize = hdr.totalHeaderSize();
+        fwSize = hdr.firmware_size;
+        isEncrypted = hdr.isEncrypted();
+        DBG_INFO(TAG, "OTA header: v%u, fw=%u bytes, signed=%d, encrypted=%d, ver=%s",
+                 hdr.header_version, fwSize, isSigned, isEncrypted, hdr.version);
+
+        if (isSigned) {
+            memcpy(&sig, headerBuf + sizeof(OtaFirmwareHeader), sizeof(sig));
+        }
+
+#ifdef OTA_REQUIRE_SIGNATURE
+        if (!isSigned) {
+            _setError("SD firmware not signed (OTA_REQUIRE_SIGNATURE)");
+            firmware.close();
+            return false;
+        }
+#endif
+
+        // Validate board target and version
+        if (!validateHeader(hdr.board, hdr.version)) {
+            firmware.close();
+            return false;
+        }
+
+        if (fwSize + headerSize != fileSize) {
+            _setError("SD size mismatch: hdr %u+%u != file %u", fwSize, headerSize, fileSize);
+            firmware.close();
+            return false;
+        }
+
+        if (isEncrypted && fwSize <= 16) {
+            _setError("Encrypted payload too small: %u bytes", fwSize);
+            firmware.close();
+            return false;
+        }
+
+        // Seek to start of firmware data (payload)
+        firmware.seek(headerSize);
+    } else {
+        // Raw binary
+        fwSize = fileSize;
+        firmware.seek(0);
+        DBG_INFO(TAG, "Raw firmware (no OTA header), %u bytes", fwSize);
+
+#ifdef OTA_REQUIRE_SIGNATURE
+        _setError("SD raw firmware rejected (OTA_REQUIRE_SIGNATURE)");
+        firmware.close();
+        return false;
+#endif
+    }
+
+    // Sanity check firmware size
+    static constexpr size_t MIN_FW_SIZE = 32768;  // 32KB minimum
+    size_t flashSize = isEncrypted ? fwSize - 16 : fwSize;
+    if (flashSize < MIN_FW_SIZE) {
+        _setError("Firmware too small: %u bytes (min %u)", flashSize, MIN_FW_SIZE);
+        firmware.close();
+        return false;
+    }
+
+    if (!Update.begin(flashSize)) {
         _setError("Not enough space: %s", Update.errorString());
         firmware.close();
         return false;
@@ -343,42 +954,113 @@ bool OtaHAL::updateFromSD(const char* path) {
 
     _setState(OtaState::WRITING, "Writing firmware from SD");
 
-    uint8_t buf[1024];
-    size_t written = 0;
+    OtaVerify::crc32Begin();
+    bool doSigVerify = isSigned;
+    if (doSigVerify) {
+        OtaVerify::beginVerify();
+    }
 
-    while (firmware.available()) {
-        size_t toRead = firmware.available();
-        if (toRead > sizeof(buf)) toRead = sizeof(buf);
-        size_t bytesRead = firmware.read(buf, toRead);
-        size_t bytesWritten = Update.write(buf, bytesRead);
-        if (bytesWritten != bytesRead) {
-            _setError("Write failed at %u bytes: %s", written, Update.errorString());
+    // For encrypted firmware, read IV first
+    bool decryptActive = false;
+    if (isEncrypted) {
+        uint8_t iv[16];
+        size_t ivRead = firmware.read(iv, 16);
+        if (ivRead != 16) {
+            _setError("Failed to read encryption IV");
             Update.abort();
             firmware.close();
             return false;
         }
-        written += bytesWritten;
-        _reportProgress(written, fileSize);
+        // CRC32/signature cover the IV too (it's part of the payload)
+        OtaVerify::crc32Update(iv, 16);
+        if (doSigVerify) OtaVerify::updateVerify(iv, 16);
+
+        if (!OtaVerify::decryptBegin(iv)) {
+            _setError("Decryption init failed");
+            Update.abort();
+            firmware.close();
+            return false;
+        }
+        decryptActive = true;
+        DBG_INFO(TAG, "AES-256-CTR decryption started, IV=%02x%02x%02x%02x...",
+                 iv[0], iv[1], iv[2], iv[3]);
     }
+
+    uint8_t buf[1024];
+    size_t payloadRead = isEncrypted ? 16 : 0;  // IV already consumed
+    size_t flashWritten = 0;
+
+    while (payloadRead < fwSize && firmware.available()) {
+        size_t toRead = fwSize - payloadRead;
+        if (toRead > sizeof(buf)) toRead = sizeof(buf);
+        size_t bytesRead = firmware.read(buf, toRead);
+
+        // CRC32 and signature cover ciphertext (encrypt-then-sign)
+        OtaVerify::crc32Update(buf, bytesRead);
+        if (doSigVerify) OtaVerify::updateVerify(buf, bytesRead);
+        payloadRead += bytesRead;
+
+        // Decrypt in-place before writing to flash
+        if (decryptActive) {
+            OtaVerify::decryptBlock(buf, bytesRead);
+        }
+
+        size_t bytesWritten = Update.write(buf, bytesRead);
+        if (bytesWritten != bytesRead) {
+            _setError("Write failed at %u: %s", flashWritten, Update.errorString());
+            Update.abort();
+            firmware.close();
+            if (decryptActive) OtaVerify::decryptEnd();
+            return false;
+        }
+        flashWritten += bytesWritten;
+        _reportProgress(payloadRead, fwSize);
+    }
+
+    if (decryptActive) OtaVerify::decryptEnd();
 
     firmware.close();
 
     _setState(OtaState::VERIFYING, "Verifying firmware");
 
+    // CRC32 verification
+    if (hasOtaHeader) {
+        uint32_t actualCrc = OtaVerify::crc32Finalize();
+        if (actualCrc != hdr.firmware_crc32) {
+            _setError("CRC32 mismatch: expected 0x%08X, got 0x%08X",
+                      hdr.firmware_crc32, actualCrc);
+            Update.abort();
+            return false;
+        }
+        DBG_INFO(TAG, "CRC32 OK: 0x%08X", actualCrc);
+    }
+
+    // Signature verification
+    if (doSigVerify) {
+        bool sigOk = OtaVerify::finalizeVerify(sig.r, sig.s);
+        if (!sigOk) {
+            _setError("ECDSA signature verification FAILED");
+            Update.abort();
+            return false;
+        }
+        DBG_INFO(TAG, "ECDSA signature verified OK");
+    }
+
     if (!Update.end(true)) {
-        _setError("Verification failed: %s", Update.errorString());
+        _setError("Flash verification failed: %s", Update.errorString());
         return false;
     }
 
-    // Rename firmware.bin to firmware.bin.bak
+    // Rename firmware to .bak
     char bakPath[128];
     snprintf(bakPath, sizeof(bakPath), "%s.bak", path);
-    SD_MMC.remove(bakPath);  // Remove old backup if present
+    SD_MMC.remove(bakPath);
     SD_MMC.rename(path, bakPath);
     DBG_INFO(TAG, "Renamed %s -> %s", path, bakPath);
 
     _setState(OtaState::READY_REBOOT, "SD update complete, ready to reboot");
-    DBG_INFO(TAG, "SD OTA complete, %u bytes written", written);
+    DBG_INFO(TAG, "SD OTA complete: %u bytes written, signed=%d, encrypted=%d",
+             flashWritten, doSigVerify, isEncrypted);
     return true;
 }
 
@@ -418,6 +1100,16 @@ void OtaHAL::reboot() {
     ESP.restart();
 }
 
+bool OtaHAL::confirmApp() {
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+        DBG_INFO(TAG, "App confirmed valid (rollback cancelled)");
+        return true;
+    }
+    DBG_WARN(TAG, "confirmApp: esp_err 0x%x (may already be confirmed)", err);
+    return err == ESP_OK;
+}
+
 bool OtaHAL::rollback() {
     const esp_partition_t* prev = esp_ota_get_last_invalid_partition();
     if (!prev) {
@@ -455,6 +1147,44 @@ const char* OtaHAL::getRunningPartition() const {
 size_t OtaHAL::getMaxFirmwareSize() const {
     const esp_partition_t* part = esp_ota_get_next_update_partition(nullptr);
     return part ? part->size : 0;
+}
+
+bool OtaHAL::getFirmwareHash(char* out, size_t outLen) const {
+    if (!out || outLen < 65) return false;
+
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (!running) return false;
+
+    // Get actual firmware size from app description
+    const esp_app_desc_t* desc = esp_ota_get_app_description();
+    // Use partition size as upper bound if desc unavailable
+    size_t fwSize = running->size;
+
+    // Stream SHA-256 over partition data in 4KB chunks
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);
+
+    uint8_t buf[4096];
+    size_t offset = 0;
+    while (offset < fwSize) {
+        size_t toRead = (fwSize - offset < sizeof(buf)) ? fwSize - offset : sizeof(buf);
+        if (esp_partition_read(running, offset, buf, toRead) != ESP_OK) {
+            mbedtls_sha256_free(&ctx);
+            return false;
+        }
+        mbedtls_sha256_update(&ctx, buf, toRead);
+        offset += toRead;
+    }
+
+    uint8_t hash[32];
+    mbedtls_sha256_finish(&ctx, hash);
+    mbedtls_sha256_free(&ctx);
+
+    for (int i = 0; i < 32; i++) {
+        snprintf(out + i * 2, 3, "%02x", hash[i]);
+    }
+    return true;
 }
 
 OtaHAL::TestResult OtaHAL::runTest() {
@@ -545,10 +1275,12 @@ void OtaHAL::onProgress(OtaProgressCb cb) { _progressCb = cb; }
 void OtaHAL::onStateChange(OtaStateCb cb) { _stateCb = cb; }
 void OtaHAL::process() {}
 void OtaHAL::reboot() {}
+bool OtaHAL::confirmApp() { return true; }
 bool OtaHAL::rollback() { return false; }
 bool OtaHAL::canRollback() const { return false; }
 const char* OtaHAL::getRunningPartition() const { return "simulator"; }
 size_t OtaHAL::getMaxFirmwareSize() const { return 0; }
+bool OtaHAL::getFirmwareHash(char*, size_t) const { return false; }
 
 OtaHAL::TestResult OtaHAL::runTest() {
     TestResult r = {};
