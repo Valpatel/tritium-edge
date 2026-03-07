@@ -81,6 +81,11 @@ bool IMUHAL::initLgfx(uint8_t i2c_port, uint8_t addr) {
     _addr = addr;
     _wire = nullptr;
 
+    // Ensure lgfx I2C bus is initialized (may already be set up by touch driver)
+#if defined(IMU_SDA) && defined(IMU_SCL)
+    lgfx::i2c::init(i2c_port, IMU_SDA, IMU_SCL);
+#endif
+
     return initDevice();
 #endif
 }
@@ -146,10 +151,12 @@ bool IMUHAL::readAll(float &ax, float &ay, float &az, float &gx, float &gy, floa
 }
 
 bool IMUHAL::detectMotion(float threshold) {
-    float ax, ay, az;
-    if (!readAccel(ax, ay, az)) return false;
-    float magnitude = sqrtf(ax * ax + ay * ay + az * az);
-    return fabsf(magnitude - 1.0f) > (threshold - 1.0f);
+    float gx, gy, gz;
+    if (!readGyro(gx, gy, gz)) return false;
+    // Gyro reads near-zero when stationary regardless of orientation.
+    // Threshold is in degrees/sec — triggers on rotation/shake.
+    float magnitude = sqrtf(gx * gx + gy * gy + gz * gz);
+    return magnitude > threshold;
 }
 
 void IMUHAL::writeReg(uint8_t reg, uint8_t val) {
