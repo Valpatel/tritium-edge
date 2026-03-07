@@ -37,10 +37,21 @@ void setup() {
     DBG_INFO("main", "Board: %s", DISPLAY_DRIVER);
     DBG_INFO("main", "Display: %dx%d via %s", DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_IF);
 
+    // Board-specific pre-init (I/O expander display reset, etc.)
+#if defined(BOARD_TOUCH_LCD_35BC)
+    tca9554_reset_display();
+#endif
+
     display.init();
     display.setRotation(DISPLAY_ROTATION);
     display.fillScreen(TFT_BLACK);
     display.setBrightness(255);
+
+    // Manual backlight fallback — only for 3.5B-C where Light_PWM alone isn't enough
+#if defined(BOARD_TOUCH_LCD_35BC) && defined(LCD_BL) && LCD_BL >= 0
+    pinMode(LCD_BL, OUTPUT);
+    digitalWrite(LCD_BL, HIGH);
+#endif
 
     DBG_INFO("main", "Display ready: %dx%d (rotation %d)",
              display.width(), display.height(), DISPLAY_ROTATION);
