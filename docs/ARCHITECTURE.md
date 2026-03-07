@@ -54,6 +54,8 @@ points.
 | Config-as-code | Pydantic settings with environment variable overrides. No magic config files. |
 | CYBERCORE aesthetic | Cyan `#00f0ff`, magenta `#ff2a6d`, green `#05ffa1`, yellow `#fcee0a`. No frontend frameworks. |
 | Transport agnostic | The mesh communicates through *any* available channel. WiFi, BLE, LoRa, ESP-NOW, 4G, Zigbee, sound, light — if it can carry bits, it's a transport. |
+| Self-replicating | Every node is a seed vault. Firmware, configs, models, code — carried on SD cards and flash. New nodes bootstrap from any existing node. The mesh grows itself. |
+| AGPL-3.0 by design | The license reinforces the architecture. Code must remain open. Improvements are shared. The mesh spreads, and so does the source. |
 
 ### Communications Philosophy: Every Channel is a Transport
 
