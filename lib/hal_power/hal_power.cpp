@@ -1,4 +1,5 @@
 #include "hal_power.h"
+#include "debug_log.h"
 
 #ifdef SIMULATOR
 
@@ -41,7 +42,11 @@ void PowerHAL::poll() {}
 #define AXP2101_ICC_SET        0x62
 #define AXP2101_ADC_CTRL       0x30
 
-#define ADC_VDIV_RATIO         2.0f
+// Board can override voltage divider ratio (e.g. 3.49 board uses 3x divider)
+#ifndef BAT_ADC_DIVIDER
+#define BAT_ADC_DIVIDER        2.0f
+#endif
+#define ADC_VDIV_RATIO         BAT_ADC_DIVIDER
 
 bool PowerHAL::init(TwoWire &wire) {
     _wire = &wire;
@@ -80,12 +85,17 @@ bool PowerHAL::initLgfx(uint8_t i2c_port, uint8_t addr) {
     _addr = addr;
     _wire = nullptr;
 
+    DBG_INFO("power", "initLgfx port=%d addr=0x%02X", i2c_port, addr);
+
 #if defined(HAS_PMIC) && HAS_PMIC
+    DBG_INFO("power", "Trying AXP2101 PMIC...");
     if (initAXP2101()) {
         _has_pmic = true;
         _initialized = true;
+        DBG_INFO("power", "Using PMIC for battery");
         return true;
     }
+    DBG_WARN("power", "AXP2101 init failed, falling through");
 #endif
 
 #if defined(BAT_ADC_PIN) && BAT_ADC_PIN >= 0
@@ -93,9 +103,11 @@ bool PowerHAL::initLgfx(uint8_t i2c_port, uint8_t addr) {
     analogSetAttenuation(ADC_11db);
     _has_adc = true;
     _initialized = true;
+    DBG_INFO("power", "Using ADC pin %d for battery", BAT_ADC_PIN);
     return true;
 #endif
 
+    DBG_WARN("power", "No battery source available");
     _initialized = true;
     return true;
 }
@@ -110,9 +122,25 @@ bool PowerHAL::initAXP2101() {
         _wire->beginTransmission(_addr);
         if (_wire->endTransmission() != 0) return false;
     }
-    uint8_t id = readReg(AXP2101_CHIP_ID);
-    if ((id & 0xCF) != 0x47) return false;
+
+    // Try a few times — lgfx I2C bus may need a moment after touch init
+    uint8_t id = 0;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        id = readReg(AXP2101_CHIP_ID);
+        if ((id & 0xCF) == 0x47) break;
+        delay(10);
+    }
+    DBG_INFO("power", "AXP2101 chip ID: 0x%02X (addr=0x%02X, lgfx=%d, port=%d)",
+             id, _addr, _use_lgfx, _lgfx_port);
+    // AXP2101 family IDs: 0x47, 0x4A, and other variants in the 0x4x range
+    if ((id & 0xF0) != 0x40) {
+        DBG_WARN("power", "AXP2101 not found (expected 0x4x, got 0x%02X)", id);
+        return false;
+    }
+
+    // Enable VBAT and TS ADC channels
     writeReg(AXP2101_ADC_CTRL, 0x03);
+    DBG_INFO("power", "AXP2101 initialized OK");
     return true;
 }
 
@@ -198,6 +226,7 @@ void PowerHAL::poll() {
 float PowerHAL::axp_getBatteryVoltage() {
     uint8_t h = readReg(AXP2101_VBAT_H);
     uint8_t l = readReg(AXP2101_VBAT_L);
+    // AXP2101 VBAT registers return millivolts as H8L8 (16-bit)
     return ((uint16_t)(h << 8) | l) * 0.001f;
 }
 
