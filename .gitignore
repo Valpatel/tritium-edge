@@ -10,3 +10,6 @@ Thumbs.db
 
 # Reference repos are large — download with scripts, don't commit
 references/
+keys/ota_signing_key.pem
+server/.venv/
+server/fleet_data/
