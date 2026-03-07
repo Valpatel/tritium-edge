@@ -19,7 +19,7 @@
 #define DISPLAY_BPP         16
 #define DISPLAY_WIDTH       172
 #define DISPLAY_HEIGHT      640
-#define DISPLAY_ROTATION    0   // 0=portrait, 1=landscape CW, 2=portrait 180, 3=landscape CCW
+#define DISPLAY_ROTATION    2   // 0=portrait, 1=landscape CW, 2=portrait 180, 3=landscape CCW
 
 #define LCD_QSPI_CS         9
 #define LCD_QSPI_CLK        10
@@ -79,3 +79,5 @@
 
 // ---- Battery ----
 #define BAT_STAT_PIN        16  // Battery charge status (gpio_get_level)
+#define BAT_ADC_PIN         4   // ADC1_CH3 — battery voltage via 3x divider
+#define BAT_ADC_DIVIDER     3.0f  // Voltage divider ratio (ref: Waveshare ADC example)

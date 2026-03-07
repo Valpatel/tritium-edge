@@ -12,7 +12,7 @@
 #define HAS_PMIC            1
 #define HAS_SDCARD          1
 #define HAS_CAMERA          1
-#define HAS_IO_EXPANDER     0
+#define HAS_IO_EXPANDER     1
 
 // ---- Display (AXS15231B via QSPI) ----
 #define DISPLAY_DRIVER      "AXS15231B"
