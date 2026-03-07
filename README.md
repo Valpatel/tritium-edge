@@ -107,10 +107,16 @@ All the detail lives in `docs/`:
 
 ## Part of Tritium
 
-Tritium-Edge is the **nervous system** of the
-[Tritium Distributed Cybernetic Operating System](https://github.com/Valpatel/tritium).
-It works alongside [tritium-sc](https://github.com/Valpatel/tritium-sc) (the brain)
-and [tritium-lib](https://github.com/Valpatel/tritium-lib) (the spine).
+[**Tritium**](https://github.com/Valpatel/tritium) is a distributed cybernetic
+operating system. It turns heterogeneous hardware — microcontrollers, single-board
+computers, robots, cameras, servers, radios — into a unified mesh that observes,
+thinks, and acts. Every device is a node. The network is the computer.
+
+Tritium-Edge is the **nervous system**: fleet management, OTA, config sync,
+and the heartbeat protocol that keeps every node alive. It works alongside
+[tritium-sc](https://github.com/Valpatel/tritium-sc) (the brain — command,
+vision, models) and [tritium-lib](https://github.com/Valpatel/tritium-lib)
+(the spine — shared data models, MQTT topics, auth, CoT codec).
 
 ---
 
