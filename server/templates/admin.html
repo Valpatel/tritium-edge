@@ -720,6 +720,19 @@ function showDevice(id) {
             </div>
         </div>
         ${d.notes?'<div style="margin-top:12px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:2px;font-size:0.8em;color:var(--text2)"><strong>Notes:</strong> '+esc(d.notes)+'</div>':''}
+        <div style="margin-top:14px">
+            <h4 style="font-size:0.72em;color:var(--cyan);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;font-weight:700">Telemetry History</h4>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <div style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:10px">
+                    <div style="font-size:0.68em;color:var(--text2);margin-bottom:6px">Free Heap (KB)</div>
+                    <canvas id="chartHeap" width="280" height="80" style="width:100%"></canvas>
+                </div>
+                <div style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:10px">
+                    <div style="font-size:0.68em;color:var(--text2);margin-bottom:6px">WiFi Signal (dBm)</div>
+                    <canvas id="chartRssi" width="280" height="80" style="width:100%"></canvas>
+                </div>
+            </div>
+        </div>
     `, `
         <button class="btn btn-primary" onclick="pushOtaDialog('${esc(d.device_id)}');closeModal()">Push Firmware Update</button>
         <button class="btn" onclick="editDevice('${esc(d.device_id)}');closeModal()">Edit Info</button>
@@ -729,6 +742,63 @@ function showDevice(id) {
         ${d.pending_ota?'<button class="btn" onclick="clearOta(\''+esc(d.device_id)+'\')">Cancel Update</button>':''}
         <button class="btn btn-danger" onclick="deleteDevice('${esc(d.device_id)}')">Remove Device</button>
     `);
+    // Load and draw telemetry charts
+    drawDeviceCharts(d.device_id);
+}
+
+function drawMiniChart(canvasId, data, color, unit) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas || !data.length) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    const vals = data.filter(v => v != null);
+    if (!vals.length) return;
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const range = max - min || 1;
+
+    // Draw fill
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    vals.forEach((v, i) => {
+        const x = (i / (vals.length - 1 || 1)) * W;
+        const y = H - ((v - min) / range) * (H - 10) - 5;
+        ctx.lineTo(x, y);
+    });
+    ctx.lineTo(W, H);
+    ctx.closePath();
+    ctx.fillStyle = color.replace(')', ',0.08)').replace('rgb', 'rgba');
+    ctx.fill();
+
+    // Draw line
+    ctx.beginPath();
+    vals.forEach((v, i) => {
+        const x = (i / (vals.length - 1 || 1)) * W;
+        const y = H - ((v - min) / range) * (H - 10) - 5;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Latest value label
+    ctx.fillStyle = color;
+    ctx.font = 'bold 10px JetBrains Mono, monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(vals[vals.length-1].toFixed(0) + (unit||''), W - 4, 12);
+}
+
+async function drawDeviceCharts(deviceId) {
+    try {
+        const data = await api('GET', '/api/devices/'+encodeURIComponent(deviceId)+'/telemetry?limit=60');
+        const heapData = data.map(p => p.free_heap ? p.free_heap / 1024 : null).filter(v => v != null);
+        const rssiData = data.map(p => p.rssi).filter(v => v != null);
+        drawMiniChart('chartHeap', heapData, 'rgb(5,255,161)', ' KB');
+        drawMiniChart('chartRssi', rssiData, 'rgb(0,240,255)', ' dBm');
+    } catch(e) {}
 }
 
 function editDevice(id) {

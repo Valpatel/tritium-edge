@@ -122,6 +122,13 @@ def process_heartbeat(store: FleetStore, device_id: str, body: dict) -> dict:
 
     store.save_device(device)
 
+    # Record telemetry point
+    store.add_telemetry(device_id, {
+        "free_heap": body.get("free_heap"),
+        "rssi": body.get("wifi_rssi", body.get("rssi")),
+        "uptime_s": body.get("uptime_s"),
+    })
+
     # Build response
     response = {
         "status": "ok",

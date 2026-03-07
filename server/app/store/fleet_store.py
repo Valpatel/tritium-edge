@@ -26,8 +26,10 @@ class FleetStore:
         self.events_dir = self.data_dir / "events"
         self.commands_dir = self.data_dir / "commands"
         self.profiles_dir = self.data_dir / "profiles"
+        self.telemetry_dir = self.data_dir / "telemetry"
         for d in [self.devices_dir, self.firmware_dir, self.certs_dir,
-                  self.events_dir, self.commands_dir, self.profiles_dir]:
+                  self.events_dir, self.commands_dir, self.profiles_dir,
+                  self.telemetry_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
     # --- ID validation ---
@@ -182,6 +184,40 @@ class FleetStore:
         p = self.profiles_dir / f"{profile_id}.json"
         if p.exists():
             p.unlink()
+
+    # --- Telemetry ---
+    def add_telemetry(self, device_id: str, data: dict) -> None:
+        """Append a telemetry point for a device (JSONL, one file per device per day)."""
+        self.safe_id(device_id)
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        p = self.telemetry_dir / f"{device_id}_{day}.jsonl"
+        point = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "free_heap": data.get("free_heap"),
+            "rssi": data.get("rssi"),
+            "uptime_s": data.get("uptime_s"),
+        }
+        with open(p, "a") as f:
+            f.write(json.dumps(point) + "\n")
+
+    def get_telemetry(self, device_id: str, limit: int = 100) -> list[dict]:
+        """Get recent telemetry for a device."""
+        self.safe_id(device_id)
+        points = []
+        files = sorted(self.telemetry_dir.glob(f"{device_id}_*.jsonl"), reverse=True)
+        for fp in files:
+            for line in reversed(fp.read_text().splitlines()):
+                if not line.strip():
+                    continue
+                try:
+                    points.append(json.loads(line))
+                    if len(points) >= limit:
+                        points.reverse()
+                        return points
+                except Exception:
+                    pass
+        points.reverse()
+        return points
 
     # --- Events ---
     def add_event(self, event_type: str, device_id: str = None,

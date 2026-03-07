@@ -93,6 +93,13 @@ async def send_command(device_id: str, body: CommandRequest, request: Request):
     return cmd
 
 
+@router.get("/devices/{device_id}/telemetry")
+async def get_device_telemetry(device_id: str, request: Request, limit: int = 60):
+    """Get recent telemetry time-series for a device."""
+    store = _get_store(request)
+    return store.get_telemetry(device_id, limit=limit)
+
+
 @router.get("/devices/{device_id}/config")
 async def get_device_config(device_id: str, request: Request):
     """Get desired and reported config for a device."""
