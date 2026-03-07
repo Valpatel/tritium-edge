@@ -119,56 +119,83 @@ bool AudioHAL::initES8311() {
     uint8_t id1 = readReg(ES8311_REGFD_CHIPID1);
     uint8_t id2 = readReg(ES8311_REGFE_CHIPID2);
     Serial.printf("[AUDIO] ES8311 chip ID: 0x%02X 0x%02X\n", id1, id2);
-    // ES8311 should return 0x83 0x11
     if (id1 != 0x83 || id2 != 0x11) {
         Serial.println("[AUDIO] ES8311 chip ID mismatch");
-        // Continue anyway - some revisions may differ
     }
 
-    // Software reset
-    writeReg(ES8311_REG00_RESET, 0x1F);
-    delay(20);
-    writeReg(ES8311_REG00_RESET, 0x00);
-    delay(20);
+    // Init sequence based on Espressif ESP-ADF es8311.c reference driver
+    // https://github.com/espressif/esp-adf/blob/master/components/audio_hal/driver/es8311/es8311.c
 
-    // Clock configuration for MCLK from ESP32 I2S
-    // MCLK = 256 * fs = 256 * 16000 = 4.096 MHz
-    writeReg(ES8311_REG01_CLK_MGR, 0x30);  // MCLK source: from pin, divider = 1
-    writeReg(ES8311_REG02_CLK_MGR, 0x00);  // ADC/DAC clock same as MCLK
-    writeReg(ES8311_REG03_CLK_MGR, 0x10);  // BCLK from MCLK, div=4
-    writeReg(ES8311_REG04_CLK_MGR, 0x10);  // ADC/DAC OSR = 256
-    writeReg(ES8311_REG05_CLK_MGR, 0x00);  // ADC clock divider
-    writeReg(ES8311_REG06_CLK_MGR, 0x01);  // BCLK config
-    writeReg(ES8311_REG07_CLK_MGR, 0x00);  // LRCK config
-    writeReg(ES8311_REG08_CLK_MGR, 0xFF);  // Clock prescaler
+    // Enhance I2C noise immunity (written twice per ESP-ADF)
+    writeReg(0x44, 0x08);
+    writeReg(0x44, 0x08);
 
-    // I2S data format: 16-bit, I2S standard
-    writeReg(ES8311_REG09_SDP_IN,  0x0C);  // DAC: I2S format, 16-bit
-    writeReg(ES8311_REG0A_SDP_OUT, 0x0C);  // ADC: I2S format, 16-bit
+    // Initial clock and power sequence
+    writeReg(ES8311_REG01_CLK_MGR, 0x30);  // MCLK from pin
+    writeReg(ES8311_REG02_CLK_MGR, 0x00);  // No pre-divider/multiplier yet
+    writeReg(ES8311_REG03_CLK_MGR, 0x10);  // ADC OSR = 16 (single speed)
+    writeReg(ES8311_REG16_DAC, 0x24);      // DAC config
+    writeReg(ES8311_REG04_CLK_MGR, 0x10);  // DAC OSR = 16
+    writeReg(ES8311_REG05_CLK_MGR, 0x00);  // ADC/DAC clock div = 1
 
-    // Power up system
+    // Power up analog blocks
     writeReg(ES8311_REG0B_SYSTEM, 0x00);   // Power up analog
     writeReg(ES8311_REG0C_SYSTEM, 0x00);   // Power up
-    writeReg(ES8311_REG0D_SYSTEM, 0x01);   // Enable DAC/ADC
-    writeReg(ES8311_REG0E_SYSTEM, 0x02);   // Enable reference
+    writeReg(0x10, 0x1F);                  // Power up: VMIDSEL + reference power
+    writeReg(0x11, 0x7F);                  // Power up: all analog blocks
+
+    // Enable CSM (Codec State Machine) - CRITICAL for ADC/DAC to work
+    writeReg(ES8311_REG00_RESET, 0x80);
+    delay(50);
+
+    // Slave mode: clear bit 6 of reg 0x00
+    uint8_t reg00 = readReg(ES8311_REG00_RESET);
+    reg00 &= 0xBF;  // Slave mode (ESP32 is I2S master)
+    writeReg(ES8311_REG00_RESET, reg00);
+
+    // Enable all clocks: MCLK from pin, all clock enables on
+    writeReg(ES8311_REG01_CLK_MGR, 0x3F);
+
+    // Clock coefficients for MCLK=4.096MHz, fs=16kHz (from coeff_div table)
+    // {4096000, 16000, pre_div=1, mult=x1, adc_div=1, dac_div=1,
+    //  fs_mode=0, lrck_h=0x00, lrck_l=0xFF, bclk_div=4, adc_osr=0x10, dac_osr=0x20}
+    writeReg(ES8311_REG02_CLK_MGR, 0x00);  // pre_div=1, mult=x1
+    writeReg(ES8311_REG05_CLK_MGR, 0x00);  // adc_div=1, dac_div=1
+    writeReg(ES8311_REG03_CLK_MGR, 0x10);  // fs_mode=0, adc_osr=0x10
+    writeReg(ES8311_REG04_CLK_MGR, 0x10);  // dac_osr=0x10
+    writeReg(ES8311_REG07_CLK_MGR, 0x00);  // LRCK divider high
+    writeReg(ES8311_REG08_CLK_MGR, 0xFF);  // LRCK divider low
+
+    // BCLK divider
+    uint8_t reg06 = readReg(ES8311_REG06_CLK_MGR);
+    reg06 &= ~0x20;  // Don't invert SCLK
+    writeReg(ES8311_REG06_CLK_MGR, reg06);
+
+    // I2S format: 16-bit, I2S Philips standard
+    writeReg(ES8311_REG09_SDP_IN,  0x0C);  // DAC SDP: I2S, 16-bit
+    writeReg(ES8311_REG0A_SDP_OUT, 0x0C);  // ADC SDP: I2S, 16-bit
+
+    // System registers
+    writeReg(ES8311_REG0D_SYSTEM, 0x01);   // Enable DAC and ADC
+    writeReg(ES8311_REG0E_SYSTEM, 0x02);   // Reference circuit enable
+    writeReg(0x13, 0x10);                  // ADC power reference
 
     // ADC configuration (microphone input)
-    writeReg(ES8311_REG0F_ADC, 0x00);      // ADC normal
-    writeReg(ES8311_REG10_ADC, 0x1C);      // ADC single-ended input, PGA gain +24dB
-    writeReg(ES8311_REG11_ADC, 0x00);      // ADC filter
-    writeReg(ES8311_REG12_ADC, 0x00);      // ADC config
-    writeReg(ES8311_REG14_ADC, 0x1A);      // ALC config - enable ALC, target -1.5dB
+    writeReg(ES8311_REG0F_ADC, 0x00);      // ADC normal operation
+    writeReg(ES8311_REG10_ADC, 0x1C);      // ADC: single-ended, PGA gain +24dB
+    writeReg(0x1B, 0x0A);                  // ADC equalizer/filter config
+    writeReg(0x1C, 0x6A);                  // ADC equalizer/filter config
 
     // ADC volume
     writeReg(ES8311_REG17_ADC_VOL, 0xBF);  // ADC volume ~75%
 
     // DAC configuration (speaker output)
-    writeReg(ES8311_REG15_DAC, 0x00);      // DAC normal
-    writeReg(ES8311_REG16_DAC, 0x00);      // DAC config
+    writeReg(ES8311_REG15_DAC, 0x00);      // DAC normal operation
 
     // DAC volume
     writeReg(ES8311_REG32_DAC_VOL, 0xBF);  // DAC volume ~75%
 
+    Serial.println("[AUDIO] ES8311 init complete (CSM enabled)");
     return true;
 }
 
@@ -328,23 +355,25 @@ float AudioHAL::getMicLevel() {
 bool AudioHAL::getSpectrum(float* bins, size_t numBins, const int16_t* samples, size_t numSamples) {
     if (!bins || !samples || numBins == 0 || numSamples == 0) return false;
 
-    // Simple DFT-based spectrum (not FFT but works for small bin counts)
-    size_t samplesPerBin = numSamples / numBins;
+    // Goertzel algorithm — efficient single-frequency DFT per bin
+    // Much faster than full DFT: O(numSamples) per bin with no trig in inner loop
     float maxFreq = _sample_rate / 2.0f;
     float binWidth = maxFreq / numBins;
 
     for (size_t b = 0; b < numBins; b++) {
         float freq = (b + 0.5f) * binWidth;
-        float realSum = 0.0f, imagSum = 0.0f;
+        float k = freq / _sample_rate * numSamples;
+        float w = 2.0f * M_PI * k / numSamples;
+        float coeff = 2.0f * cosf(w);
+        float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f;
 
         for (size_t i = 0; i < numSamples; i++) {
-            float angle = 2.0f * M_PI * freq * i / _sample_rate;
-            float s = samples[i] / 32768.0f;
-            realSum += s * cosf(angle);
-            imagSum += s * sinf(angle);
+            s0 = (samples[i] / 32768.0f) + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
         }
 
-        float magnitude = sqrtf(realSum * realSum + imagSum * imagSum) / numSamples;
+        float magnitude = sqrtf(s1 * s1 + s2 * s2 - coeff * s1 * s2) / numSamples;
         bins[b] = magnitude;
     }
     return true;

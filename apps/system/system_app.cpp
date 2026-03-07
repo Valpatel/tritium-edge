@@ -6,6 +6,8 @@
 #include <Arduino.h>
 #endif
 
+#include <math.h>
+
 // Layout constants
 static constexpr int NAV_BAR_H       = 40;
 static constexpr int MENU_ITEM_H     = 44;
@@ -140,6 +142,14 @@ void SystemApp::setup(LGFX& display) {
     _fpsTimer = millis();
     _frameCount = 0;
     _currentScreen = SystemScreen::HOME;
+
+    // Boot beep to confirm speaker output
+#if HAS_AUDIO_CODEC
+    if (_audio && _audio->available()) {
+        _audio->setSpeakerEnabled(true);
+        _audio->playTone(1000, 50);  // 50ms beep at 1kHz
+    }
+#endif
 
     DBG_INFO("system", "Setup complete, %d menu items", _menuCount);
 }
@@ -1075,16 +1085,27 @@ void SystemApp::drawAudioTest(LGFX_Sprite& spr) {
     spr.drawFastHLine(MARGIN, y, _w - 2 * MARGIN, COL_TEXT_DIM);
     y += 8;
 
+    // Single mic read shared between level meter and spectrum
+    static int16_t micBuf[512];
+    size_t micRead = _audio->readMic(micBuf, 512);
+
+    // Compute RMS from shared buffer
+    if (micRead > 0) {
+        float sum = 0.0f;
+        for (size_t i = 0; i < micRead; i++) {
+            float s = micBuf[i] / 32768.0f;
+            sum += s * s;
+        }
+        _micLevel = sqrtf(sum / micRead);
+        if (_micLevel > 1.0f) _micLevel = 1.0f;
+    }
+
     // Microphone level meter
     spr.setTextColor(COL_ACCENT);
     spr.setTextSize(2);
     spr.drawString("Mic Level", MARGIN, y);
     y += 24;
 
-    // Read mic level
-    _micLevel = _audio->getMicLevel();
-
-    // Level bar with color coding
     uint32_t levelColor = COL_GREEN;
     if (_micLevel > 0.7f) levelColor = COL_RED;
     else if (_micLevel > 0.4f) levelColor = COL_YELLOW;
@@ -1104,13 +1125,9 @@ void SystemApp::drawAudioTest(LGFX_Sprite& spr) {
     spr.drawString("Spectrum", MARGIN, y);
     y += 24;
 
-    // Read mic data and compute spectrum
-    {
-        static int16_t specBuf[512];
-        size_t read = _audio->readMic(specBuf, 512);
-        if (read > 0) {
-            _audio->getSpectrum(_spectrumBins, 16, specBuf, read);
-        }
+    // Compute spectrum from shared buffer
+    if (micRead > 0) {
+        _audio->getSpectrum(_spectrumBins, 16, micBuf, micRead);
     }
 
     // Draw spectrum bars
