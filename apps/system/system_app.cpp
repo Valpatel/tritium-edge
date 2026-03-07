@@ -235,13 +235,13 @@ void SystemApp::loop(LGFX& display) {
 
         _canvas->pushSprite(0, 0);
     } else {
-        // No sprite fallback: render directly
+        // No sprite — draw directly to display as diagnostic
         display.fillScreen(COL_BG);
-        // Minimal direct rendering for HOME only
-        display.setTextColor(COL_TEXT, COL_BG);
+        display.setTextColor(0xFF0000);
         display.setTextSize(2);
-        display.setTextDatum(top_center);
-        display.drawString("System (no PSRAM)", _w / 2, _h / 2);
+        display.setTextDatum(middle_center);
+        display.drawString("NO SPRITE", _w / 2, _h / 2);
+        Serial.println("[DBG] No canvas! Drawing direct fallback.");
     }
 
     // FPS tracking
@@ -415,7 +415,6 @@ void SystemApp::handleTouch(LGFX& display) {
 
 #if HAS_AUDIO_CODEC
         // Voice commands screen
-#if HAS_AUDIO_CODEC
         if (_currentScreen == SystemScreen::VOICE_COMMANDS && _voice) {
             int contentY = ty - NAV_BAR_H;
 
@@ -444,7 +443,6 @@ void SystemApp::handleTouch(LGFX& display) {
                 }
             }
         }
-#endif
 
         // Audio test screen: tone buttons and volume slider
         if (_currentScreen == SystemScreen::AUDIO_TEST && _audio && _audio->available()) {

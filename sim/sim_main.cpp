@@ -12,7 +12,10 @@
 #include "app.h"
 
 // App selection via build flag (same pattern as ESP32)
-#if defined(APP_UI_DEMO)
+#if defined(APP_EFFECTS)
+#include "effects_app.h"
+static EffectsApp app_instance;
+#elif defined(APP_UI_DEMO)
 #include "ui_demo_app.h"
 static UiDemoApp app_instance;
 #elif defined(APP_STARFIELD)
