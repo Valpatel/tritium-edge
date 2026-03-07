@@ -12,7 +12,7 @@ cd esp32-hardware
 ## 2. Run the Setup Script
 
 ```bash
-./setup.sh
+./scripts/setup.sh
 ```
 
 This installs:
@@ -46,16 +46,18 @@ You should see a device like `/dev/ttyACM0` (native USB) or `/dev/ttyUSB0` (UART
 
 ## 4. Build
 
-Build firmware for your board. The default is `touch-amoled-241b`:
+Build firmware for your board (default app is starfield):
 
 ```bash
-make build
+./scripts/build.sh touch-amoled-241b
+# or: make build BOARD=touch-amoled-241b
 ```
 
-For a different board:
+Build a specific app:
 
 ```bash
-make build BOARD=amoled-191m
+./scripts/build.sh touch-lcd-35bc camera
+# or: make build BOARD=touch-lcd-35bc APP=camera
 ```
 
 Run `make list-boards` to see all available board environments.
@@ -63,21 +65,26 @@ Run `make list-boards` to see all available board environments.
 ## 5. Flash
 
 ```bash
-make flash BOARD=touch-amoled-241b
+./scripts/flash.sh touch-amoled-241b
+# or: make flash BOARD=touch-amoled-241b
 ```
+
+The scripts auto-detect the serial port and fix permissions if needed.
 
 The ESP32-S3 boards use native USB, so you may need to hold the BOOT button and press RESET to enter download mode on first flash. After that, the firmware enables CDC-on-boot and subsequent flashes work automatically.
 
 ## 6. Monitor Serial Output
 
 ```bash
-make monitor
+./scripts/monitor.sh
+# or: make monitor
 ```
 
 Or combine flash and monitor in one step:
 
 ```bash
-make flash-monitor BOARD=touch-amoled-241b
+./scripts/flash-monitor.sh touch-amoled-241b
+# or: make flash-monitor BOARD=touch-amoled-241b
 ```
 
 You should see output like:
@@ -131,8 +138,10 @@ pio run -e touch-amoled-241b
 
 ### Display doesn't turn on
 
-- **AXS15231B boards** (`touch-lcd-35bc`, `touch-lcd-349`): These use a placeholder panel driver. The display won't work until a custom `Panel_AXS15231B` is implemented.
-- **Pins not verified**: Some boards have pin assignments from datasheets that haven't been verified on hardware. Check the "Pins Verified" column in [boards.md](boards.md).
+- **AXS15231B boards** (`touch-lcd-35bc`, `touch-lcd-349`): These need the full register init sequence (~500 bytes of panel configuration). The custom `Panel_AXS15231B` driver in `lib/Panel_AXS15231B/` handles this.
+- **3.5B-C specifically**: Requires TCA9554 I/O expander reset before `display.init()`. This is handled automatically in `main.cpp` when `BOARD_TOUCH_LCD_35BC` is defined.
+- **Manual backlight**: If the display inits but stays dark, check that the backlight pin (`LCD_BL`) is driven HIGH. The firmware does this explicitly in addition to LovyanGFX's `Light_PWM`.
+- **Pins not verified**: Some boards have pin assignments from datasheets that haven't been verified on hardware. Check the "HW Verified" column in [boards.md](boards.md).
 - Check serial output for error messages about sprite allocation.
 
 ### Sprite allocation fails

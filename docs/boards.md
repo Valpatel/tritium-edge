@@ -2,14 +2,14 @@
 
 ## Board Summary
 
-| Board | Display | Resolution | Driver | Interface | Touch | IMU | Pins Verified |
-|-------|---------|-----------|--------|-----------|-------|-----|---------------|
-| [ESP32-S3-AMOLED-1.91-M][wiki-191m] | 1.91" AMOLED | 240x536 | RM67162 | QSPI | FT3168 | QMI8658 | No |
-| [ESP32-S3-Touch-AMOLED-2.41-B][wiki-241b] | 2.41" AMOLED | 600x450 | RM690B0 | QSPI | FT6336 | QMI8658 | Yes |
-| [ESP32-S3-Touch-AMOLED-1.8][wiki-18] | 1.8" AMOLED | 368x448 | SH8601 | QSPI | FT3168 | QMI8658 | No |
-| [ESP32-S3-Touch-LCD-3.5B-C][wiki-35bc] | 3.5" IPS LCD | 320x480 | AXS15231B | QSPI | Integrated | QMI8658 | No |
-| [ESP32-S3-Touch-LCD-4.3C-BOX][wiki-43c] | 4.3" IPS LCD | 800x480 | ST7262 | RGB Parallel | GT911 | None | Yes |
-| [ESP32-S3-Touch-LCD-3.49][wiki-349] | 3.49" IPS LCD | 172x640 | AXS15231B | QSPI | Integrated | QMI8658 | No |
+| Board | Display | Resolution | Driver | Interface | Touch | IMU | HW Verified |
+|-------|---------|-----------|--------|-----------|-------|-----|-------------|
+| [ESP32-S3-AMOLED-1.91-M][wiki-191m] | 1.91" AMOLED | 240x536 | RM67162 | QSPI | — | QMI8658 | No |
+| [ESP32-S3-Touch-AMOLED-2.41-B][wiki-241b] | 2.41" AMOLED | 450x600 | RM690B0 | QSPI | FT5x06 | QMI8658 | Yes |
+| [ESP32-S3-Touch-AMOLED-1.8][wiki-18] | 1.8" AMOLED | 368x448 | SH8601Z | QSPI | FT3168 | QMI8658 | No |
+| [ESP32-S3-Touch-LCD-3.5B-C][wiki-35bc] | 3.5" IPS LCD | 320x480 | AXS15231B | QSPI | Integrated | QMI8658 | Yes |
+| [ESP32-S3-Touch-LCD-4.3C-BOX][wiki-43c] | 4.3" IPS LCD | 800x480 | ST7262 | RGB Parallel | GT911 | — | No |
+| [ESP32-S3-Touch-LCD-3.49][wiki-349] | 3.49" IPS LCD | 172x640 | AXS15231B | QSPI | Integrated | QMI8658 | Yes |
 
 [wiki-191m]: https://www.waveshare.com/wiki/ESP32-S3-AMOLED-1.91-M
 [wiki-241b]: https://www.waveshare.com/wiki/ESP32-S3-Touch-AMOLED-2.41-B
@@ -25,29 +25,24 @@
 - PSRAM: 8MB
 - WiFi: 2.4GHz 802.11 b/g/n
 - Bluetooth: BLE 5
-- USB: Type-C
+- USB: Type-C (native USB CDC)
 
 ## Per-Board Details
 
-### ESP32-S3-AMOLED-1.91-M
-- Part: ESP32-S3-AMOLED-1.91-M (SKU 28873)
-- "-M" variant = pre-soldered male headers
-- Display: RM67162 AMOLED, 240x536, 16.7M colors, QSPI
-- Touch: FT3168 capacitive (I2C)
-- Sensors: QMI8658 6-axis IMU (accel + gyro)
-- PlatformIO env: `amoled-191m`
-
 ### ESP32-S3-Touch-AMOLED-2.41-B
-- Part: ESP32-S3-Touch-AMOLED-2.41-B (SKU 30589)
-- Display: RM690B0 AMOLED, 600x450, 16.7M colors, QSPI
-- Touch: FT6336 5-point capacitive (I2C via GPIO47/48)
+- Display: RM690B0 AMOLED, 450x600, QSPI. Memory 452px wide, needs offset_x=16.
+- Touch: FT5x06 capacitive (I2C)
 - Sensors: QMI8658 IMU, PCF85063 RTC
-- IO Expander: yes (EXIO pins for TE, touch INT, IMU INT)
 - PlatformIO env: `touch-amoled-241b`
 
+### ESP32-S3-AMOLED-1.91-M
+- Display: RM67162 AMOLED, 240x536, QSPI
+- Touch: None (non-touch variant)
+- Sensors: QMI8658 IMU
+- PlatformIO env: `amoled-191m`
+
 ### ESP32-S3-Touch-AMOLED-1.8
-- Part: ESP32-S3-Touch-AMOLED-1.8 (SKU 29957)
-- Display: SH8601 AMOLED, 368x448, 16.7M colors, QSPI
+- Display: SH8601Z AMOLED, 368x448, QSPI
 - Touch: FT3168 capacitive (I2C)
 - Sensors: QMI8658 IMU, PCF85063 RTC
 - Power: AXP2101 PMIC, battery connector
@@ -55,38 +50,41 @@
 - PlatformIO env: `touch-amoled-18`
 
 ### ESP32-S3-Touch-LCD-3.5B-C
-- Part: ESP32-S3-Touch-LCD-3.5B-C (SKU 31334)
-- Display: AXS15231B IPS LCD, 320x480, 262K colors, QSPI
-- Touch: Integrated in AXS15231B (I2C)
+- Display: AXS15231B IPS LCD, 320x480, QSPI. Needs full register init (~500 bytes).
+- **Display reset via TCA9554 I/O expander** (I2C 0x20, pin 1). Must toggle before display.init().
+- Touch: Integrated in AXS15231B (I2C 0x3B, 4-byte handshake protocol)
 - Sensors: QMI8658 IMU, PCF85063 RTC
 - Power: AXP2101 PMIC
-- Audio: ES8311 codec
-- Camera: OV5640 interface ("-C" variant includes camera)
-- PlatformIO env: `touch-lcd-35bc`
+- Audio: ES8311 codec (mic + speaker verified)
+- Camera: OV5640 DVP ("-C" variant). Needs `setFlip(false, true)` for correct orientation.
+- I2C bus (SDA=8, SCL=7) shared by: ES8311 (0x18), TCA9554 (0x20), AXP2101 (0x34), touch (0x3B), PCF85063 (0x51), QMI8658 (0x6B)
+- PlatformIO env: `touch-lcd-35bc`, `touch-lcd-35bc-camera`, `touch-lcd-35bc-system`
 
 ### ESP32-S3-Touch-LCD-4.3C-BOX
-- Part: ESP32-S3-Touch-LCD-4.3C-BOX (SKU 33630)
-- Display: ST7262 IPS LCD, 800x480, 65K colors, 16-bit RGB parallel
-- Touch: GT911 5-point capacitive (I2C via GPIO8/9, INT GPIO4)
-- IO Expander: CH422G (backlight, reset)
+- Display: ST7262 IPS LCD, 800x480, 16-bit RGB parallel
+- Touch: GT911 capacitive (I2C)
 - Audio: Dual-MIC array
 - "-BOX" = enclosed in case
 - PlatformIO env: `touch-lcd-43c-box`
 
 ### ESP32-S3-Touch-LCD-3.49
-- Part: ESP32-S3-Touch-LCD-3.49 (SKU 32373)
-- Display: AXS15231B IPS LCD, 172x640, 16.7M colors, QSPI
-- Touch: Integrated in AXS15231B (I2C)
+- Display: AXS15231B IPS LCD, 172x640, QSPI. Memory 360px wide. Needs full register init.
+- Touch: Integrated in AXS15231B (I2C on separate bus: SDA=17, SCL=18, I2C_NUM_1)
+- Display on SPI3_HOST (not SPI2_HOST)
 - Sensors: QMI8658 IMU, PCF85063 RTC
-- Power: integrated PMIC
-- Audio: ES8311 + ES7210 (dual-mic array)
-- IO Expander: TCA9554PWR
+- Audio: ES8311 + ES7210 dual-mic
 - PlatformIO env: `touch-lcd-349`
+
+## Reference Code
+
+Official Waveshare demo code is in `references/` (not committed — download with git clone).
+Repos are under the `waveshareteam` GitHub org (not `waveshare`).
+Some boards have no GitHub repo; demos are on `files.waveshare.com`.
 
 ## Pin Verification Checklist
 
-When a new board arrives, verify pin assignments by:
-1. Check Waveshare wiki for latest schematic PDF
-2. Run the board's demo code from Waveshare GitHub
-3. Update the board header in `include/boards/` with verified pins
-4. Update this doc's "Pins Verified" column
+When a new board arrives:
+1. Check the Waveshare wiki for the latest schematic
+2. Run the official demo code to confirm the display works
+3. Compare pin assignments against our board header in `include/boards/`
+4. Update the "HW Verified" column above

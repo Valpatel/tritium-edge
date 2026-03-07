@@ -77,7 +77,7 @@ void MyApp::loop(LGFX& display) {
 }
 ```
 
-**LVGL apps** (planned) layer LVGL on top of LovyanGFX for widget-based UIs:
+**LVGL apps** use LVGL on top of LovyanGFX for widget-based UIs (see `apps/ui_demo/` and `apps/wifi_setup/`):
 
 ```cpp
 void MyLvglApp::setup(LGFX& display) {
@@ -133,35 +133,49 @@ All application logic lives in the app, not in `main.cpp`.
 
 `platformio.ini` uses PlatformIO's environment inheritance:
 
-- `[env]` -- shared settings: platform, framework, lib_deps, default app flags, `build_src_filter`
-- `[env:<board>]` -- per-board overrides: `build_flags` with board macro and display dimensions
+- `[env]` -- shared settings: platform, framework, lib_deps, common build flags
+- `[board_base]` -- common board hardware settings (flash size, PSRAM, partition table). Board envs use `extends = board_base`.
+- `[app_*]` -- reusable app presets. Each defines `build_flags` (app macro + include paths) and `build_src_filter` (which sources to compile). Examples: `[app_starfield]`, `[app_camera]`, `[app_system]`.
+- `[env:<board>]` or `[env:<board>-<app>]` -- per-board environments that combine a board macro with an app preset via `${app_name.build_flags}` and `${app_name.build_src_filter}`.
 
-The `build_src_filter` in `[env]` controls which source files are compiled:
+Example board-app environment:
 
 ```ini
-build_src_filter =
-    +<../src/>
-    +<../apps/starfield/>
-    +<../lib/StarField/>
+[env:touch-lcd-35bc-camera]
+extends = board_base
+build_flags = ${env.build_flags} ${app_camera.build_flags}
+    -DBOARD_TOUCH_LCD_35BC
+    -include include/boards/esp32_s3_touch_lcd_35bc.h
+build_src_filter = ${app_camera.build_src_filter}
 ```
 
-When adding a new app, update the filter to include the app's source directory.
+### Makefile and Scripts
 
-### Makefile
+Shell scripts in `scripts/` are the primary interface:
 
-The Makefile wraps PlatformIO for convenience:
+- `./scripts/build.sh BOARD [APP]` -- build firmware
+- `./scripts/flash.sh BOARD [APP]` -- build, flash (auto-detects port, fixes permissions)
+- `./scripts/monitor.sh` -- serial monitor
+- `./scripts/identify.sh` -- detect connected boards
 
-- `make build BOARD=<env>` -- build for a specific board
-- `make flash BOARD=<env>` -- build and upload
+The Makefile wraps the same operations:
+
+- `make build BOARD=<env> [APP=<app>]`
+- `make flash BOARD=<env> [APP=<app>]`
+- `make monitor`
 - `make new-app NAME=<name>` -- scaffold from `apps/_template/`
 
 ## Shared Libraries
 
-Reusable engines live in `lib/`:
+Libraries in `lib/` are organized into three categories (see `lib/README.md` for full details):
 
-- **StarField** (`lib/StarField/`) -- 3D starfield simulation with configurable star count, speed, and projection. Used by the starfield app but decoupled from display code.
+- **Display Drivers** -- Custom LovyanGFX panel/touch drivers for ICs not in upstream (e.g., `Panel_AXS15231B`).
+- **Hardware Abstraction (HAL)** -- Board-agnostic wrappers for peripherals: `hal_imu`, `hal_rtc`, `hal_power`, `hal_audio`, `hal_camera`, `hal_wifi`, `hal_mqtt`, `hal_ui` (LVGL), `hal_voice`, `hal_sleep`, `hal_ble`, `hal_touch`, `hal_io_expander`, `hal_sdcard`, `hal_debug`.
+- **Utility Libraries** -- Reusable engines not tied to hardware (e.g., `StarField`).
 
-Libraries in `lib/` are available to any app via include path. App-specific code goes in `apps/<name>/`.
+HALs read pin definitions from the board header at compile time. Several HALs support dual I2C mode (`init(TwoWire&)` for standalone, `initLgfx()` for shared LovyanGFX I2C bus).
+
+Libraries are only compiled when explicitly included in an app's `build_src_filter`. App-specific code goes in `apps/<name>/`.
 
 ## Design Decisions
 
@@ -173,6 +187,6 @@ Libraries in `lib/` are available to any app via include path. App-specific code
 
 **Orthogonal board/app axes**: Board configs know nothing about apps. Apps know nothing about specific boards. The only coupling is the `LGFX` type and `DISPLAY_WIDTH`/`DISPLAY_HEIGHT` macros.
 
-## Planned: LVGL Integration
+## LVGL Integration
 
-An LVGL-based UI framework is planned for apps that need widgets, icons, and structured layouts. The `App` interface already supports this via the `usesLVGL()` method. LVGL apps will initialize LVGL's display driver on top of the LovyanGFX `LGFX` instance in their `setup()` method, keeping the board abstraction layer unchanged.
+LVGL 9.2 is integrated via the `hal_ui` library. LVGL apps use `usesLVGL()` to signal the launcher. The `hal_ui` library handles LVGL display driver setup on top of the LovyanGFX `LGFX` instance, theming, and common widgets. See `apps/ui_demo/` for a basic example and `apps/wifi_setup/` for a production LVGL app.

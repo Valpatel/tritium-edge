@@ -7,3 +7,6 @@ __pycache__
 *.pyc
 .DS_Store
 Thumbs.db
+
+# Reference repos are large — download with scripts, don't commit
+references/

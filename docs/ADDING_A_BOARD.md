@@ -93,20 +93,18 @@ Check [LovyanGFX Panel list](https://github.com/lovyan03/LovyanGFX) for availabl
 
 ### 3. Add PlatformIO Environment (`platformio.ini`)
 
-Add a new `[env:<name>]` section:
+Add a new `[env:<name>]` section using `extends = board_base` and an app preset:
 
 ```ini
 [env:your-board]
-board = esp32-s3-devkitc-1
-board_build.arduino.memory_type = qio_opi
-board_build.partitions = default_16MB.csv
-board_upload.flash_size = 16MB
-build_flags =
-    ${env.build_flags}
+extends = board_base
+build_flags = ${env.build_flags} ${app_starfield.build_flags}
     -DBOARD_YOUR_BOARD
-    -DDISPLAY_WIDTH=XXX
-    -DDISPLAY_HEIGHT=YYY
+    -include include/boards/esp32_s3_your_board.h
+build_src_filter = ${app_starfield.build_src_filter}
 ```
+
+To add more apps for this board, create additional envs (e.g., `[env:your-board-camera]`) using the corresponding `${app_camera.*}` preset. See `platformio.ini` for examples.
 
 ### 4. Update Makefile
 
@@ -125,13 +123,14 @@ Add the board to the summary table and create a per-board details section.
 ### 6. Build and Verify
 
 ```bash
-make build BOARD=your-board
+./scripts/build.sh your-board
 ```
 
 If you have the physical board, flash and verify the display initializes:
 
 ```bash
-make flash-monitor BOARD=your-board
+./scripts/flash.sh your-board
+./scripts/monitor.sh
 ```
 
 Look for serial output confirming the display driver and resolution.
@@ -150,4 +149,5 @@ When a new board arrives, verify pin assignments by:
 - **QSPI vs SPI**: LovyanGFX handles QSPI by setting `pin_io0` through `pin_io3` on `Bus_SPI`. The same bus class works for both standard SPI and QSPI.
 - **RGB parallel**: Uses `Bus_RGB` + `Panel_RGB` with explicit timing parameters (hsync/vsync porches, pclk frequency). See the 4.3C-BOX config for a working example.
 - **Memory offsets**: Some panels have a larger memory buffer than the visible area (e.g., RM690B0 is 452px wide but displays 450px). Set `memory_width`, `memory_height`, `offset_x`, `offset_y` accordingly.
-- **Unsupported panels**: If LovyanGFX doesn't have a driver for your panel IC, the board will compile but the display won't work. File an issue or implement a custom `Panel_*` class.
+- **Unsupported panels**: If LovyanGFX doesn't have a driver for your panel IC, you'll need a custom `Panel_*` class (see `lib/Panel_AXS15231B/` for an example). Custom panels need full register init sequences from the manufacturer's demo code.
+- **I/O expander reset**: Some boards (like 3.5B-C) route display reset through an I/O expander instead of a direct GPIO. Check the schematic and official demo for reset procedures.
