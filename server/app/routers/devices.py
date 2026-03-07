@@ -110,12 +110,15 @@ async def device_heartbeat(device_id: str, request: Request):
     if "error" in result:
         raise HTTPException(429, result["error"])
 
-    # Broadcast to WebSocket clients
-    device = store.get_device(device_id)
-    if device:
-        enrich_devices([device])
-        event_type = "device_registered" if is_new else "device_heartbeat"
-        await broadcast(event_type, device)
+    # Broadcast to WebSocket clients (non-fatal)
+    try:
+        device = store.get_device(device_id)
+        if device:
+            enrich_devices([device])
+            event_type = "device_registered" if is_new else "device_heartbeat"
+            await broadcast(event_type, device)
+    except Exception:
+        pass  # WebSocket broadcast should never break heartbeat
 
     return result
 
