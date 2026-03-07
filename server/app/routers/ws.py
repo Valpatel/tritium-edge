@@ -18,6 +18,7 @@ _clients: Set[WebSocket] = set()
 
 async def broadcast(event_type: str, data: dict):
     """Broadcast an event to all connected WebSocket clients."""
+    global _clients
     if not _clients:
         return
     message = json.dumps({

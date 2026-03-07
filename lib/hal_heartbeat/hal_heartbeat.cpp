@@ -76,13 +76,41 @@ static void computeFirmwareHash() {
         return;
     }
 
+    // Read the image header to determine actual firmware size.
+    // ESP32 image format: header(24) + segments. The header contains segment count.
+    // Total binary size = all segments + header + hash at end.
+    // Use esp_ota_get_app_description offset to compute: app_desc is at offset 0x20
+    // in the first segment, meaning first segment starts at sizeof(esp_image_header_t) +
+    // sizeof(esp_image_segment_header_t). We'll read through segments.
+    esp_image_header_t hdr;
+    if (esp_partition_read(running, 0, &hdr, sizeof(hdr)) != ESP_OK) {
+        _fw_hash[0] = '\0';
+        return;
+    }
+    // Walk through all segments to find total image size
+    size_t imgOffset = sizeof(esp_image_header_t);
+    for (int seg = 0; seg < hdr.segment_count; seg++) {
+        esp_image_segment_header_t seg_hdr;
+        if (esp_partition_read(running, imgOffset, &seg_hdr, sizeof(seg_hdr)) != ESP_OK) {
+            _fw_hash[0] = '\0';
+            return;
+        }
+        imgOffset += sizeof(seg_hdr) + seg_hdr.data_len;
+    }
+    // After segments: 1 byte checksum, then padded to 16-byte boundary, then optional hash (32 bytes)
+    size_t fwSize = imgOffset + 1;  // +1 for checksum byte
+    fwSize = (fwSize + 15) & ~15;  // Align to 16 bytes
+    if (hdr.hash_appended) {
+        fwSize += 32;  // SHA-256 hash appended by esptool
+    }
+    DBG_DEBUG(TAG, "Firmware image size: %u bytes (partition: %u)", (unsigned)fwSize, (unsigned)running->size);
+
     mbedtls_sha256_context ctx;
     mbedtls_sha256_init(&ctx);
     mbedtls_sha256_starts(&ctx, 0);
 
     uint8_t buf[4096];
     size_t offset = 0;
-    size_t fwSize = running->size;
     while (offset < fwSize) {
         size_t toRead = (fwSize - offset < sizeof(buf)) ? fwSize - offset : sizeof(buf);
         if (esp_partition_read(running, offset, buf, toRead) != ESP_OK) {
