@@ -27,6 +27,7 @@ from .routers import (
     commission_router,
     events_router,
     stats_router,
+    profiles_router,
     ws_router,
 )
 
@@ -88,6 +89,7 @@ app.include_router(ota_router)
 app.include_router(commission_router)
 app.include_router(events_router)
 app.include_router(stats_router)
+app.include_router(profiles_router)
 app.include_router(ws_router)
 
 # Templates (reuse existing admin.html)

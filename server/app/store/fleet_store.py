@@ -25,8 +25,9 @@ class FleetStore:
         self.certs_dir = self.data_dir / "certs"
         self.events_dir = self.data_dir / "events"
         self.commands_dir = self.data_dir / "commands"
+        self.profiles_dir = self.data_dir / "profiles"
         for d in [self.devices_dir, self.firmware_dir, self.certs_dir,
-                  self.events_dir, self.commands_dir]:
+                  self.events_dir, self.commands_dir, self.profiles_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
     # --- ID validation ---
@@ -155,6 +156,32 @@ class FleetStore:
             commands = commands[-50:]
         p.write_text(json.dumps(commands, indent=2, default=str) + "\n")
         return cmd
+
+    # --- Profiles ---
+    def list_profiles(self) -> list[dict]:
+        profiles = []
+        for f in sorted(self.profiles_dir.glob("*.json")):
+            try:
+                profiles.append(json.loads(f.read_text()))
+            except Exception:
+                pass
+        return profiles
+
+    def get_profile(self, profile_id: str) -> Optional[dict]:
+        self.safe_id(profile_id)
+        p = self.profiles_dir / f"{profile_id}.json"
+        return json.loads(p.read_text()) if p.exists() else None
+
+    def save_profile(self, profile: dict) -> None:
+        self.safe_id(profile["id"])
+        p = self.profiles_dir / f"{profile['id']}.json"
+        p.write_text(json.dumps(profile, indent=2, default=str) + "\n")
+
+    def delete_profile(self, profile_id: str) -> None:
+        self.safe_id(profile_id)
+        p = self.profiles_dir / f"{profile_id}.json"
+        if p.exists():
+            p.unlink()
 
     # --- Events ---
     def add_event(self, event_type: str, device_id: str = None,

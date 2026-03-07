@@ -383,6 +383,10 @@ tr.clickable { cursor: pointer; }
             <span class="icon">&#9733;</span>
             <div><div>Add Device</div><div class="desc">Set up new hardware</div></div>
         </a>
+        <a href="#" data-page="profiles">
+            <span class="icon">&#9881;</span>
+            <div><div>Profiles</div><div class="desc">Config templates</div></div>
+        </a>
         <a href="#" data-page="mesh">
             <span class="icon">&#9673;</span>
             <div><div>Mesh Network</div><div class="desc">Topology &amp; connectivity</div></div>
@@ -427,7 +431,7 @@ tr.clickable { cursor: pointer; }
 
 <script>
 // ─── State ───
-let S = { devices: [], firmware: [], stats: {}, events: [], page: 'dashboard' };
+let S = { devices: [], firmware: [], stats: {}, events: [], profiles: [], page: 'dashboard' };
 let apiKey = localStorage.getItem('fleet_api_key') || '';
 let serverConnected = true;
 
@@ -525,9 +529,10 @@ document.querySelectorAll('.sidebar nav a').forEach(a => a.addEventListener('cli
 // ─── Data ───
 async function refresh() {
     try {
-        [S.devices, S.firmware, S.stats, S.events] = await Promise.all([
+        [S.devices, S.firmware, S.stats, S.events, S.profiles] = await Promise.all([
             api('GET', '/api/devices'), api('GET', '/api/firmware'),
             api('GET', '/api/stats'), api('GET', '/api/events?limit=30'),
+            api('GET', '/api/profiles'),
         ]);
     } catch(e) { console.error('Refresh:', e); }
     render();
@@ -535,7 +540,7 @@ async function refresh() {
 
 function render() {
     const pages = { dashboard: renderDashboard, devices: renderDevices, firmware: renderFirmware,
-                    security: renderSecurity, commission: renderCommission, mesh: renderMesh, events: renderEvents };
+                    security: renderSecurity, commission: renderCommission, profiles: renderProfiles, mesh: renderMesh, events: renderEvents };
     (pages[S.page] || renderDashboard)();
     // Re-trigger fade animation
     const content = document.getElementById('pageContent');
@@ -1262,6 +1267,135 @@ async function generateProvision() {
                 <span style="font-size:0.8em;color:var(--text2)">Copy the provisioning files from the server's data directory to an SD card, then insert it into the device.</span>
             </div></div>`;
         toast('Provisioning package ready: ' + r.device_id); refresh();
+    } catch(e) { toast(e.message, 'error'); }
+}
+
+// ===============================================
+//  PROFILES
+// ===============================================
+function renderProfiles() {
+    setPage('Device Profiles', 'Reusable config templates for groups of devices', `
+        <button class="btn" onclick="refresh()">Refresh</button>
+        <button class="btn btn-accent" onclick="createProfileDialog()">+ New Profile</button>`);
+
+    document.getElementById('pageContent').innerHTML = `
+        <div class="callout callout-info"><span class="callout-icon">&#9881;</span><div>Profiles are config templates. Assign a profile to a device, and its config will be applied on each heartbeat. Device-level config overrides profile values.</div></div>
+
+        ${S.profiles.length ? `
+        <div class="panel"><table>
+        <thead><tr><th>Name</th><th>Description</th><th>Config Keys</th><th>Devices</th><th>Created</th><th></th></tr></thead>
+        <tbody>${S.profiles.map(p => {
+            const devCount = S.devices.filter(d => d.profile_id === p.id).length;
+            const keys = Object.keys(p.config || {});
+            return '<tr>' +
+                '<td><strong>' + esc(p.name) + '</strong><br><span class="mono text-muted" style="font-size:0.64em">' + esc(p.id) + '</span></td>' +
+                '<td>' + esc(p.description || '--') + '</td>' +
+                '<td>' + (keys.length ? keys.map(k=>'<span class="tag">'+esc(k)+'</span>').join(' ') : '<span class="text-muted">none</span>') + '</td>' +
+                '<td>' + devCount + ' device' + (devCount!==1?'s':'') + '</td>' +
+                '<td>' + fmtDateTime(p.created_at) + '</td>' +
+                '<td class="btn-group">' +
+                    '<button class="btn btn-sm btn-primary" onclick="editProfileDialog(\'' + esc(p.id) + '\')">Edit</button>' +
+                    '<button class="btn btn-sm btn-accent" onclick="applyProfile(\'' + esc(p.id) + '\')">Apply</button>' +
+                    '<button class="btn btn-sm btn-danger" onclick="deleteProfile(\'' + esc(p.id) + '\')">Delete</button>' +
+                '</td>' +
+            '</tr>';
+        }).join('')}</tbody></table></div>` : `
+        <div class="empty-state">
+            <div class="es-icon">&#9881;</div>
+            <div class="es-title">No profiles yet</div>
+            <div class="es-hint">Create a profile to define config templates for groups of devices. Example profiles: "display-kiosk", "sensor-node", "mesh-relay".</div>
+        </div>`}
+
+        ${S.profiles.length ? `
+        <div class="section-header" style="margin-top:20px"><h3>Assignment</h3><p>Assign profiles to devices to push config</p></div>
+        <div class="panel"><table>
+        <thead><tr><th>Device</th><th>Board</th><th>Profile</th><th></th></tr></thead>
+        <tbody>${S.devices.map(d => {
+            const opts = '<option value="">None</option>' + S.profiles.map(p =>
+                '<option value="' + esc(p.id) + '"' + (d.profile_id===p.id?' selected':'') + '>' + esc(p.name) + '</option>'
+            ).join('');
+            return '<tr>' +
+                '<td><strong>' + esc(d.device_name||d.device_id) + '</strong></td>' +
+                '<td>' + esc(d.board||'--') + '</td>' +
+                '<td><select style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;font-family:var(--mono);font-size:0.8em;border-radius:2px" onchange="assignProfile(\'' + esc(d.device_id) + '\',this.value)">' + opts + '</select></td>' +
+                '<td>' + (d.profile_id ? '<span class="badge badge-blue">' + esc(d.profile_id) + '</span>' : '') + '</td>' +
+            '</tr>';
+        }).join('')}</tbody></table></div>` : ''}`;
+}
+
+function createProfileDialog() {
+    openModal('Create Profile', `
+        <div class="form-group"><label>Name</label><input id="profName" placeholder="e.g., display-kiosk"><div class="field-hint">Short name to identify this profile</div></div>
+        <div class="form-group"><label>Description</label><input id="profDesc" placeholder="Config for wall-mounted display devices"></div>
+        <div class="form-group"><label>Config (JSON)</label><textarea id="profConfig" rows="5" placeholder='{\n  "heartbeat_interval_s": 30,\n  "display_brightness": 80,\n  "sleep_timeout_s": 0\n}'></textarea><div class="field-hint">JSON object with config key-value pairs</div></div>
+    `, `<button class="btn btn-accent" onclick="createProfile()">Create</button>
+        <button class="btn" onclick="closeModal()">Cancel</button>`);
+}
+
+async function createProfile() {
+    const name = document.getElementById('profName').value.trim();
+    if (!name) { toast('Name required', 'error'); return; }
+    let config = {};
+    const cfgText = document.getElementById('profConfig').value.trim();
+    if (cfgText) {
+        try { config = JSON.parse(cfgText); } catch(e) { toast('Invalid JSON: '+e.message, 'error'); return; }
+    }
+    try {
+        await api('POST', '/api/profiles', {
+            name, description: document.getElementById('profDesc').value, config
+        });
+        toast('Profile created: ' + name); closeModal(); refresh();
+    } catch(e) { toast(e.message, 'error'); }
+}
+
+function editProfileDialog(id) {
+    const p = S.profiles.find(x => x.id === id);
+    if (!p) return;
+    openModal('Edit Profile: ' + p.name, `
+        <div class="form-group"><label>Name</label><input id="profName" value="${esc(p.name)}"></div>
+        <div class="form-group"><label>Description</label><input id="profDesc" value="${esc(p.description||'')}"></div>
+        <div class="form-group"><label>Config (JSON)</label><textarea id="profConfig" rows="6">${esc(JSON.stringify(p.config||{}, null, 2))}</textarea></div>
+    `, `<button class="btn btn-accent" onclick="updateProfile('${esc(id)}')">Save</button>
+        <button class="btn" onclick="closeModal()">Cancel</button>`);
+}
+
+async function updateProfile(id) {
+    let config = {};
+    const cfgText = document.getElementById('profConfig').value.trim();
+    if (cfgText) {
+        try { config = JSON.parse(cfgText); } catch(e) { toast('Invalid JSON', 'error'); return; }
+    }
+    try {
+        await api('PUT', '/api/profiles/'+encodeURIComponent(id), {
+            name: document.getElementById('profName').value,
+            description: document.getElementById('profDesc').value,
+            config
+        });
+        toast('Profile updated'); closeModal(); refresh();
+    } catch(e) { toast(e.message, 'error'); }
+}
+
+async function deleteProfile(id) {
+    if (!confirm('Delete this profile? Devices assigned to it will keep their current config.')) return;
+    try { await api('DELETE', '/api/profiles/'+encodeURIComponent(id)); toast('Profile deleted'); refresh(); }
+    catch(e) { toast(e.message, 'error'); }
+}
+
+async function applyProfile(id) {
+    const p = S.profiles.find(x => x.id === id);
+    if (!confirm('Apply profile "' + (p?p.name:id) + '" to all assigned devices?\n\nThis will push the profile config to each device on their next heartbeat.')) return;
+    try {
+        const r = await api('POST', '/api/profiles/'+encodeURIComponent(id)+'/apply');
+        toast('Profile applied to ' + r.devices_updated + ' devices');
+        refresh();
+    } catch(e) { toast(e.message, 'error'); }
+}
+
+async function assignProfile(deviceId, profileId) {
+    try {
+        await api('PATCH', '/api/devices/'+encodeURIComponent(deviceId), { profile_id: profileId || null });
+        toast('Profile ' + (profileId ? 'assigned' : 'removed'));
+        refresh();
     } catch(e) { toast(e.message, 'error'); }
 }
 
