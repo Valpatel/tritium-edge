@@ -145,7 +145,24 @@ def process_heartbeat(store: FleetStore, device_id: str, body: dict) -> dict:
             cmd["delivered_at"] = datetime.now(timezone.utc).isoformat()
         store.save_commands(device_id, pending_cmds)
 
-    # TODO: Config drift detection — compare reported_config vs desired_config
-    # When implemented, include desired_config in response only on drift
+    # Config drift detection — compare reported_config vs desired_config
+    desired = device.get("desired_config")
+    if desired:
+        reported = device.get("reported_config", {})
+        drift = {}
+        for key, val in desired.items():
+            if reported.get(key) != val:
+                drift[key] = val
+        if drift:
+            response["desired_config"] = drift
+            if not device.get("_config_drift_logged"):
+                store.add_event("config_drift", device_id,
+                                f"Drift in: {', '.join(drift.keys())}")
+                device["_config_drift_logged"] = True
+                store.save_device(device)
+        else:
+            if device.get("_config_drift_logged"):
+                device["_config_drift_logged"] = False
+                store.save_device(device)
 
     return response

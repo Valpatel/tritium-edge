@@ -93,6 +93,37 @@ async def send_command(device_id: str, body: CommandRequest, request: Request):
     return cmd
 
 
+@router.get("/devices/{device_id}/config")
+async def get_device_config(device_id: str, request: Request):
+    """Get desired and reported config for a device."""
+    store = _get_store(request)
+    device = store.get_device(device_id)
+    if not device:
+        raise HTTPException(404, "Device not found")
+    return {
+        "device_id": device_id,
+        "desired_config": device.get("desired_config", {}),
+        "reported_config": device.get("reported_config", {}),
+    }
+
+
+@router.put("/devices/{device_id}/config")
+async def set_device_config(device_id: str, request: Request):
+    """Set desired config for a device. Merged on next heartbeat."""
+    store = _get_store(request)
+    device = store.get_device(device_id)
+    if not device:
+        raise HTTPException(404, "Device not found")
+    body = await request.json()
+    desired = device.get("desired_config", {})
+    desired.update(body)
+    device["desired_config"] = desired
+    device["_config_drift_logged"] = False
+    store.save_device(device)
+    store.add_event("config_updated", device_id, f"Keys: {', '.join(body.keys())}")
+    return {"status": "ok", "desired_config": desired}
+
+
 # --- Device-facing heartbeat endpoint ---
 
 @router.post("/devices/{device_id}/status")

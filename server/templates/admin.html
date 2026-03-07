@@ -712,6 +712,7 @@ function showDevice(id) {
     `, `
         <button class="btn btn-primary" onclick="pushOtaDialog('${esc(d.device_id)}');closeModal()">Push Firmware Update</button>
         <button class="btn" onclick="editDevice('${esc(d.device_id)}');closeModal()">Edit Info</button>
+        <button class="btn btn-accent" onclick="editConfig('${esc(d.device_id)}');closeModal()">Config</button>
         <button class="btn" onclick="rebootDevice('${esc(d.device_id)}')">Reboot</button>
         <button class="btn btn-purple" onclick="rollbackDevice('${esc(d.device_id)}')">Rollback Firmware</button>
         ${d.pending_ota?'<button class="btn" onclick="clearOta(\''+esc(d.device_id)+'\')">Cancel Update</button>':''}
@@ -759,6 +760,71 @@ async function rollbackDevice(id) {
 async function clearOta(id) {
     try { await api('POST', '/api/ota/clear/'+encodeURIComponent(id)); toast('Pending update cancelled'); closeModal(); refresh(); }
     catch(e) { toast(e.message, 'error'); }
+}
+
+// ===============================================
+//  CONFIG EDITOR
+// ===============================================
+async function editConfig(id) {
+    let cfgData;
+    try { cfgData = await api('GET', '/api/devices/'+encodeURIComponent(id)+'/config'); }
+    catch(e) { toast(e.message, 'error'); return; }
+
+    const desired = cfgData.desired_config || {};
+    const reported = cfgData.reported_config || {};
+    const allKeys = [...new Set([...Object.keys(desired), ...Object.keys(reported)])].sort();
+
+    let configRows = '';
+    if (allKeys.length) {
+        configRows = allKeys.map(k => {
+            const dv = desired[k] !== undefined ? JSON.stringify(desired[k]) : '';
+            const rv = reported[k] !== undefined ? JSON.stringify(reported[k]) : '';
+            const match = dv && rv && dv === rv;
+            const drift = dv && rv && dv !== rv;
+            return '<tr>' +
+                '<td class="mono">' + esc(k) + '</td>' +
+                '<td class="mono">' + esc(rv || '--') + '</td>' +
+                '<td class="mono">' + esc(dv || '--') + '</td>' +
+                '<td>' + (drift ? '<span class="badge badge-warn">Drift</span>' : match ? '<span class="badge badge-on">In Sync</span>' : '<span class="badge badge-dim">Pending</span>') + '</td>' +
+            '</tr>';
+        }).join('');
+    } else {
+        configRows = '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">No config set. Add key-value pairs below.</td></tr>';
+    }
+
+    openModal('Device Config // ' + id, `
+        <div class="callout callout-info"><span class="callout-icon">&#9881;</span><div>Set desired configuration. The device will receive changed values on its next heartbeat and apply them.</div></div>
+        <div class="panel" style="margin-bottom:16px">
+            <table><thead><tr><th>Key</th><th>Reported</th><th>Desired</th><th>Status</th></tr></thead>
+            <tbody>${configRows}</tbody></table>
+        </div>
+        <div class="section-header"><h3>Update Config</h3><p>Add or change configuration values</p></div>
+        <div class="form-row">
+            <div class="form-group"><label>Key</label><input id="cfgKey" placeholder="e.g., heartbeat_interval_s"><div class="field-hint">Config key name</div></div>
+            <div class="form-group"><label>Value</label><input id="cfgVal" placeholder="e.g., 30 or &quot;hello&quot; or true"><div class="field-hint">JSON value (number, string, boolean)</div></div>
+        </div>
+        <div class="form-group"><label>Or paste JSON</label><textarea id="cfgJson" rows="3" placeholder='{"heartbeat_interval_s": 30, "display_brightness": 80}'></textarea><div class="field-hint">Bulk update: paste a JSON object with multiple keys</div></div>
+    `, `<button class="btn btn-accent" onclick="saveConfig('${esc(id)}')">Save Config</button>
+        <button class="btn" onclick="closeModal()">Cancel</button>`);
+}
+
+async function saveConfig(id) {
+    let config = {};
+    const jsonText = document.getElementById('cfgJson').value.trim();
+    if (jsonText) {
+        try { config = JSON.parse(jsonText); } catch(e) { toast('Invalid JSON: ' + e.message, 'error'); return; }
+    }
+    const key = document.getElementById('cfgKey').value.trim();
+    const val = document.getElementById('cfgVal').value.trim();
+    if (key && val) {
+        try { config[key] = JSON.parse(val); } catch(e) { config[key] = val; }
+    }
+    if (!Object.keys(config).length) { toast('Nothing to save', 'error'); return; }
+    try {
+        await api('PUT', '/api/devices/'+encodeURIComponent(id)+'/config', config);
+        toast('Config updated — device will receive changes on next heartbeat');
+        closeModal(); refresh();
+    } catch(e) { toast(e.message, 'error'); }
 }
 
 // ===============================================

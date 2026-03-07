@@ -70,6 +70,7 @@ class DeviceUpdate(BaseModel):
     notes: Optional[str] = None
     group: Optional[str] = None
     profile_id: Optional[str] = None
+    desired_config: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
