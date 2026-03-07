@@ -54,8 +54,43 @@ points.
 | Config-as-code | Pydantic settings with environment variable overrides. No magic config files. |
 | CYBERCORE aesthetic | Cyan `#00f0ff`, magenta `#ff2a6d`, green `#05ffa1`, yellow `#fcee0a`. No frontend frameworks. |
 | Transport agnostic | The mesh communicates through *any* available channel. WiFi, BLE, LoRa, ESP-NOW, 4G, Zigbee, sound, light — if it can carry bits, it's a transport. |
-| Self-replicating | Every node is a seed vault. Firmware, configs, models, code — carried on SD cards and flash. New nodes bootstrap from any existing node. The mesh grows itself. |
+| Self-replicating | Every node carries what fits — its own firmware, its family's firmware, or the whole ecosystem. Nodes seed new nodes. The mesh grows itself. |
 | AGPL-3.0 by design | The license reinforces the architecture. Code must remain open. Improvements are shared. The mesh spreads, and so does the source. |
+
+### Self-Replication: Every Node is a Seed
+
+What a node can **compute** and what it can **carry** are independent. A node's
+replication role depends on its storage, not its processing power.
+
+| Tier | Storage | Carries | Role |
+|------|---------|---------|------|
+| **Minimal** | 16-24MB flash | Own firmware + config | Leaf — receives updates, carries itself |
+| **Light** | 1-4GB flash/SD | Firmware for its hardware family | Relay — passes firmware to its neighbors |
+| **Vault** | 32-256GB SD | Multi-family firmware, models, configs, docs | Seed — bootstraps new nodes from any family |
+| **Full mirror** | SSD/NVMe | Everything | Mirror — complete ecosystem replica, seeds anything |
+
+A solar-powered ESP32 with a 128GB SD card can't run a vision model, but it
+**carries** that model. When a Jetson joins the mesh, the ESP32 seeds it —
+even over slow Bluetooth. The Jetson boots, loads the model, and starts
+inference. The ESP32 made that possible without running a single GPU cycle.
+
+**Implementation impact on tritium-edge:**
+
+- `hal_sdcard` already supports high-capacity SDMMC. Vault functionality
+  builds on this with a structured layout: `sd:/tritium/firmware/`,
+  `sd:/tritium/models/`, `sd:/tritium/config/`, `sd:/tritium/src/`.
+- `hal_provision` gains a `seed_from_peer()` function — receive ecosystem
+  data from any available transport.
+- `hal_ota` gains `serve_firmware()` — make stored firmware available to
+  peers requesting it over ESP-NOW, BLE, or WiFi.
+- The heartbeat reports a `storage_tier` field so the server knows each
+  node's replication capability.
+- Vault inventory (what firmware/models a node carries) is published to
+  `tritium/{site}/mesh/{device_id}/inventory`.
+
+The replication is opportunistic. Nodes don't push everything everywhere —
+they advertise what they have, and peers pull what they need. Background
+sync fills vaults incrementally when bandwidth is available.
 
 ### Communications Philosophy: Every Channel is a Transport
 

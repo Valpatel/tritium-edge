@@ -86,6 +86,7 @@ graph TB
 - **Remote commands** — Reboot, GPIO control, diagnostics, sleep — delivered via heartbeat
 - **Multi-tenant** — Organizations, users, roles. Your friends get their own accounts
 - **Multi-family hardware** — ESP32 first, then STM32, nRF52, ARM Linux SBCs
+- **Self-replicating mesh** — Nodes carry firmware, models, and configs. New nodes bootstrap from any peer. A tiny ESP32 with a big SD card can seed a Jetson
 
 ## Supported Hardware (ESP32-S3 Family)
 
