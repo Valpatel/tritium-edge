@@ -29,22 +29,23 @@
 #define LCD_DE              5
 
 // RGB data pins (active bits only, 16-bit RGB565)
-#define LCD_R3              1
-#define LCD_R4              2
-#define LCD_R5              40
-#define LCD_R6              41
-#define LCD_R7              42
-#define LCD_G2              0
-#define LCD_G3              39
-#define LCD_G4              45
-#define LCD_G5              47
-#define LCD_G6              48
-#define LCD_G7              21
+// Pin mapping from Waveshare reference: D0-D4=Blue, D5-D10=Green, D11-D15=Red
 #define LCD_B3              14
 #define LCD_B4              38
 #define LCD_B5              18
 #define LCD_B6              17
 #define LCD_B7              10
+#define LCD_G2              39
+#define LCD_G3              0
+#define LCD_G4              45
+#define LCD_G5              48
+#define LCD_G6              47
+#define LCD_G7              21
+#define LCD_R3              1
+#define LCD_R4              2
+#define LCD_R5              42
+#define LCD_R6              41
+#define LCD_R7              40
 
 // Backlight via CH422G IO expander (EXIO2)
 #define LCD_BL              (-1)  // Via IO expander
