@@ -68,17 +68,11 @@ bool EspNowHAL::init(EspNowRole role, uint8_t channel) {
     _role = role;
     _channel = channel;
 
-    // Ensure WiFi is in STA mode (don't override if already STA or STA+AP)
-    wifi_mode_t mode;
-    esp_wifi_get_mode(&mode);
-    if (mode == WIFI_MODE_NULL) {
-        WiFi.mode(WIFI_STA);
-        DBG_INFO(TAG, "Set WiFi mode to STA");
-    } else if (mode == WIFI_MODE_AP) {
-        WiFi.mode(WIFI_AP_STA);
-        DBG_INFO(TAG, "Set WiFi mode to AP+STA (was AP)");
-    }
-    // STA or AP_STA are fine, leave as-is
+    // Initialize WiFi in STA mode for ESP-NOW
+    // Must call WiFi.mode() before any esp_wifi_* calls to init the stack
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    DBG_INFO(TAG, "WiFi STA mode initialized");
 
     // Set channel
     esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);

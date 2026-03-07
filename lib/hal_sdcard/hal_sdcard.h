@@ -39,6 +39,14 @@ public:
     // Get filesystem type string
     const char* getFilesystemType() const;
 
+    // USB Mass Storage — expose SD card as a thumb drive over USB
+    // When active, the SD card appears as a removable drive on the host PC.
+    // Users can drag-and-drop firmware.ota files for OTA updates.
+    // Note: SD card is shared — avoid concurrent read/write from firmware while MSC is active.
+    bool startUSBMSC();
+    void stopUSBMSC();
+    bool isUSBMSCActive() const { return _msc_active; }
+
     // Test harness for SD card operations
     struct TestResult {
         bool mount_ok;
@@ -59,4 +67,5 @@ public:
 
 private:
     bool _mounted = false;
+    bool _msc_active = false;
 };

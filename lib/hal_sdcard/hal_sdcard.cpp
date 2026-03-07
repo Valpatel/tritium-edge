@@ -206,14 +206,28 @@ SDCardHAL::TestResult SDCardHAL::runTest(int cycles, size_t blockSize) {
     return result;
 }
 
+bool SDCardHAL::startUSBMSC() { return false; }
+void SDCardHAL::stopUSBMSC() {}
+
 #else // ESP32
 
 #include <Arduino.h>
 #include <SD_MMC.h>
 #include <FS.h>
 
+#if CONFIG_TINYUSB_MSC_ENABLED
+#include "USBMSC.h"
+#endif
+
+#include "sdmmc_cmd.h"
+#include "driver/sdmmc_host.h"
+
 #ifndef HAS_SDCARD
 #define HAS_SDCARD 0
+#endif
+
+#if HAS_SDCARD
+static sdmmc_card_t* _sdCardPtr = nullptr;
 #endif
 
 bool SDCardHAL::init() {
@@ -226,6 +240,27 @@ bool SDCardHAL::init() {
         return false;
     }
     _mounted = true;
+
+    // Probe card for USB MSC support — reuse the already-initialized SDMMC host
+    if (!_sdCardPtr) {
+        _sdCardPtr = (sdmmc_card_t*)malloc(sizeof(sdmmc_card_t));
+        if (_sdCardPtr) {
+            sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+            host.flags = SDMMC_HOST_FLAG_1BIT;
+            host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+            esp_err_t err = sdmmc_card_init(&host, _sdCardPtr);
+            if (err != ESP_OK) {
+                DBG_WARN(TAG, "Card probe for USB MSC failed: 0x%x", err);
+                free(_sdCardPtr);
+                _sdCardPtr = nullptr;
+            } else {
+                DBG_INFO(TAG, "Card probed: %u sectors of %u bytes",
+                         (unsigned)_sdCardPtr->csd.capacity,
+                         (unsigned)_sdCardPtr->csd.sector_size);
+            }
+        }
+    }
+
     return true;
 #else
     return false;
@@ -557,5 +592,98 @@ SDCardHAL::TestResult SDCardHAL::runTest(int cycles, size_t blockSize) {
 
     return result;
 }
+
+// ---------------------------------------------------------------------------
+// USB Mass Storage — expose SD card as a removable drive
+// ---------------------------------------------------------------------------
+#if HAS_SDCARD && CONFIG_TINYUSB_MSC_ENABLED
+
+static USBMSC _usbMsc;
+
+static int32_t _mscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
+    if (!_sdCardPtr) return -1;
+    uint32_t sectorCount = bufsize / _sdCardPtr->csd.sector_size;
+    if (sectorCount == 0) sectorCount = 1;
+    esp_err_t err = sdmmc_read_sectors(_sdCardPtr, buffer, lba, sectorCount);
+    return (err == ESP_OK) ? (int32_t)bufsize : -1;
+}
+
+static int32_t _mscWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
+    if (!_sdCardPtr) return -1;
+    uint32_t sectorCount = bufsize / _sdCardPtr->csd.sector_size;
+    if (sectorCount == 0) sectorCount = 1;
+    esp_err_t err = sdmmc_write_sectors(_sdCardPtr, buffer, lba, sectorCount);
+    return (err == ESP_OK) ? (int32_t)bufsize : -1;
+}
+
+static bool _mscStartStop(uint8_t power_condition, bool start, bool load_eject) {
+    DBG_INFO(TAG, "USB MSC: start=%d load_eject=%d", start, load_eject);
+    return true;
+}
+
+bool SDCardHAL::startUSBMSC() {
+    if (_msc_active) return true;
+    if (!_mounted || !_sdCardPtr) {
+        DBG_ERROR(TAG, "Cannot start USB MSC: SD card not mounted or not probed");
+        return false;
+    }
+
+    uint32_t sectorSize = _sdCardPtr->csd.sector_size;
+    uint32_t sectorCount = _sdCardPtr->csd.capacity;
+
+    DBG_INFO(TAG, "USB MSC: sectors=%u, sector_size=%u, total=%llu MB",
+             sectorCount, sectorSize,
+             (uint64_t)sectorCount * sectorSize / (1024 * 1024));
+
+    // Unmount FAT to avoid concurrent access conflicts
+    SD_MMC.end();
+
+    _usbMsc.vendorID("ESP32-S3");
+    _usbMsc.productID("SD Card");
+    _usbMsc.productRevision("1.0");
+    _usbMsc.onStartStop(_mscStartStop);
+    _usbMsc.onRead(_mscRead);
+    _usbMsc.onWrite(_mscWrite);
+    _usbMsc.mediaPresent(true);
+
+    if (!_usbMsc.begin(sectorCount, sectorSize)) {
+        DBG_ERROR(TAG, "USB MSC begin failed");
+        // Remount FAT
+        SD_MMC.begin("/sdcard", true);
+        return false;
+    }
+
+    _msc_active = true;
+    DBG_INFO(TAG, "USB MSC started — SD card visible as USB drive");
+    DBG_INFO(TAG, "SD FAT unmounted to prevent conflicts. Call stopUSBMSC() to remount.");
+    return true;
+}
+
+void SDCardHAL::stopUSBMSC() {
+    if (!_msc_active) return;
+    _usbMsc.end();
+    _msc_active = false;
+
+    // Remount FAT filesystem
+    SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
+    if (SD_MMC.begin("/sdcard", true)) {
+        DBG_INFO(TAG, "SD FAT remounted after USB MSC");
+    } else {
+        DBG_WARN(TAG, "SD FAT remount failed after USB MSC");
+        _mounted = false;
+    }
+
+    DBG_INFO(TAG, "USB MSC stopped");
+}
+
+#else // No SD or no TinyUSB MSC
+
+bool SDCardHAL::startUSBMSC() {
+    DBG_WARN(TAG, "USB MSC not available (no SD card or TinyUSB MSC not enabled)");
+    return false;
+}
+void SDCardHAL::stopUSBMSC() {}
+
+#endif // HAS_SDCARD && CONFIG_TINYUSB_MSC_ENABLED
 
 #endif // SIMULATOR
