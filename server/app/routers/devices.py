@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ..models import CommandRequest, DeviceUpdate
 from ..services.device_service import enrich_devices, process_heartbeat
+from .ws import broadcast
 
 router = APIRouter(prefix="/api", tags=["devices"])
 
@@ -104,9 +105,18 @@ async def device_heartbeat(device_id: str, request: Request):
         raise HTTPException(400, "Invalid device_id")
     body = await request.json()
     store = _get_store(request)
+    is_new = store.get_device(device_id) is None
     result = process_heartbeat(store, device_id, body)
     if "error" in result:
         raise HTTPException(429, result["error"])
+
+    # Broadcast to WebSocket clients
+    device = store.get_device(device_id)
+    if device:
+        enrich_devices([device])
+        event_type = "device_registered" if is_new else "device_heartbeat"
+        await broadcast(event_type, device)
+
     return result
 
 

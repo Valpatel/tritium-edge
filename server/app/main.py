@@ -27,6 +27,7 @@ from .routers import (
     commission_router,
     events_router,
     stats_router,
+    ws_router,
 )
 
 
@@ -87,6 +88,7 @@ app.include_router(ota_router)
 app.include_router(commission_router)
 app.include_router(events_router)
 app.include_router(stats_router)
+app.include_router(ws_router)
 
 # Templates (reuse existing admin.html)
 _server_dir = Path(__file__).parent.parent

@@ -12,6 +12,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from ..services.ota import parse_ota_header, compute_crc32
+from .ws import broadcast
 
 router = APIRouter(prefix="/api", tags=["firmware"])
 
@@ -85,6 +86,7 @@ async def upload_firmware(
     }
     store.save_firmware_meta(meta)
     store.add_event("firmware_uploaded", detail=f"{version} ({fw_id}), {len(data)} bytes")
+    await broadcast("firmware_uploaded", meta)
     return meta
 
 

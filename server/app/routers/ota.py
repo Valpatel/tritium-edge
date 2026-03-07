@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 
 from ..models import OTAPushRequest
+from .ws import broadcast
 
 router = APIRouter(prefix="/api", tags=["ota"])
 
@@ -47,6 +48,7 @@ async def ota_push(device_id: str, body: OTAPushRequest, request: Request):
     fw["deploy_count"] = fw.get("deploy_count", 0) + 1
     store.save_firmware_meta(fw)
     store.add_event("ota_scheduled", device_id, f"Firmware {fw['version']} ({fw_id})")
+    await broadcast("ota_scheduled", {"device_id": device_id, "firmware_id": fw_id, "version": fw["version"]})
     return {"status": "scheduled", "device_id": device_id, "firmware_id": fw_id}
 
 

@@ -9,6 +9,7 @@ from .ota import router as ota_router
 from .commission import router as commission_router
 from .events import router as events_router
 from .stats import router as stats_router
+from .ws import router as ws_router
 
 __all__ = [
     "devices_router",
@@ -17,4 +18,5 @@ __all__ = [
     "commission_router",
     "events_router",
     "stats_router",
+    "ws_router",
 ]
