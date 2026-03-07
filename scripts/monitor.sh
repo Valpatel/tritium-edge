@@ -1,33 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Serial monitor wrapper with color output and timestamps.
-# Usage: ./scripts/monitor.sh [PORT] [BAUD]
+# Open serial monitor for a connected ESP32 board.
+#
+# Usage:
+#   ./scripts/monitor.sh          # Auto-detect port
+#   ./scripts/monitor.sh /dev/ttyACM0 115200   # Explicit port + baud
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PIO="${PIO:-pio}"
 PORT="${1:-}"
 BAUD="${2:-115200}"
 
-# If no port specified, let PlatformIO auto-detect
-if [ -n "$PORT" ]; then
-    PORT_ARG="--port $PORT"
-else
-    PORT_ARG=""
+# Auto-detect if no port given
+if [ -z "$PORT" ]; then
+    for dev in /dev/ttyACM0 /dev/ttyUSB0 /dev/ttyACM1 /dev/ttyUSB1; do
+        if [ -e "$dev" ]; then
+            PORT="$dev"
+            break
+        fi
+    done
 fi
 
-echo "=== ESP32 Serial Monitor ==="
-echo "Baud: $BAUD"
-[ -n "$PORT" ] && echo "Port: $PORT" || echo "Port: auto-detect"
+if [ -z "$PORT" ]; then
+    echo "ERROR: No serial device found."
+    exit 1
+fi
+
+# Fix permissions if needed
+if [ ! -w "$PORT" ]; then
+    echo "Fixing permissions on $PORT..."
+    sudo chmod 666 "$PORT"
+fi
+
+echo "=== Monitor: $PORT @ ${BAUD}baud ==="
 echo "Press Ctrl+C to exit"
 echo "---"
 
 cd "$PROJECT_DIR"
-
-# Use PlatformIO monitor with filters for color and timestamp
-# shellcheck disable=SC2086
-exec $PIO device monitor \
-    -b "$BAUD" \
-    $PORT_ARG \
-    --filter colorize \
-    --filter time
+exec $PIO device monitor -b "$BAUD" -p "$PORT" --filter colorize --filter time
