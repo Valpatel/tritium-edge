@@ -31,4 +31,7 @@ async def fleet_stats(request: Request):
         "attested_devices": attested,
         "unattested_devices": unattested,
         "no_attestation": no_hash,
+        "total_profiles": len(store.list_profiles()),
+        "profiled_devices": sum(1 for d in devices if d.get("profile_id")),
+        "config_drift": sum(1 for d in devices if d.get("_config_drift_logged")),
     }
