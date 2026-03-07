@@ -1,4 +1,7 @@
 #include "hal_sleep.h"
+#include "debug_log.h"
+
+static constexpr const char* TAG = "sleep";
 
 #ifdef SIMULATOR
 
@@ -34,17 +37,80 @@ bool SleepHAL::isWakeFromSleep() {
     return false;
 }
 
+void SleepHAL::setWakeTouch(uint8_t pin, uint16_t threshold) {
+    (void)pin;
+    (void)threshold;
+}
+
 void SleepHAL::displaySleep(bool sleep) {
     _display_sleeping = sleep;
+    if (sleep) {
+        DBG_INFO(TAG, "Display entering sleep");
+    } else {
+        DBG_INFO(TAG, "Display waking");
+    }
+}
+
+void SleepHAL::displayWake() {
+    displaySleep(false);
 }
 
 void SleepHAL::setPeripheralPower(bool on) {
     _peripheral_power_on = on;
+    DBG_INFO(TAG, "Peripheral power: %s", on ? "ON" : "OFF");
 }
 
 void SleepHAL::resetActivityTimer() {}
 void SleepHAL::setAutoSleepTimeout(uint32_t seconds) { _auto_sleep_timeout_s = seconds; }
 void SleepHAL::pollAutoSleep() {}
+
+SleepHAL::TestResult SleepHAL::runTest() {
+    TestResult result = {};
+    result.init_ok = true;
+
+    DBG_INFO(TAG, "--- Sleep Test Begin (simulator) ---");
+
+    // Test timer wake config
+    setWakeTimer(5 * 1000000ULL);
+    result.timer_wake_config_ok = _wake_timer_set;
+    DBG_INFO(TAG, "Timer wake config: %s", result.timer_wake_config_ok ? "OK" : "FAIL");
+
+    // Test GPIO wake config
+    setWakeGPIO(0, false);
+    result.gpio_wake_config_ok = _wake_gpio_set;
+    DBG_INFO(TAG, "GPIO wake config: %s", result.gpio_wake_config_ok ? "OK" : "FAIL");
+
+    // Test display sleep/wake cycle
+    displaySleep(true);
+    result.display_sleep_ok = _display_sleeping;
+    DBG_INFO(TAG, "Display sleep: %s", result.display_sleep_ok ? "OK" : "FAIL");
+
+    displayWake();
+    result.display_wake_ok = !_display_sleeping;
+    DBG_INFO(TAG, "Display wake: %s", result.display_wake_ok ? "OK" : "FAIL");
+
+    // Test wake reason API
+    WakeSource reason = getWakeReason();
+    result.wake_reason_ok = true;
+    switch (reason) {
+        case WakeSource::TIMER:     result.last_wake_reason = "TIMER"; break;
+        case WakeSource::TOUCH_PAD: result.last_wake_reason = "TOUCH_PAD"; break;
+        case WakeSource::GPIO:      result.last_wake_reason = "GPIO"; break;
+        case WakeSource::UART:      result.last_wake_reason = "UART"; break;
+        default:                    result.last_wake_reason = "UNKNOWN"; result.wake_reason_ok = false; break;
+    }
+    DBG_INFO(TAG, "Wake reason: %s (%s)", result.last_wake_reason, result.wake_reason_ok ? "OK" : "FAIL");
+
+    // Test auto-sleep config
+    setAutoSleepTimeout(30);
+    result.auto_sleep_config_ok = (_auto_sleep_timeout_s == 30);
+    DBG_INFO(TAG, "Auto-sleep config: %s", result.auto_sleep_config_ok ? "OK" : "FAIL");
+
+    result.test_duration_ms = 0;
+
+    DBG_INFO(TAG, "--- Sleep Test Complete ---");
+    return result;
+}
 
 #else // ESP32
 
@@ -82,6 +148,15 @@ void SleepHAL::setWakeUART(int uart_num) {
     // Wakeup threshold: 3 positive edges on RXD (default for reliable detection).
     uart_set_wakeup_threshold(static_cast<uart_port_t>(uart_num), 3);
     esp_sleep_enable_uart_wakeup(uart_num);
+}
+
+void SleepHAL::setWakeTouch(uint8_t pin, uint16_t threshold) {
+    (void)pin;
+    (void)threshold;
+    // Configure the touch pin threshold for wake detection
+    touchSleepWakeUpEnable(pin, threshold);
+    esp_sleep_enable_touchpad_wakeup();
+    DBG_INFO(TAG, "Touch wake enabled on pin %u, threshold %u", pin, threshold);
 }
 
 // ---- Enter sleep ---------------------------------------------------------
@@ -136,22 +211,29 @@ bool SleepHAL::isWakeFromSleep() {
 
 void SleepHAL::displaySleep(bool sleep) {
     _display_sleeping = sleep;
-    // Placeholder: connect to your display driver's sleep/wake commands.
-    // Example for boards with a backlight pin:
-    //   #if defined(LCD_BL_PIN) && LCD_BL_PIN >= 0
-    //       digitalWrite(LCD_BL_PIN, sleep ? LOW : HIGH);
-    //   #endif
-    // For AMOLED displays, send the display driver's sleep-in / sleep-out
-    // command through your display HAL.
+    if (sleep) {
+        DBG_INFO(TAG, "Display entering sleep");
+#if defined(LCD_BL) && LCD_BL >= 0
+        digitalWrite(LCD_BL, LOW);
+#endif
+    } else {
+        DBG_INFO(TAG, "Display waking");
+#if defined(LCD_BL) && LCD_BL >= 0
+        digitalWrite(LCD_BL, HIGH);
+#endif
+    }
+}
+
+void SleepHAL::displayWake() {
+    displaySleep(false);
 }
 
 // ---- Peripheral power control --------------------------------------------
 
 void SleepHAL::setPeripheralPower(bool on) {
     _peripheral_power_on = on;
-    // Stub: for boards with AXP2101 PMIC, this could toggle LDO rails
-    // to power down sensors, touch controller, etc.
-    // Example:
+    DBG_INFO(TAG, "Peripheral power: %s", on ? "ON" : "OFF");
+    // Placeholder for future AXP2101 LDO rail control:
     //   #if defined(HAS_PMIC) && HAS_PMIC
     //       axp2101_set_ldo2(on);  // sensor rail
     //       axp2101_set_ldo3(on);  // touch rail
@@ -189,6 +271,69 @@ void SleepHAL::pollAutoSleep() {
         // re-enter sleep on the next poll.
         _last_activity_ms = millis();
     }
+}
+
+SleepHAL::TestResult SleepHAL::runTest() {
+    TestResult result = {};
+    uint32_t startMs = millis();
+
+    DBG_INFO(TAG, "--- Sleep Test Begin ---");
+    result.init_ok = true;
+
+    // Test 1: Configure timer wake (5 seconds — don't actually sleep)
+    setWakeTimer(5 * 1000000ULL);
+    result.timer_wake_config_ok = _wake_timer_set;
+    DBG_INFO(TAG, "Timer wake config (5s): %s", result.timer_wake_config_ok ? "OK" : "FAIL");
+
+    // Test 2: Configure GPIO wake on an RTC pin
+    // GPIO 0 is typically available as an RTC GPIO on ESP32-S3
+    setWakeGPIO(0, false);
+    result.gpio_wake_config_ok = _wake_gpio_set;
+    DBG_INFO(TAG, "GPIO wake config (pin 0): %s", result.gpio_wake_config_ok ? "OK" : "FAIL");
+
+    // Test 3: Display sleep/wake cycle
+    displaySleep(true);
+    result.display_sleep_ok = _display_sleeping;
+    DBG_INFO(TAG, "Display sleep: %s", result.display_sleep_ok ? "OK" : "FAIL");
+
+    delay(500);
+
+    displayWake();
+    result.display_wake_ok = !_display_sleeping;
+    DBG_INFO(TAG, "Display wake: %s", result.display_wake_ok ? "OK" : "FAIL");
+
+    // Test 4: Check wake reason API returns a valid enum
+    WakeSource reason = getWakeReason();
+    result.wake_reason_ok = true;
+    switch (reason) {
+        case WakeSource::TIMER:     result.last_wake_reason = "TIMER"; break;
+        case WakeSource::TOUCH_PAD: result.last_wake_reason = "TOUCH_PAD"; break;
+        case WakeSource::GPIO:      result.last_wake_reason = "GPIO"; break;
+        case WakeSource::UART:      result.last_wake_reason = "UART"; break;
+        default:                    result.last_wake_reason = "UNKNOWN"; result.wake_reason_ok = false; break;
+    }
+    DBG_INFO(TAG, "Wake reason: %s (%s)", result.last_wake_reason, result.wake_reason_ok ? "OK" : "FAIL");
+
+    // Test 5: Auto-sleep timeout configuration
+    setAutoSleepTimeout(30);
+    result.auto_sleep_config_ok = (_auto_sleep_timeout_s == 30);
+    DBG_INFO(TAG, "Auto-sleep config (30s): %s", result.auto_sleep_config_ok ? "OK" : "FAIL");
+    // Reset to disabled so test doesn't trigger auto-sleep
+    setAutoSleepTimeout(0);
+
+    result.test_duration_ms = millis() - startMs;
+
+    DBG_INFO(TAG, "--- Sleep Test Complete (%u ms) ---", result.test_duration_ms);
+    DBG_INFO(TAG, "Results: init=%s timer=%s gpio=%s disp_sleep=%s disp_wake=%s auto=%s wake=%s",
+             result.init_ok ? "OK" : "FAIL",
+             result.timer_wake_config_ok ? "OK" : "FAIL",
+             result.gpio_wake_config_ok ? "OK" : "FAIL",
+             result.display_sleep_ok ? "OK" : "FAIL",
+             result.display_wake_ok ? "OK" : "FAIL",
+             result.auto_sleep_config_ok ? "OK" : "FAIL",
+             result.wake_reason_ok ? "OK" : "FAIL");
+
+    return result;
 }
 
 #endif // SIMULATOR

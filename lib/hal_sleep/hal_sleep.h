@@ -39,6 +39,7 @@ public:
     void setWakeTimer(uint64_t microseconds);
     void setWakeGPIO(int pin, bool level_high = false);
     void setWakeUART(int uart_num = 0);
+    void setWakeTouch(uint8_t pin, uint16_t threshold);
 
     // Pre-sleep callbacks for peripherals to prepare
     typedef void (*SleepCallback)(void);
@@ -55,6 +56,9 @@ public:
     // Display sleep (backlight off, display sleep command)
     void displaySleep(bool sleep);
 
+    // Display wake (backlight on)
+    void displayWake();
+
     // Peripheral power control
     void setPeripheralPower(bool on);
 
@@ -62,6 +66,22 @@ public:
     void resetActivityTimer();
     void setAutoSleepTimeout(uint32_t seconds);
     void pollAutoSleep();
+
+    // Test harness for sleep configuration
+    struct TestResult {
+        bool init_ok;
+        bool timer_wake_config_ok;
+        bool gpio_wake_config_ok;
+        bool display_sleep_ok;
+        bool display_wake_ok;
+        bool auto_sleep_config_ok;
+        bool wake_reason_ok;
+        const char* last_wake_reason;
+        uint32_t test_duration_ms;
+    };
+    // Test sleep configuration WITHOUT actually entering sleep (that would halt the test!)
+    // Tests: configure wake sources, verify they're set, display sleep/wake cycle, check wake reason API
+    TestResult runTest();
 
 private:
     SleepCallback _before_sleep = nullptr;
