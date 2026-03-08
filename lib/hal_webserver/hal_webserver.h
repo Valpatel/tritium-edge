@@ -54,6 +54,9 @@ public:
     using MeshJsonProvider = std::function<int(char* buf, size_t size)>;
     void setBleProvider(BleJsonProvider provider);
     void setDiagProvider(DiagJsonProvider provider);
+    void setDiagHealthProvider(DiagJsonProvider provider);
+    void setDiagEventsProvider(DiagJsonProvider provider);
+    void setDiagAnomaliesProvider(DiagJsonProvider provider);
     void setMeshProvider(MeshJsonProvider provider);
 
     // Helpers for handlers
@@ -91,5 +94,8 @@ private:
     char _ip[16] = {0};
     BleJsonProvider _bleProvider = nullptr;
     DiagJsonProvider _diagProvider = nullptr;
+    DiagJsonProvider _diagHealthProvider = nullptr;
+    DiagJsonProvider _diagEventsProvider = nullptr;
+    DiagJsonProvider _diagAnomaliesProvider = nullptr;
     MeshJsonProvider _meshProvider = nullptr;
 };

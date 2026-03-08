@@ -379,6 +379,15 @@ static void services_init() {
             _webserver.setDiagProvider([](char* buf, size_t size) -> int {
                 return hal_diag::full_report_json(buf, size);
             });
+            _webserver.setDiagHealthProvider([](char* buf, size_t size) -> int {
+                return hal_diag::health_to_json(buf, size);
+            });
+            _webserver.setDiagEventsProvider([](char* buf, size_t size) -> int {
+                return hal_diag::events_to_json(buf, size, 50);
+            });
+            _webserver.setDiagAnomaliesProvider([](char* buf, size_t size) -> int {
+                return hal_diag::anomalies_to_json(buf, size);
+            });
 #endif
 
             // Wire mesh topology data into web server

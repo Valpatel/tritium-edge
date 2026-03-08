@@ -25,6 +25,9 @@ void WebServerHAL::captureLog(const char*) {}
 int WebServerHAL::getLogJson(char*, size_t) { return 0; }
 void WebServerHAL::setBleProvider(BleJsonProvider) {}
 void WebServerHAL::setDiagProvider(DiagJsonProvider) {}
+void WebServerHAL::setDiagHealthProvider(DiagJsonProvider) {}
+void WebServerHAL::setDiagEventsProvider(DiagJsonProvider) {}
+void WebServerHAL::setDiagAnomaliesProvider(DiagJsonProvider) {}
 void WebServerHAL::setMeshProvider(MeshJsonProvider) {}
 void WebServerHAL::startCaptivePortal() {}
 void WebServerHAL::stopCaptivePortal() {}
@@ -396,6 +399,18 @@ void WebServerHAL::setBleProvider(BleJsonProvider provider) {
 
 void WebServerHAL::setDiagProvider(DiagJsonProvider provider) {
     _diagProvider = provider;
+}
+
+void WebServerHAL::setDiagHealthProvider(DiagJsonProvider provider) {
+    _diagHealthProvider = provider;
+}
+
+void WebServerHAL::setDiagEventsProvider(DiagJsonProvider provider) {
+    _diagEventsProvider = provider;
+}
+
+void WebServerHAL::setDiagAnomaliesProvider(DiagJsonProvider provider) {
+    _diagAnomaliesProvider = provider;
 }
 
 void WebServerHAL::setMeshProvider(MeshJsonProvider provider) {
@@ -938,6 +953,51 @@ void WebServerHAL::addApiEndpoints() {
         }
         _server->send(200, "application/json",
             "{\"enabled\":false,\"message\":\"Diagnostics not available\"}");
+    });
+
+    // GET /api/diag/health — current health snapshot only
+    _server->on("/api/diag/health", HTTP_GET, [self]() {
+        self->_requestCount++;
+        if (self->_diagHealthProvider) {
+            static char buf[2048];
+            int len = self->_diagHealthProvider(buf, sizeof(buf));
+            if (len > 0) {
+                _server->send(200, "application/json", buf);
+                return;
+            }
+        }
+        _server->send(200, "application/json",
+            "{\"enabled\":false}");
+    });
+
+    // GET /api/diag/events — recent diagnostic events
+    _server->on("/api/diag/events", HTTP_GET, [self]() {
+        self->_requestCount++;
+        if (self->_diagEventsProvider) {
+            static char buf[4096];
+            int len = self->_diagEventsProvider(buf, sizeof(buf));
+            if (len > 0) {
+                _server->send(200, "application/json", buf);
+                return;
+            }
+        }
+        _server->send(200, "application/json",
+            "{\"count\":0,\"events\":[]}");
+    });
+
+    // GET /api/diag/anomalies — active anomalies
+    _server->on("/api/diag/anomalies", HTTP_GET, [self]() {
+        self->_requestCount++;
+        if (self->_diagAnomaliesProvider) {
+            static char buf[2048];
+            int len = self->_diagAnomaliesProvider(buf, sizeof(buf));
+            if (len > 0) {
+                _server->send(200, "application/json", buf);
+                return;
+            }
+        }
+        _server->send(200, "application/json",
+            "{\"count\":0,\"anomalies\":[]}");
     });
 
     // GET /api/logs — recent log entries
