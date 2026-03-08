@@ -3,1834 +3,1061 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tritium-Edge // Admin Portal</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<title>TRITIUM-EDGE // Fleet Command</title>
 <style>
+/* Created by Matthew Valancy
+   Copyright 2026 Valpatel Software LLC
+   Licensed under AGPL-3.0 */
+
 :root {
-    --bg: #0a0a0f; --bg1: #0e0e16; --bg2: #12121a; --bg3: #1a1a24;
-    --border: rgba(0,240,255,0.15); --border2: rgba(0,240,255,0.25);
-    --text: #e0e0e8; --text2: #888899; --text3: #555566;
-    --cyan: #00f0ff; --magenta: #ff2a6d; --green: #05ffa1; --yellow: #fcee0a;
-    --purple: #b07cff;
-    --mono: 'JetBrains Mono', 'Fira Code', monospace;
-    --glow-cyan: 0 0 15px rgba(0,240,255,0.1);
-    --glow-cyan-strong: 0 0 20px rgba(0,240,255,0.3);
-    --glow-green: 0 0 10px rgba(5,255,161,0.4);
-    --glow-red: 0 0 10px rgba(255,42,109,0.4);
+  --bg: #0a0a0a;
+  --bg-card: #0f0f0f;
+  --bg-card-hover: #141414;
+  --cyan: #00ffd0;
+  --cyan-dim: #00ffd044;
+  --cyan-mid: #00ffd088;
+  --green: #00ff88;
+  --yellow: #ffdd00;
+  --red: #ff3355;
+  --orange: #ff8800;
+  --text: #c8c8c8;
+  --text-dim: #666;
+  --border: #00ffd022;
+  --border-bright: #00ffd044;
+  --font: 'Courier New', 'Consolas', monospace;
 }
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
 body {
-    font-family: var(--mono); background: var(--bg); color: var(--text);
-    display: flex; min-height: 100vh; -webkit-font-smoothing: antialiased;
-    background-image:
-        linear-gradient(rgba(0,240,255,0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0,240,255,0.03) 1px, transparent 1px);
-    background-size: 40px 40px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-x: hidden;
 }
 
-/* ── Scanline overlay ── */
+/* Scanline overlay */
 body::after {
-    content: ''; position: fixed; inset: 0; z-index: 9999; pointer-events: none;
-    background: repeating-linear-gradient(
-        0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px
-    );
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 255, 208, 0.015) 2px,
+    rgba(0, 255, 208, 0.015) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
 }
 
-/* ── Sidebar ── */
-.sidebar {
-    width: 220px; background: var(--bg1); border-right: 1px solid var(--border);
-    display: flex; flex-direction: column; position: fixed; top: 0; bottom: 0; z-index: 10;
+/* Layout */
+.layout {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  grid-template-rows: 48px 1fr;
+  min-height: 100vh;
 }
-.sidebar .logo { padding: 20px 16px 16px; border-bottom: 1px solid var(--border); }
-.sidebar .logo .title {
-    font-size: 1.05em; font-weight: 700; color: var(--cyan); letter-spacing: 1px;
-    text-shadow: 0 0 20px rgba(0,240,255,0.3);
-}
-.sidebar .logo .subtitle { color: var(--text3); font-size: 0.68em; margin-top: 3px; letter-spacing: 0.5px; text-transform: uppercase; }
-.sidebar nav { flex: 1; padding: 10px 0; }
-.sidebar nav a {
-    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
-    color: var(--text2); text-decoration: none; font-size: 0.8em; font-weight: 500;
-    border-left: 2px solid transparent; transition: all 0.2s;
-}
-.sidebar nav a .desc { display: block; font-size: 0.72em; font-weight: 400; color: var(--text3); margin-top: 1px; }
-.sidebar nav a:hover { color: var(--cyan); background: rgba(0,240,255,0.04); }
-.sidebar nav a.active { color: var(--cyan); background: rgba(0,240,255,0.06); border-left-color: var(--cyan); text-shadow: 0 0 12px rgba(0,240,255,0.3); }
-.sidebar nav a.active .desc { color: var(--text2); }
-.sidebar nav a .icon { width: 20px; font-size: 1em; text-align: center; flex-shrink: 0; }
-.sidebar .sidebar-footer {
-    padding: 12px 16px; font-size: 0.62em; color: var(--text3); border-top: 1px solid var(--border);
-    line-height: 1.6;
-}
-.sidebar .sidebar-footer a { color: var(--cyan); text-decoration: none; opacity: 0.6; transition: opacity 0.2s; }
-.sidebar .sidebar-footer a:hover { opacity: 1; }
 
-/* ── Main ── */
-.main { margin-left: 220px; flex: 1; min-height: 100vh; }
+/* Top Bar */
 .topbar {
-    padding: 16px 28px; border-bottom: 1px solid var(--border);
-    display: flex; justify-content: space-between; align-items: center;
-    background: var(--bg1); position: sticky; top: 0; z-index: 5;
-}
-.topbar h2 { font-size: 1.05em; font-weight: 700; text-shadow: var(--glow-cyan-strong); }
-.topbar .page-desc { font-size: 0.72em; color: var(--text2); margin-top: 2px; }
-.topbar .actions { display: flex; gap: 8px; align-items: center; }
-.conn-status {
-    display: flex; align-items: center; gap: 6px; font-size: 0.72em; color: var(--text2);
-    margin-right: 12px; padding-right: 12px; border-right: 1px solid var(--border);
-}
-.conn-dot {
-    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
-}
-.conn-dot.online { background: var(--green); box-shadow: var(--glow-green); animation: pulse-green 2s infinite; }
-.conn-dot.offline { background: var(--magenta); box-shadow: var(--glow-red); }
-.content { padding: 24px 28px; max-width: 1400px; }
-
-/* ── Page transition ── */
-.content { animation: fadeIn 0.25s ease-out; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-
-/* ── Pulse animations ── */
-@keyframes pulse-green {
-    0%, 100% { box-shadow: 0 0 6px rgba(5,255,161,0.4); }
-    50% { box-shadow: 0 0 14px rgba(5,255,161,0.7); }
-}
-@keyframes pulse-red {
-    0%, 100% { box-shadow: 0 0 6px rgba(255,42,109,0.4); }
-    50% { box-shadow: 0 0 14px rgba(255,42,109,0.7); }
+  grid-column: 1 / -1;
+  background: #080808;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 30px;
+  z-index: 10;
 }
 
-/* ── Cards ── */
-.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 24px; }
+.topbar .logo {
+  font-size: 15px;
+  font-weight: bold;
+  color: var(--cyan);
+  text-shadow: 0 0 10px var(--cyan-dim), 0 0 20px rgba(0, 255, 208, 0.1);
+  letter-spacing: 3px;
+  white-space: nowrap;
+}
+
+.topbar .logo span {
+  color: var(--text-dim);
+  font-weight: normal;
+  letter-spacing: 1px;
+  font-size: 11px;
+}
+
+.topbar-stats {
+  display: flex;
+  gap: 24px;
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.topbar-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+}
+
+.topbar-stat .val {
+  color: var(--cyan);
+  font-weight: bold;
+}
+
+/* Sidebar */
+.sidebar {
+  background: #080808;
+  border-right: 1px solid var(--border);
+  padding: 12px 0;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  transition: all 0.15s;
+  border-left: 2px solid transparent;
+}
+
+.nav-item:hover {
+  color: var(--text);
+  background: rgba(0, 255, 208, 0.03);
+}
+
+.nav-item.active {
+  color: var(--cyan);
+  border-left-color: var(--cyan);
+  background: rgba(0, 255, 208, 0.05);
+}
+
+.nav-item .icon { font-size: 14px; width: 20px; text-align: center; }
+
+/* Main Content */
+.main {
+  padding: 20px;
+  overflow-y: auto;
+  max-height: calc(100vh - 48px);
+}
+
+.view { display: none; }
+.view.active { display: block; }
+
+/* Cards */
+.stat-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
 .stat-card {
-    background: var(--bg2); border: 1px solid var(--border); border-radius: 2px;
-    padding: 16px 20px; transition: all 0.2s;
-}
-.stat-card:hover { border-color: var(--border2); box-shadow: var(--glow-cyan); }
-.stat-card .val { font-size: 2em; font-weight: 700; color: var(--cyan); line-height: 1.1; }
-.stat-card .lbl { font-size: 0.72em; color: var(--text2); margin-top: 4px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
-.stat-card .hint { font-size: 0.62em; color: var(--text3); margin-top: 2px; }
-.stat-card.warn .val { color: var(--yellow); }
-.stat-card.danger .val { color: var(--magenta); }
-.stat-card.blue .val { color: var(--cyan); }
-.stat-card.purple .val { color: var(--purple); }
-
-/* ── Panels ── */
-.panel {
-    background: var(--bg2); border: 1px solid var(--border); border-radius: 2px;
-    overflow: hidden; margin-bottom: 20px; transition: box-shadow 0.2s;
-}
-.panel:hover { box-shadow: var(--glow-cyan); }
-.panel-header {
-    padding: 14px 20px; border-bottom: 1px solid var(--border);
-    display: flex; justify-content: space-between; align-items: center;
-}
-.panel-header h3 { font-size: 0.88em; font-weight: 700; color: var(--cyan); text-shadow: 0 0 10px rgba(0,240,255,0.2); }
-.panel-header .panel-desc { font-size: 0.68em; color: var(--text3); }
-
-/* ── Tables ── */
-table { width: 100%; border-collapse: collapse; }
-th {
-    padding: 9px 16px; text-align: left; font-size: 0.68em; font-weight: 700;
-    color: var(--cyan); text-transform: uppercase; letter-spacing: 1px;
-    background: rgba(0,240,255,0.04); border-bottom: 1px solid var(--border);
-}
-td { padding: 10px 16px; font-size: 0.8em; border-top: 1px solid rgba(0,240,255,0.06); }
-tr:hover td { background: rgba(0,240,255,0.02); }
-tr.clickable { cursor: pointer; }
-
-/* ── Badges ── */
-.badge {
-    display: inline-flex; align-items: center; gap: 4px;
-    padding: 2px 8px; border-radius: 1px; font-size: 0.68em;
-    font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;
-}
-.badge-on { background: rgba(5,255,161,0.1); color: var(--green); border: 1px solid rgba(5,255,161,0.2); }
-.badge-off { background: rgba(255,42,109,0.1); color: var(--magenta); border: 1px solid rgba(255,42,109,0.2); }
-.badge-warn { background: rgba(252,238,10,0.08); color: var(--yellow); border: 1px solid rgba(252,238,10,0.15); }
-.badge-blue { background: rgba(0,240,255,0.08); color: var(--cyan); border: 1px solid rgba(0,240,255,0.15); }
-.badge-purple { background: rgba(176,124,255,0.1); color: var(--purple); border: 1px solid rgba(176,124,255,0.2); }
-.badge-dim { background: rgba(255,255,255,0.03); color: var(--text3); border: 1px solid rgba(255,255,255,0.06); }
-
-/* ── Status dots with glow ── */
-.badge-on::before {
-    content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-    background: var(--green); box-shadow: var(--glow-green); animation: pulse-green 2s infinite;
-}
-.badge-off::before {
-    content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-    background: var(--magenta); box-shadow: var(--glow-red); animation: pulse-red 2s infinite;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 16px;
+  transition: border-color 0.2s;
 }
 
-/* ── Buttons ── */
-.btn {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 7px 14px; border: 1px solid var(--border2); border-radius: 2px;
-    cursor: pointer; font-size: 0.76em; font-weight: 600;
-    background: transparent; color: var(--text); transition: all 0.15s;
-    font-family: var(--mono); letter-spacing: 0.3px; text-transform: uppercase;
-}
-.btn:hover { background: rgba(0,240,255,0.06); border-color: var(--cyan); color: var(--cyan); box-shadow: var(--glow-cyan); }
-.btn-primary { background: rgba(0,240,255,0.1); border-color: rgba(0,240,255,0.4); color: var(--cyan); }
-.btn-primary:hover { background: rgba(0,240,255,0.2); box-shadow: 0 0 20px rgba(0,240,255,0.2); }
-.btn-accent { background: rgba(5,255,161,0.1); border-color: rgba(5,255,161,0.4); color: var(--green); }
-.btn-accent:hover { background: rgba(5,255,161,0.2); box-shadow: 0 0 20px rgba(5,255,161,0.2); }
-.btn-danger { background: rgba(255,42,109,0.08); border-color: rgba(255,42,109,0.3); color: var(--magenta); }
-.btn-danger:hover { background: rgba(255,42,109,0.18); box-shadow: 0 0 20px rgba(255,42,109,0.2); }
-.btn-purple { background: rgba(176,124,255,0.08); border-color: rgba(176,124,255,0.3); color: var(--purple); }
-.btn-purple:hover { background: rgba(176,124,255,0.18); box-shadow: 0 0 20px rgba(176,124,255,0.2); }
-.btn-sm { padding: 4px 10px; font-size: 0.68em; }
-.btn-lg { padding: 10px 22px; font-size: 0.82em; }
-.btn-group { display: flex; gap: 6px; }
+.stat-card:hover { border-color: var(--border-bright); }
 
-/* ── Forms ── */
-.form-group { margin-bottom: 14px; }
-.form-group label { display: block; font-size: 0.72em; font-weight: 600; color: var(--cyan); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px; }
-.form-group .field-hint { font-size: 0.64em; color: var(--text3); margin-top: 3px; }
-.form-group input, .form-group select, .form-group textarea {
-    width: 100%; padding: 9px 12px; background: var(--bg); border: 1px solid var(--border);
-    border-radius: 2px; color: var(--text); font-size: 0.82em; font-family: var(--mono);
-    transition: all 0.15s;
+.stat-card .label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
 }
-.form-group input:focus, .form-group select:focus, .form-group textarea:focus {
-    outline: none; border-color: var(--cyan); box-shadow: 0 0 12px rgba(0,240,255,0.15);
-}
-.form-group input::placeholder { color: var(--text3); }
-.form-group textarea { resize: vertical; min-height: 60px; }
-.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 
-/* ── Modal ── */
-.modal-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 100;
-    display: none; align-items: center; justify-content: center; backdrop-filter: blur(6px);
+.stat-card .value {
+  font-size: 28px;
+  font-weight: bold;
+  color: var(--cyan);
+  text-shadow: 0 0 10px var(--cyan-dim);
 }
-.modal-overlay.open { display: flex; }
-.modal {
-    background: var(--bg2); border: 1px solid var(--border2); border-radius: 2px;
-    width: 640px; max-width: 95vw; max-height: 90vh; overflow-y: auto;
-    box-shadow: 0 0 40px rgba(0,240,255,0.1), 0 24px 80px rgba(0,0,0,0.5);
-}
-.modal-head {
-    padding: 16px 20px; border-bottom: 1px solid var(--border);
-    display: flex; justify-content: space-between; align-items: center;
-}
-.modal-head h3 { font-size: 0.95em; font-weight: 700; color: var(--cyan); text-shadow: 0 0 10px rgba(0,240,255,0.2); }
-.modal-head .close {
-    cursor: pointer; color: var(--text2); font-size: 1.2em;
-    background: none; border: 1px solid transparent; padding: 4px 8px; border-radius: 2px;
-    font-family: var(--mono);
-}
-.modal-head .close:hover { background: rgba(255,42,109,0.1); color: var(--magenta); border-color: rgba(255,42,109,0.3); }
-.modal-body { padding: 20px; }
-.modal-foot { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
 
-/* ── Upload ── */
-.upload-zone {
-    border: 2px dashed var(--border2); border-radius: 2px;
-    padding: 32px; text-align: center; cursor: pointer; transition: all 0.2s;
+.stat-card .value.green { color: var(--green); text-shadow: 0 0 10px rgba(0, 255, 136, 0.3); }
+.stat-card .value.red { color: var(--red); text-shadow: 0 0 10px rgba(255, 51, 85, 0.3); }
+.stat-card .value.yellow { color: var(--yellow); text-shadow: 0 0 10px rgba(255, 221, 0, 0.3); }
+
+/* Section Headers */
+.section-header {
+  font-size: 13px;
+  color: var(--cyan);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin: 24px 0 12px;
+  text-shadow: 0 0 10px var(--cyan-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.upload-zone:hover, .upload-zone.dragover { border-color: var(--cyan); background: rgba(0,240,255,0.03); box-shadow: 0 0 30px rgba(0,240,255,0.05); }
-.upload-zone .upload-icon { font-size: 2em; margin-bottom: 8px; }
-.upload-zone .label { color: var(--cyan); font-weight: 600; font-size: 0.88em; }
-.upload-zone .hint { color: var(--text3); font-size: 0.72em; margin-top: 6px; line-height: 1.5; }
 
-/* ── Detail blocks ── */
-.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.detail-block { background: var(--bg); border: 1px solid var(--border); border-radius: 2px; padding: 14px 16px; }
-.detail-block h4 { font-size: 0.68em; color: var(--cyan); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; font-weight: 700; }
-.detail-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.8em; }
-.detail-row .key { color: var(--text2); }
-.detail-row .val { font-family: var(--mono); font-size: 0.8em; text-align: right; max-width: 60%; word-break: break-all; }
+.section-header::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border-bright), transparent);
+}
 
-/* ── Events ── */
-.event-list { max-height: 360px; overflow-y: auto; }
+/* Device Grid */
+.device-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.device-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 14px;
+  transition: all 0.2s;
+  position: relative;
+  overflow: hidden;
+}
+
+.device-card:hover {
+  border-color: var(--cyan-mid);
+  background: var(--bg-card-hover);
+}
+
+.device-card .device-id {
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--cyan);
+  margin-bottom: 8px;
+  word-break: break-all;
+}
+
+.device-card .device-info {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  font-size: 11px;
+}
+
+.device-card .info-label { color: var(--text-dim); }
+.device-card .info-value { color: var(--text); text-align: right; }
+
+/* Status Badge */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: bold;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-online .status-dot {
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+  animation: pulse-green 2s infinite;
+}
+.status-online { color: var(--green); }
+
+.status-stale .status-dot {
+  background: var(--yellow);
+  box-shadow: 0 0 6px var(--yellow);
+}
+.status-stale { color: var(--yellow); }
+
+.status-offline .status-dot {
+  background: var(--red);
+  box-shadow: 0 0 4px var(--red);
+}
+.status-offline { color: var(--red); }
+
+@keyframes pulse-green {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* RSSI Bar */
+.rssi-bar-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rssi-bar {
+  flex: 1;
+  height: 4px;
+  background: #1a1a1a;
+  border-radius: 2px;
+  overflow: hidden;
+  max-width: 60px;
+}
+
+.rssi-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+/* Tables */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.data-table th {
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--cyan);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--border-bright);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.data-table th:hover { color: #fff; }
+.data-table th .sort-arrow { font-size: 9px; margin-left: 4px; }
+
+.data-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.data-table tr:hover td { background: rgba(0, 255, 208, 0.02); }
+
+.data-table .expand-row td {
+  padding: 0;
+  border-bottom: 1px solid var(--border-bright);
+}
+
+.expand-content {
+  padding: 12px 16px;
+  background: #0c0c0c;
+  font-size: 11px;
+}
+
+.expand-content .detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px 20px;
+}
+
+.expand-content .detail-label { color: var(--text-dim); }
+.expand-content .detail-value { color: var(--text); }
+
+/* BLE Presence */
+.ble-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ble-card:hover {
+  border-color: var(--cyan-mid);
+  background: var(--bg-card-hover);
+}
+
+.ble-card .ble-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.ble-card .ble-mac {
+  font-weight: bold;
+  color: var(--cyan);
+  font-size: 12px;
+}
+
+.ble-card .ble-name {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.ble-card .ble-nodes {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.ble-expand {
+  display: none;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.ble-expand.open { display: block; }
+
+.ble-sighting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 11px;
+}
+
+.ble-sighting .node { color: var(--text-dim); min-width: 120px; }
+.ble-sighting .rssi-val { color: var(--text); min-width: 50px; }
+
+.known-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(0, 255, 136, 0.15);
+  color: var(--green);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Events Timeline */
+.event-list { max-height: 400px; overflow-y: auto; }
+
 .event-item {
-    padding: 9px 16px; border-bottom: 1px solid rgba(0,240,255,0.06);
-    font-size: 0.76em; display: flex; gap: 12px; align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  align-items: flex-start;
 }
-.event-item .ts { color: var(--text3); font-family: var(--mono); font-size: 0.82em; white-space: nowrap; min-width: 100px; }
-.event-item .type { font-weight: 600; min-width: 140px; }
-.event-item .type.t-ok { color: var(--green); }
-.event-item .type.t-info { color: var(--cyan); }
-.event-item .type.t-warn { color: var(--yellow); }
-.event-item .type.t-danger { color: var(--magenta); }
-.event-item .detail { color: var(--text2); flex: 1; }
 
-/* ── Steps (commissioning) ── */
-.steps { display: flex; flex-direction: column; gap: 6px; margin: 14px 0; }
-.step {
-    display: flex; align-items: center; gap: 12px;
-    padding: 10px 14px; background: var(--bg); border: 1px solid var(--border);
-    border-radius: 2px; font-size: 0.82em;
+.event-time { color: var(--text-dim); white-space: nowrap; min-width: 70px; }
+.event-type {
+  color: var(--cyan);
+  min-width: 140px;
+  font-weight: bold;
 }
-.step .num {
-    width: 26px; height: 26px; border-radius: 2px; display: flex; align-items: center;
-    justify-content: center; font-size: 0.72em; font-weight: 700;
-    background: var(--bg3); color: var(--text3); flex-shrink: 0;
-}
-.step.active .num { background: rgba(0,240,255,0.2); color: var(--cyan); border: 1px solid var(--cyan); box-shadow: 0 0 10px rgba(0,240,255,0.2); }
-.step.done .num { background: rgba(5,255,161,0.2); color: var(--green); border: 1px solid var(--green); }
-.step.fail .num { background: rgba(255,42,109,0.2); color: var(--magenta); border: 1px solid var(--magenta); }
-.step .text { flex: 1; }
-.step .status { font-size: 0.72em; color: var(--text3); font-family: var(--mono); }
+.event-device { color: var(--text-dim); min-width: 100px; }
+.event-detail { color: var(--text); flex: 1; word-break: break-all; }
 
-/* ── Toast ── */
-.toast {
-    position: fixed; bottom: 24px; right: 24px; padding: 12px 22px; border-radius: 2px;
-    font-weight: 600; font-size: 0.82em; z-index: 200; display: none; animation: slideUp 0.3s;
-    font-family: var(--mono);
+/* Firmware Table */
+.fw-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
-.toast.success { background: rgba(5,255,161,0.12); color: var(--green); border: 1px solid rgba(5,255,161,0.3); box-shadow: 0 0 20px rgba(5,255,161,0.1); }
-.toast.error { background: rgba(255,42,109,0.12); color: var(--magenta); border: 1px solid rgba(255,42,109,0.3); box-shadow: 0 0 20px rgba(255,42,109,0.1); }
-@keyframes slideUp { from { opacity: 0; transform: translateY(16px); } }
+.fw-signed { background: rgba(0, 255, 136, 0.15); color: var(--green); }
+.fw-unsigned { background: rgba(255, 51, 85, 0.15); color: var(--red); }
 
-/* ── Utility ── */
-.mono { font-family: var(--mono); font-size: 0.82em; }
-.text-muted { color: var(--text3); }
-.hidden { display: none !important; }
-.tag {
-    display: inline-block; padding: 1px 6px; background: rgba(0,240,255,0.06);
-    color: var(--cyan); border: 1px solid rgba(0,240,255,0.12); border-radius: 1px;
-    font-size: 0.64em; font-weight: 500; margin-right: 3px; text-transform: uppercase;
+/* OTA View */
+.ota-actions { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.ota-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--cyan);
+  padding: 8px 16px;
+  font-family: var(--font);
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  transition: all 0.15s;
 }
-.empty-state { text-align: center; padding: 48px 24px; color: var(--text3); }
-.empty-state .es-icon { font-size: 2.5em; margin-bottom: 12px; opacity: 0.4; }
-.empty-state .es-title { font-size: 0.92em; font-weight: 600; color: var(--text2); margin-bottom: 6px; }
-.empty-state .es-hint { font-size: 0.76em; line-height: 1.6; max-width: 400px; margin: 0 auto; }
-.hash-short { font-family: var(--mono); font-size: 0.68em; color: var(--text2); cursor: help; border-bottom: 1px dotted var(--text3); }
+.ota-btn:hover { border-color: var(--cyan-mid); background: var(--bg-card-hover); }
 
-/* ── Security gauges ── */
-.gauge-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 24px; }
-.gauge {
-    background: var(--bg2); border: 1px solid var(--border); border-radius: 2px;
-    padding: 22px; text-align: center; transition: box-shadow 0.2s;
-}
-.gauge:hover { box-shadow: var(--glow-cyan); }
-.gauge .ring {
-    width: 88px; height: 88px; border-radius: 50%; margin: 0 auto 12px;
-    display: flex; align-items: center; justify-content: center;
-}
-.gauge .ring-ok { background: conic-gradient(var(--green) var(--pct), var(--bg3) 0); }
-.gauge .ring-warn { background: conic-gradient(var(--yellow) var(--pct), var(--bg3) 0); }
-.gauge .ring-danger { background: conic-gradient(var(--magenta) var(--pct), var(--bg3) 0); }
-.gauge .ring-inner {
-    width: 66px; height: 66px; border-radius: 50%; background: var(--bg2);
-    display: flex; align-items: center; justify-content: center;
-    font-size: 1.2em; font-weight: 700; color: var(--text);
-}
-.gauge .gauge-label { font-size: 0.76em; font-weight: 600; color: var(--text); margin-bottom: 2px; }
-.gauge .gauge-hint { font-size: 0.68em; color: var(--text3); }
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0a0a0a; }
+::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--cyan-mid); }
 
-/* ── Callout boxes ── */
-.callout {
-    padding: 12px 16px; border-radius: 2px; font-size: 0.8em; margin-bottom: 18px;
-    display: flex; gap: 12px; align-items: flex-start;
+/* Loading */
+.loading {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 40px;
+  font-size: 12px;
 }
-.callout .callout-icon { font-size: 1.1em; flex-shrink: 0; margin-top: 1px; }
-.callout-info { background: rgba(0,240,255,0.04); border: 1px solid rgba(0,240,255,0.15); color: var(--text); }
-.callout-warn { background: rgba(252,238,10,0.04); border: 1px solid rgba(252,238,10,0.12); color: var(--text); }
-.callout-danger { background: rgba(255,42,109,0.04); border: 1px solid rgba(255,42,109,0.15); color: var(--text); }
-.callout-success { background: rgba(5,255,161,0.04); border: 1px solid rgba(5,255,161,0.15); color: var(--text); }
 
-/* ── Quick actions ── */
-.quick-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 24px; }
-.quick-action {
-    background: var(--bg2); border: 1px solid var(--border); border-radius: 2px;
-    padding: 18px; cursor: pointer; transition: all 0.2s;
+/* Responsive */
+@media (max-width: 768px) {
+  .layout { grid-template-columns: 1fr; }
+  .sidebar {
+    grid-row: 3;
+    display: flex;
+    overflow-x: auto;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    padding: 0;
+  }
+  .nav-item {
+    padding: 8px 14px;
+    border-left: none;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    font-size: 10px;
+  }
+  .nav-item.active { border-bottom-color: var(--cyan); border-left-color: transparent; }
+  .main { max-height: calc(100vh - 48px - 42px); }
 }
-.quick-action:hover { border-color: var(--cyan); transform: translateY(-2px); box-shadow: 0 0 25px rgba(0,240,255,0.1); }
-.quick-action .qa-icon { font-size: 1.4em; margin-bottom: 8px; }
-.quick-action .qa-title { font-size: 0.85em; font-weight: 700; margin-bottom: 4px; color: var(--cyan); }
-.quick-action .qa-desc { font-size: 0.72em; color: var(--text2); line-height: 1.5; }
-
-/* ── Section headers ── */
-.section-header { margin-bottom: 14px; }
-.section-header h3 { font-size: 0.92em; font-weight: 700; margin-bottom: 4px; color: var(--cyan); text-shadow: 0 0 10px rgba(0,240,255,0.2); }
-.section-header p { font-size: 0.76em; color: var(--text2); }
-
-/* ── Scrollbar ── */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: rgba(0,240,255,0.15); border-radius: 0; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,240,255,0.3); }
 </style>
 </head>
 <body>
+<div class="layout">
 
-<div class="sidebar">
-    <div class="logo">
-        <div class="title">TRITIUM-EDGE</div>
-        <div class="subtitle">Software Defined IoT</div>
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div class="logo">TRITIUM-EDGE <span>// Fleet Command</span></div>
+    <div class="topbar-stats">
+      <div class="topbar-stat">UPTIME <span class="val" id="top-uptime">--</span></div>
+      <div class="topbar-stat">NODES <span class="val" id="top-nodes">--</span></div>
+      <div class="topbar-stat">ONLINE <span class="val" id="top-online">--</span></div>
+      <div class="topbar-stat">BLE <span class="val" id="top-ble">--</span></div>
     </div>
-    <nav>
-        <a href="#" data-page="dashboard" class="active">
-            <span class="icon">&#9632;</span>
-            <div><div>Overview</div><div class="desc">Status at a glance</div></div>
-        </a>
-        <a href="#" data-page="devices">
-            <span class="icon">&#9679;</span>
-            <div><div>My Devices</div><div class="desc">Manage your fleet</div></div>
-        </a>
-        <a href="#" data-page="firmware">
-            <span class="icon">&#9650;</span>
-            <div><div>Firmware</div><div class="desc">Upload &amp; deploy updates</div></div>
-        </a>
-        <a href="#" data-page="security">
-            <span class="icon">&#9670;</span>
-            <div><div>Security</div><div class="desc">Attestation &amp; integrity</div></div>
-        </a>
-        <a href="#" data-page="commission">
-            <span class="icon">&#9733;</span>
-            <div><div>Add Device</div><div class="desc">Set up new hardware</div></div>
-        </a>
-        <a href="#" data-page="profiles">
-            <span class="icon">&#9881;</span>
-            <div><div>Profiles</div><div class="desc">Config templates</div></div>
-        </a>
-        <a href="#" data-page="mesh">
-            <span class="icon">&#9673;</span>
-            <div><div>Mesh Network</div><div class="desc">Topology &amp; connectivity</div></div>
-        </a>
-        <a href="#" data-page="terminal">
-            <span class="icon">&#9618;</span>
-            <div><div>Terminal</div><div class="desc">Serial monitor</div></div>
-        </a>
-        <a href="#" data-page="events">
-            <span class="icon">&#9776;</span>
-            <div><div>Activity Log</div><div class="desc">Everything that happened</div></div>
-        </a>
-    </nav>
-    <div class="sidebar-footer">
-        v3.0 // Tritium-Edge Fleet<br>
-        <a href="#">Part of the Tritium Cybernetic OS</a>
+  </div>
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="nav-item active" data-view="dashboard">
+      <span class="icon">&#9632;</span> Dashboard
     </div>
+    <div class="nav-item" data-view="devices">
+      <span class="icon">&#9654;</span> Devices
+    </div>
+    <div class="nav-item" data-view="ble">
+      <span class="icon">&#9673;</span> BLE Presence
+    </div>
+    <div class="nav-item" data-view="firmware">
+      <span class="icon">&#9660;</span> Firmware
+    </div>
+    <div class="nav-item" data-view="ota">
+      <span class="icon">&#8635;</span> OTA
+    </div>
+    <div class="nav-item" data-view="events">
+      <span class="icon">&#9679;</span> Events
+    </div>
+    <div id="plugin-nav"></div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main">
+
+    <!-- DASHBOARD VIEW -->
+    <div id="view-dashboard" class="view active">
+      <div class="stat-cards" id="fleet-stats"></div>
+      <div class="section-header">Fleet Nodes</div>
+      <div class="device-grid" id="device-grid"></div>
+      <div class="section-header">Recent Events</div>
+      <div class="event-list" id="dash-events"></div>
+    </div>
+
+    <!-- DEVICES VIEW -->
+    <div id="view-devices" class="view">
+      <div class="section-header">All Devices</div>
+      <table class="data-table" id="device-table">
+        <thead>
+          <tr>
+            <th data-sort="device_id">Device ID <span class="sort-arrow"></span></th>
+            <th data-sort="status">Status <span class="sort-arrow"></span></th>
+            <th data-sort="ip">IP <span class="sort-arrow"></span></th>
+            <th data-sort="rssi">RSSI <span class="sort-arrow"></span></th>
+            <th data-sort="version">Firmware <span class="sort-arrow"></span></th>
+            <th data-sort="board">Board <span class="sort-arrow"></span></th>
+            <th data-sort="uptime_s">Uptime <span class="sort-arrow"></span></th>
+            <th data-sort="_age">Last Seen <span class="sort-arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="device-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- BLE PRESENCE VIEW -->
+    <div id="view-ble" class="view">
+      <div class="stat-cards" id="ble-stats"></div>
+      <div class="section-header">BLE Devices</div>
+      <div id="ble-list"></div>
+    </div>
+
+    <!-- FIRMWARE VIEW -->
+    <div id="view-firmware" class="view">
+      <div class="section-header">Firmware Images</div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Version</th>
+            <th>Board</th>
+            <th>Signed</th>
+            <th>Size</th>
+            <th>Uploaded</th>
+          </tr>
+        </thead>
+        <tbody id="fw-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- OTA VIEW -->
+    <div id="view-ota" class="view">
+      <div class="section-header">OTA Deployments</div>
+      <div class="stat-cards" id="ota-stats"></div>
+      <div class="section-header">Devices with Pending OTA</div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Device ID</th>
+            <th>Status</th>
+            <th>Current Version</th>
+            <th>Pending OTA</th>
+            <th>Attested</th>
+          </tr>
+        </thead>
+        <tbody id="ota-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- EVENTS VIEW -->
+    <div id="view-events" class="view">
+      <div class="section-header">Event Log</div>
+      <div class="event-list" id="events-full" style="max-height: none;"></div>
+    </div>
+
+  </div>
 </div>
-
-<div class="main">
-    <div class="topbar">
-        <div>
-            <h2 id="pageTitle">Overview</h2>
-            <div class="page-desc" id="pageDesc">Your fleet at a glance</div>
-        </div>
-        <div class="actions">
-            <div class="conn-status">
-                <div class="conn-dot online" id="connDot"></div>
-                <span id="connLabel">Server Connected</span>
-            </div>
-            <div id="pageActions"></div>
-        </div>
-    </div>
-    <div class="content" id="pageContent"></div>
-</div>
-
-<div class="modal-overlay" id="modalOverlay">
-    <div class="modal">
-        <div class="modal-head"><h3 id="modalTitle"></h3><button class="close" onclick="closeModal()">&times;</button></div>
-        <div class="modal-body" id="modalBody"></div>
-        <div class="modal-foot" id="modalFoot"></div>
-    </div>
-</div>
-
-<div class="toast" id="toast"></div>
 
 <script>
-// ─── State ───
-let S = { devices: [], firmware: [], stats: {}, events: [], profiles: [], page: 'dashboard' };
-let apiKey = localStorage.getItem('fleet_api_key') || '';
-let serverConnected = true;
+/* TRITIUM-EDGE Dashboard Client
+   Copyright 2026 Valpatel Software LLC — AGPL-3.0 */
 
-function setApiKey(key) { apiKey = key; localStorage.setItem('fleet_api_key', key); }
+// State
+let currentView = 'dashboard';
+let devices = [];
+let sortCol = 'device_id';
+let sortAsc = true;
 
-function updateConnStatus(connected) {
-    serverConnected = connected;
-    const dot = document.getElementById('connDot');
-    const label = document.getElementById('connLabel');
-    if (connected) {
-        dot.className = 'conn-dot online';
-        label.textContent = 'Server Connected';
+// Navigation
+document.querySelectorAll('.nav-item[data-view]').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    item.classList.add('active');
+    const view = item.dataset.view;
+    currentView = view;
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    const el = document.getElementById('view-' + view);
+    if (el) el.classList.add('active');
+    refreshView();
+  });
+});
+
+// Helpers
+function formatUptime(seconds) {
+  if (seconds == null) return '--';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (d > 0) return d + 'd ' + h + 'h';
+  if (h > 0) return h + 'h ' + m + 'm';
+  if (m > 0) return m + 'm ' + s + 's';
+  return s + 's';
+}
+
+function rssiPercent(rssi) {
+  if (rssi == null) return 0;
+  return Math.max(0, Math.min(100, ((rssi + 90) / 60) * 100));
+}
+
+function rssiColor(rssi) {
+  if (rssi == null) return '#333';
+  if (rssi >= -50) return 'var(--green)';
+  if (rssi >= -70) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+function rssiBarHTML(rssi) {
+  const pct = rssiPercent(rssi);
+  const col = rssiColor(rssi);
+  const val = rssi != null ? rssi + ' dBm' : '--';
+  return '<div class="rssi-bar-container">' +
+    '<div class="rssi-bar"><div class="rssi-bar-fill" style="width:' + pct + '%;background:' + col + '"></div></div>' +
+    '<span style="font-size:10px;color:' + col + '">' + val + '</span></div>';
+}
+
+function statusBadge(device) {
+  if (device._online) {
+    return '<span class="status-badge status-online"><span class="status-dot"></span>Online</span>';
+  }
+  const ls = device.last_seen;
+  if (ls) {
+    const age = (Date.now() - new Date(ls).getTime()) / 1000;
+    if (age < 600) {
+      return '<span class="status-badge status-stale"><span class="status-dot"></span>Stale</span>';
+    }
+  }
+  return '<span class="status-badge status-offline"><span class="status-dot"></span>Offline</span>';
+}
+
+function escHtml(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function formatEventTime(ts) {
+  if (!ts) return '--';
+  try {
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch(e) { return '--'; }
+}
+
+// API
+async function fetchJSON(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+// Refresh
+async function refreshView() {
+  switch (currentView) {
+    case 'dashboard': await refreshDashboard(); break;
+    case 'devices': await refreshDevices(); break;
+    case 'ble': await refreshBLE(); break;
+    case 'firmware': await refreshFirmware(); break;
+    case 'ota': await refreshOTA(); break;
+    case 'events': await refreshEvents(); break;
+  }
+  await refreshTopBar();
+}
+
+async function refreshTopBar() {
+  const fleet = await fetchJSON('/api/fleet/status');
+  if (!fleet) return;
+  document.getElementById('top-uptime').textContent = formatUptime(fleet.server_uptime_s);
+  document.getElementById('top-nodes').textContent = fleet.total_nodes;
+  document.getElementById('top-online').textContent = fleet.online;
+  document.getElementById('top-ble').textContent = fleet.total_ble_devices;
+}
+
+// Dashboard
+async function refreshDashboard() {
+  const [fleet, devs, events] = await Promise.all([
+    fetchJSON('/api/fleet/status'),
+    fetchJSON('/api/devices'),
+    fetchJSON('/api/events?limit=20'),
+  ]);
+
+  if (fleet) {
+    document.getElementById('fleet-stats').innerHTML =
+      '<div class="stat-card"><div class="label">Total Nodes</div><div class="value">' + fleet.total_nodes + '</div></div>' +
+      '<div class="stat-card"><div class="label">Online</div><div class="value green">' + fleet.online + '</div></div>' +
+      '<div class="stat-card"><div class="label">Offline</div><div class="value red">' + fleet.offline + '</div></div>' +
+      '<div class="stat-card"><div class="label">BLE Devices</div><div class="value">' + fleet.total_ble_devices + '</div></div>' +
+      '<div class="stat-card"><div class="label">Server Uptime</div><div class="value" style="font-size:18px">' + formatUptime(fleet.server_uptime_s) + '</div></div>';
+  }
+
+  if (devs) {
+    devices = devs;
+    const grid = document.getElementById('device-grid');
+    if (devs.length === 0) {
+      grid.innerHTML = '<div class="loading">No devices registered. Waiting for heartbeats...</div>';
     } else {
-        dot.className = 'conn-dot offline';
-        label.textContent = 'Disconnected';
+      grid.innerHTML = devs.map(function(d) {
+        return '<div class="device-card">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
+            '<div class="device-id">' + escHtml(d.device_id) + '</div>' +
+            statusBadge(d) +
+          '</div>' +
+          '<div class="device-info">' +
+            '<span class="info-label">IP</span><span class="info-value">' + (escHtml(d.ip) || '--') + '</span>' +
+            '<span class="info-label">RSSI</span><span class="info-value">' + (d.rssi != null ? d.rssi + ' dBm' : '--') + '</span>' +
+            '<span class="info-label">Firmware</span><span class="info-value">' + (escHtml(d.version) || '--') + '</span>' +
+            '<span class="info-label">Board</span><span class="info-value">' + (escHtml(d.board) || '--') + '</span>' +
+            '<span class="info-label">Uptime</span><span class="info-value">' + formatUptime(d.uptime_s) + '</span>' +
+            '<span class="info-label">Last seen</span><span class="info-value">' + (escHtml(d._age) || '--') + '</span>' +
+            '<span class="info-label">Heap</span><span class="info-value">' + (d.free_heap ? Math.round(d.free_heap / 1024) + ' KB' : '--') + '</span>' +
+            '<span class="info-label">BLE</span><span class="info-value">' + (d.ble_devices || []).length + '</span>' +
+          '</div>' +
+          (d.rssi != null ? '<div style="margin-top:8px">' + rssiBarHTML(d.rssi) + '</div>' : '') +
+        '</div>';
+      }).join('');
     }
+  }
+
+  if (events) {
+    renderEvents(document.getElementById('dash-events'), Array.isArray(events) ? events : []);
+  }
 }
 
-// ─── API ───
-async function api(method, url, body) {
-    const opts = { method, headers: {} };
-    if (apiKey) opts.headers['X-API-Key'] = apiKey;
-    if (body && !(body instanceof FormData)) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-    else if (body instanceof FormData) { opts.body = body; }
-    try {
-        const r = await fetch(url, opts);
-        updateConnStatus(true);
-        if (r.status === 401) {
-            const key = prompt('Enter your API key to continue:');
-            if (key) { setApiKey(key); return api(method, url, body); }
-            throw new Error('Not authorized');
-        }
-        const d = await r.json();
-        if (!r.ok) throw new Error(d.detail || 'Something went wrong');
-        return d;
-    } catch(e) {
-        if (e.message === 'Failed to fetch' || e.name === 'TypeError') {
-            updateConnStatus(false);
-        }
-        throw e;
-    }
+// Devices Table
+async function refreshDevices() {
+  const devs = await fetchJSON('/api/devices');
+  if (!devs) return;
+  devices = devs;
+  renderDeviceTable();
 }
 
-// ─── Helpers ───
-function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function toast(msg, type='success') {
-    const t = document.getElementById('toast');
-    t.textContent = msg; t.className = 'toast ' + type; t.style.display = 'block';
-    setTimeout(() => t.style.display = 'none', 4000);
-}
-function openModal(title, bodyHtml, footHtml='') {
-    document.getElementById('modalTitle').textContent = title;
-    document.getElementById('modalBody').innerHTML = bodyHtml;
-    document.getElementById('modalFoot').innerHTML = footHtml;
-    document.getElementById('modalOverlay').classList.add('open');
-}
-function closeModal() { document.getElementById('modalOverlay').classList.remove('open'); }
-function shortVer(v) { return v ? esc(v.length > 24 ? v.substring(0,24)+'...' : v) : '--'; }
-function fmtTime(ts) { if(!ts) return ''; try { return new Date(ts).toLocaleTimeString('en', {hour:'2-digit',minute:'2-digit'}); } catch(e) { return ''; } }
-function fmtDateTime(ts) { if(!ts) return '--'; try { return new Date(ts).toLocaleString('en', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); } catch(e) { return ts.substring(0,16); } }
-function shortHash(h) { return h ? h.substring(0,12) + '...' : '--'; }
+function renderDeviceTable() {
+  const sorted = devices.slice().sort(function(a, b) {
+    var va = a[sortCol], vb = b[sortCol];
+    if (sortCol === 'status') { va = a._online ? 1 : 0; vb = b._online ? 1 : 0; }
+    if (va == null) va = '';
+    if (vb == null) vb = '';
+    if (typeof va === 'string') va = va.toLowerCase();
+    if (typeof vb === 'string') vb = vb.toLowerCase();
+    if (va < vb) return sortAsc ? -1 : 1;
+    if (va > vb) return sortAsc ? 1 : -1;
+    return 0;
+  });
 
-function onlineBadge(d) {
-    return d._online
-        ? '<span class="badge badge-on">Online</span>'
-        : '<span class="badge badge-off">Offline</span>';
-}
-function attestBadge(d) {
-    if (d.fw_attested === true) return '<span class="badge badge-on" title="Firmware matches a known image">Verified</span>';
-    if (d.fw_attested === false) return '<span class="badge badge-off" title="Firmware hash does not match any known image">Unknown FW</span>';
-    return '<span class="badge badge-dim" title="Device has not reported a firmware hash yet">No Data</span>';
-}
-function securityBadges(f) {
-    let html = '';
-    html += f.signed ? '<span class="badge badge-on">Signed</span> ' : '<span class="badge badge-warn">Unsigned</span> ';
-    if (f.encrypted) html += '<span class="badge badge-purple">Encrypted</span>';
-    return html;
-}
-function eventTypeClass(type) {
-    if (!type) return 't-info';
-    if (type.includes('success') || type.includes('registered') || type.includes('uploaded')) return 't-ok';
-    if (type.includes('unknown') || type.includes('fail') || type.includes('delete')) return 't-danger';
-    if (type.includes('warn') || type.includes('rollback') || type.includes('scheduled')) return 't-warn';
-    return 't-info';
-}
+  const tbody = document.getElementById('device-tbody');
+  tbody.innerHTML = sorted.map(function(d) {
+    var did = escHtml(d.device_id);
+    return '<tr class="device-row" data-id="' + did + '">' +
+      '<td style="color:var(--cyan);font-weight:bold">' + did + '</td>' +
+      '<td>' + statusBadge(d) + '</td>' +
+      '<td>' + (escHtml(d.ip) || '--') + '</td>' +
+      '<td>' + rssiBarHTML(d.rssi) + '</td>' +
+      '<td>' + (escHtml(d.version) || '--') + '</td>' +
+      '<td>' + (escHtml(d.board) || '--') + '</td>' +
+      '<td>' + formatUptime(d.uptime_s) + '</td>' +
+      '<td>' + (escHtml(d._age) || '--') + '</td>' +
+    '</tr>' +
+    '<tr class="expand-row" id="expand-' + did + '" style="display:none">' +
+      '<td colspan="8"><div class="expand-content">' +
+        '<div class="detail-grid">' +
+          '<div><span class="detail-label">MAC:</span> <span class="detail-value">' + (escHtml(d.mac) || '--') + '</span></div>' +
+          '<div><span class="detail-label">Family:</span> <span class="detail-value">' + (escHtml(d.family) || '--') + '</span></div>' +
+          '<div><span class="detail-label">Partition:</span> <span class="detail-value">' + (escHtml(d.partition) || '--') + '</span></div>' +
+          '<div><span class="detail-label">Free Heap:</span> <span class="detail-value">' + (d.free_heap ? Math.round(d.free_heap / 1024) + ' KB' : '--') + '</span></div>' +
+          '<div><span class="detail-label">Attested:</span> <span class="detail-value">' + (d.fw_attested === true ? 'Yes' : d.fw_attested === false ? 'No' : '--') + '</span></div>' +
+          '<div><span class="detail-label">Tags:</span> <span class="detail-value">' + ((d.tags || []).join(', ') || '--') + '</span></div>' +
+          '<div><span class="detail-label">Capabilities:</span> <span class="detail-value">' + ((d.capabilities || []).join(', ') || '--') + '</span></div>' +
+          '<div><span class="detail-label">BLE Devices:</span> <span class="detail-value">' + (d.ble_devices || []).length + '</span></div>' +
+        '</div>' +
+        (d.sensors ? '<div style="margin-top:10px"><span class="detail-label">Sensors:</span><pre style="color:var(--text);margin-top:4px;font-size:10px;max-height:150px;overflow:auto">' + escHtml(JSON.stringify(d.sensors, null, 2)) + '</pre></div>' : '') +
+        ((d.ble_devices || []).length > 0 ?
+          '<div style="margin-top:10px"><span class="detail-label">BLE Devices Seen:</span>' +
+          '<table class="data-table" style="margin-top:4px;font-size:10px">' +
+          '<thead><tr><th>MAC</th><th>Name</th><th>RSSI</th><th>Known</th></tr></thead><tbody>' +
+          (d.ble_devices || []).map(function(b) {
+            return '<tr><td style="color:var(--cyan)">' + escHtml(b.mac) + '</td>' +
+              '<td>' + (escHtml(b.name) || '--') + '</td>' +
+              '<td>' + rssiBarHTML(b.rssi) + '</td>' +
+              '<td>' + (b.known ? '<span class="known-badge">Known</span>' : '') + '</td></tr>';
+          }).join('') +
+          '</tbody></table></div>'
+        : '') +
+      '</div></td></tr>';
+  }).join('');
 
-// ─── Router ───
-function navigate(page) {
-    S.page = page;
-    document.querySelectorAll('.sidebar nav a').forEach(a => a.classList.toggle('active', a.dataset.page === page));
-    render();
-}
-document.querySelectorAll('.sidebar nav a').forEach(a => a.addEventListener('click', e => { e.preventDefault(); navigate(a.dataset.page); }));
-
-// ─── Data ───
-async function refresh() {
-    try {
-        [S.devices, S.firmware, S.stats, S.events, S.profiles] = await Promise.all([
-            api('GET', '/api/devices'), api('GET', '/api/firmware'),
-            api('GET', '/api/stats'), api('GET', '/api/events?limit=30'),
-            api('GET', '/api/profiles'),
-        ]);
-    } catch(e) { console.error('Refresh:', e); }
-    render();
-}
-
-function render() {
-    const pages = { dashboard: renderDashboard, devices: renderDevices, firmware: renderFirmware,
-                    security: renderSecurity, commission: renderCommission, profiles: renderProfiles, mesh: renderMesh, terminal: renderTerminal, events: renderEvents };
-    (pages[S.page] || renderDashboard)();
-    // Re-trigger fade animation
-    const content = document.getElementById('pageContent');
-    content.style.animation = 'none';
-    content.offsetHeight; // force reflow
-    content.style.animation = '';
-}
-
-// ===============================================
-//  DASHBOARD
-// ===============================================
-function renderDashboard() {
-    const s = S.stats;
-    setPage('Overview', 'Your fleet at a glance', '<button class="btn btn-primary" onclick="refresh()">Refresh</button>');
-
-    const hasDevices = S.devices.length > 0;
-    const hasFirmware = S.firmware.length > 0;
-
-    let welcomeHtml = '';
-    if (!hasDevices && !hasFirmware) {
-        welcomeHtml = `
-            <div class="callout callout-info">
-                <span class="callout-icon">&#128075;</span>
-                <div>
-                    <strong>Welcome to Tritium-Edge Fleet Manager!</strong><br>
-                    Get started by adding your first device or uploading firmware. Use the quick actions below.
-                </div>
-            </div>`;
-    }
-
-    let alertHtml = '';
-    if (s.unattested_devices > 0) {
-        alertHtml += '<div class="callout callout-danger"><span class="callout-icon">&#9888;</span><div><strong>' + s.unattested_devices + ' device' + (s.unattested_devices>1?'s':'') + ' running unverified firmware.</strong> Their firmware hash doesn\'t match any known image. Check the <a href="#" onclick="navigate(\'security\');return false" style="color:var(--cyan)">Security</a> page.</div></div>';
-    }
-    if (s.pending_ota > 0) {
-        alertHtml += '<div class="callout callout-warn"><span class="callout-icon">&#8987;</span><div><strong>' + s.pending_ota + ' device' + (s.pending_ota>1?'s':'') + ' waiting for an OTA update.</strong> They\'ll download it on their next heartbeat.</div></div>';
-    }
-
-    document.getElementById('pageContent').innerHTML = `
-        ${welcomeHtml}
-        ${alertHtml}
-
-        <div class="quick-actions">
-            <div class="quick-action" onclick="navigate('commission')">
-                <div class="qa-icon">&#9733;</div>
-                <div class="qa-title">Add a New Device</div>
-                <div class="qa-desc">Flash firmware and provision a new ESP32 over USB or generate an SD card package.</div>
-            </div>
-            <div class="quick-action" onclick="navigate('firmware')">
-                <div class="qa-icon">&#9650;</div>
-                <div class="qa-title">Upload Firmware</div>
-                <div class="qa-desc">Upload a .bin or signed .ota file, then push it to one device or your entire fleet.</div>
-            </div>
-            <div class="quick-action" onclick="navigate('devices')">
-                <div class="qa-icon">&#9679;</div>
-                <div class="qa-title">Manage Devices</div>
-                <div class="qa-desc">View status, push OTA updates, reboot, or roll back firmware on any device.</div>
-            </div>
-            <div class="quick-action" onclick="navigate('security')">
-                <div class="qa-icon">&#9670;</div>
-                <div class="qa-title">Security Overview</div>
-                <div class="qa-desc">Check firmware attestation, signing status, encryption, and all 7 OTA delivery pathways.</div>
-            </div>
-        </div>
-
-        <div class="stats-row">
-            <div class="stat-card"><div class="val">${s.total_devices||0}</div><div class="lbl">Total Devices</div><div class="hint">Registered in fleet</div></div>
-            <div class="stat-card"><div class="val">${s.online_devices||0}</div><div class="lbl">Online Now</div><div class="hint">Heartbeat in last 2 min</div></div>
-            <div class="stat-card ${s.offline_devices?'danger':''}"><div class="val">${s.offline_devices||0}</div><div class="lbl">Offline</div><div class="hint">No recent heartbeat</div></div>
-            <div class="stat-card blue"><div class="val">${s.total_firmware||0}</div><div class="lbl">Firmware Images</div><div class="hint">${s.signed_firmware||0} signed</div></div>
-            <div class="stat-card ${s.unattested_devices?'danger':''}"><div class="val">${s.attested_devices||0}/${s.total_devices||0}</div><div class="lbl">Attested</div><div class="hint">Firmware verified by hash</div></div>
-            <div class="stat-card purple"><div class="val">${s.total_profiles||0}</div><div class="lbl">Profiles</div><div class="hint">${s.profiled_devices||0} devices assigned</div></div>
-            <div class="stat-card ${s.config_drift?'warn':''}"><div class="val">${s.config_drift||0}</div><div class="lbl">Config Drift</div><div class="hint">Devices out of sync</div></div>
-        </div>
-
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
-            <div class="panel">
-                <div class="panel-header"><h3>Recent Devices</h3><span class="panel-desc">Click a device for details</span></div>
-                ${hasDevices ? '<table><thead><tr><th>Status</th><th>Device</th><th>Version</th><th>Firmware</th><th>Last Seen</th></tr></thead><tbody>' +
-                S.devices.slice(0,8).map(d => '<tr class="clickable" onclick="showDevice(\'' + esc(d.device_id) + '\')">' +
-                    '<td>' + onlineBadge(d) + '</td>' +
-                    '<td><strong>' + esc(d.device_name||d.device_id) + '</strong></td>' +
-                    '<td class="mono">' + shortVer(d.version) + '</td>' +
-                    '<td>' + attestBadge(d) + '</td>' +
-                    '<td class="text-muted">' + (d._age||'never') + '</td>' +
-                '</tr>').join('') +
-                '</tbody></table>' : '<div class="empty-state"><div class="es-icon">&#128225;</div><div class="es-title">No devices yet</div><div class="es-hint">Devices appear here automatically when they connect. Use "Add Device" to get started.</div></div>'}
-            </div>
-            <div class="panel">
-                <div class="panel-header"><h3>Recent Activity</h3><span class="panel-desc">Latest events across the fleet</span></div>
-                <div class="event-list">
-                ${S.events.length ? S.events.slice(0,10).map(e => '<div class="event-item">' +
-                    '<span class="ts">' + fmtTime(e.ts) + '</span>' +
-                    '<span class="type ' + eventTypeClass(e.type) + '">' + esc(e.type) + '</span>' +
-                    '<span class="detail">' + esc(e.detail||e.device_id||'') + '</span>' +
-                '</div>').join('') : '<div class="empty-state"><div class="es-icon">&#128196;</div><div class="es-title">No activity yet</div><div class="es-hint">Events will appear as devices connect, firmware is uploaded, or OTA updates are pushed.</div></div>'}
-                </div>
-            </div>
-        </div>`;
-}
-
-// ===============================================
-//  DEVICES
-// ===============================================
-function renderDevices() {
-    setPage('My Devices', S.devices.length + ' device' + (S.devices.length!==1?'s':'') + ' registered', `
-        <button class="btn" onclick="refresh()">Refresh</button>
-        <button class="btn btn-accent" onclick="navigate('commission')">+ Add Device</button>`);
-
-    if (!S.devices.length) {
-        document.getElementById('pageContent').innerHTML = `
-            <div class="empty-state">
-                <div class="es-icon">&#128225;</div>
-                <div class="es-title">No devices registered</div>
-                <div class="es-hint">Devices register automatically when they send their first heartbeat to this server.<br>Or, use the <a href="#" onclick="navigate('commission');return false" style="color:var(--cyan)">Add Device</a> page to flash and provision new hardware.</div>
-            </div>`;
-        return;
-    }
-
-    document.getElementById('pageContent').innerHTML = `
-        <div class="callout callout-info"><span class="callout-icon">&#128161;</span><div>Click any device row to see full details, push OTA updates, reboot, or roll back firmware.</div></div>
-        <div class="panel"><table>
-        <thead><tr><th>Status</th><th>Name</th><th>Board</th><th>Version</th><th>Firmware Check</th><th>IP Address</th><th>Signal</th><th>Last Seen</th><th>OTA</th><th></th></tr></thead>
-        <tbody>${S.devices.map(d => '<tr class="clickable" onclick="showDevice(\'' + esc(d.device_id) + '\')">' +
-            '<td>' + onlineBadge(d) + '</td>' +
-            '<td><strong>' + (esc(d.device_name)||'--') + '</strong> ' + (d.tags||[]).map(t=>'<span class="tag">'+esc(t)+'</span>').join('') + '<br><span class="mono text-muted" style="font-size:0.68em">' + esc(d.device_id) + '</span></td>' +
-            '<td>' + (esc(d.board)||'--') + '</td>' +
-            '<td class="mono">' + shortVer(d.version) + '</td>' +
-            '<td>' + attestBadge(d) + '</td>' +
-            '<td class="mono">' + (esc(d.ip)||'--') + '</td>' +
-            '<td>' + (d.rssi!=null?d.rssi+' dBm':'--') + '</td>' +
-            '<td>' + (d._age||'never') + '</td>' +
-            '<td>' + (d.pending_ota?'<span class="badge badge-warn">Pending</span>':'--') + '</td>' +
-            '<td class="btn-group" onclick="event.stopPropagation()">' +
-                '<button class="btn btn-sm btn-primary" onclick="pushOtaDialog(\'' + esc(d.device_id) + '\')" title="Send firmware update">Update</button>' +
-            '</td>' +
-        '</tr>').join('')}</tbody></table></div>`;
-}
-
-function showDevice(id) {
-    const d = S.devices.find(x=>x.device_id===id);
-    if(!d) return;
-    const hashDisplay = d.fw_hash ? '<span class="hash-short" title="' + esc(d.fw_hash) + '">' + esc(d.fw_hash.substring(0,20)) + '...</span>' : '--';
-    openModal(d.device_name || d.device_id, `
-        <div class="detail-grid">
-            <div class="detail-block"><h4>Identity</h4>
-                <div class="detail-row"><span class="key">Device ID</span><span class="val">${esc(d.device_id)}</span></div>
-                <div class="detail-row"><span class="key">Display Name</span><span class="val">${esc(d.device_name)||'--'}</span></div>
-                <div class="detail-row"><span class="key">Board Type</span><span class="val">${esc(d.board)||'--'}</span></div>
-                <div class="detail-row"><span class="key">Tags</span><span class="val">${(d.tags||[]).join(', ')||'none'}</span></div>
-                <div class="detail-row"><span class="key">Registered</span><span class="val">${fmtDateTime(d.registered_at)}</span></div>
-            </div>
-            <div class="detail-block"><h4>Connection</h4>
-                <div class="detail-row"><span class="key">Status</span><span class="val">${onlineBadge(d)}</span></div>
-                <div class="detail-row"><span class="key">Last Seen</span><span class="val">${d._age||'never'}</span></div>
-                <div class="detail-row"><span class="key">IP Address</span><span class="val">${esc(d.ip)||'--'}</span></div>
-                <div class="detail-row"><span class="key">WiFi Signal</span><span class="val">${d.rssi!=null?d.rssi+' dBm':'--'}</span></div>
-            </div>
-            <div class="detail-block"><h4>Firmware</h4>
-                <div class="detail-row"><span class="key">Running Version</span><span class="val">${esc(d.version)||'--'}</span></div>
-                <div class="detail-row"><span class="key">Active Partition</span><span class="val">${d.partition||'--'}</span></div>
-                <div class="detail-row"><span class="key">Pending Update</span><span class="val">${d.pending_ota?esc(d.pending_ota.version):'none'}</span></div>
-            </div>
-            <div class="detail-block"><h4>Security</h4>
-                <div class="detail-row"><span class="key">Firmware Check</span><span class="val">${attestBadge(d)}</span></div>
-                <div class="detail-row"><span class="key">Firmware Hash</span><span class="val">${hashDisplay}</span></div>
-                <div class="detail-row"><span class="key">Matched Image</span><span class="val">${d.fw_attested_id ? esc(d.fw_attested_id) : '--'}</span></div>
-            </div>
-            <div class="detail-block"><h4>Hardware</h4>
-                <div class="detail-row"><span class="key">Uptime</span><span class="val">${d.uptime_s?Math.round(d.uptime_s/60)+' min':'--'}</span></div>
-                <div class="detail-row"><span class="key">Free Memory</span><span class="val">${d.free_heap?Math.round(d.free_heap/1024)+' KB':'--'}</span></div>
-                <div class="detail-row"><span class="key">MAC Address</span><span class="val">${d.mac||'--'}</span></div>
-            </div>
-            ${d.sensors ? `<div class="detail-block"><h4>Sensors</h4>
-                <div class="detail-row"><span class="key">BLE Devices</span><span class="val">${d.sensors.ble_devices!=null?d.sensors.ble_devices:'--'}</span></div>
-                <div class="detail-row"><span class="key">Known Devices</span><span class="val">${d.sensors.ble_known!=null?d.sensors.ble_known:'--'}</span></div>
-                <div class="detail-row"><span class="key">Total Seen</span><span class="val">${d.sensors.ble_total_seen!=null?d.sensors.ble_total_seen:'--'}</span></div>
-            </div>` : ''}
-        </div>
-        ${d.notes?'<div style="margin-top:12px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:2px;font-size:0.8em;color:var(--text2)"><strong>Notes:</strong> '+esc(d.notes)+'</div>':''}
-        <div style="margin-top:14px">
-            <h4 style="font-size:0.72em;color:var(--cyan);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;font-weight:700">Telemetry History</h4>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-                <div style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:10px">
-                    <div style="font-size:0.68em;color:var(--text2);margin-bottom:6px">Free Heap (KB)</div>
-                    <canvas id="chartHeap" width="280" height="80" style="width:100%"></canvas>
-                </div>
-                <div style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:10px">
-                    <div style="font-size:0.68em;color:var(--text2);margin-bottom:6px">WiFi Signal (dBm)</div>
-                    <canvas id="chartRssi" width="280" height="80" style="width:100%"></canvas>
-                </div>
-            </div>
-        </div>
-    `, `
-        <button class="btn btn-primary" onclick="pushOtaDialog('${esc(d.device_id)}');closeModal()">Push Firmware Update</button>
-        <button class="btn" onclick="editDevice('${esc(d.device_id)}');closeModal()">Edit Info</button>
-        <button class="btn btn-accent" onclick="editConfig('${esc(d.device_id)}');closeModal()">Config</button>
-        <button class="btn" onclick="rebootDevice('${esc(d.device_id)}')">Reboot</button>
-        <button class="btn btn-purple" onclick="rollbackDevice('${esc(d.device_id)}')">Rollback Firmware</button>
-        ${d.pending_ota?'<button class="btn" onclick="clearOta(\''+esc(d.device_id)+'\')">Cancel Update</button>':''}
-        <button class="btn btn-danger" onclick="deleteDevice('${esc(d.device_id)}')">Remove Device</button>
-    `);
-    // Load and draw telemetry charts
-    drawDeviceCharts(d.device_id);
-}
-
-function drawMiniChart(canvasId, data, color, unit) {
-    const canvas = document.getElementById(canvasId);
-    if (!canvas || !data.length) return;
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width, H = canvas.height;
-    ctx.clearRect(0, 0, W, H);
-
-    const vals = data.filter(v => v != null);
-    if (!vals.length) return;
-    const min = Math.min(...vals);
-    const max = Math.max(...vals);
-    const range = max - min || 1;
-
-    // Draw fill
-    ctx.beginPath();
-    ctx.moveTo(0, H);
-    vals.forEach((v, i) => {
-        const x = (i / (vals.length - 1 || 1)) * W;
-        const y = H - ((v - min) / range) * (H - 10) - 5;
-        ctx.lineTo(x, y);
+  // Click to expand
+  tbody.querySelectorAll('.device-row').forEach(function(row) {
+    row.addEventListener('click', function() {
+      var id = row.dataset.id;
+      var expandRow = document.getElementById('expand-' + id);
+      if (expandRow) {
+        expandRow.style.display = expandRow.style.display === 'none' ? '' : 'none';
+      }
     });
-    ctx.lineTo(W, H);
-    ctx.closePath();
-    ctx.fillStyle = color.replace(')', ',0.08)').replace('rgb', 'rgba');
-    ctx.fill();
+  });
 
-    // Draw line
-    ctx.beginPath();
-    vals.forEach((v, i) => {
-        const x = (i / (vals.length - 1 || 1)) * W;
-        const y = H - ((v - min) / range) * (H - 10) - 5;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Latest value label
-    ctx.fillStyle = color;
-    ctx.font = 'bold 10px JetBrains Mono, monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(vals[vals.length-1].toFixed(0) + (unit||''), W - 4, 12);
-}
-
-async function drawDeviceCharts(deviceId) {
-    try {
-        const data = await api('GET', '/api/devices/'+encodeURIComponent(deviceId)+'/telemetry?limit=60');
-        const heapData = data.map(p => p.free_heap ? p.free_heap / 1024 : null).filter(v => v != null);
-        const rssiData = data.map(p => p.rssi).filter(v => v != null);
-        drawMiniChart('chartHeap', heapData, 'rgb(5,255,161)', ' KB');
-        drawMiniChart('chartRssi', rssiData, 'rgb(0,240,255)', ' dBm');
-    } catch(e) {}
-}
-
-function editDevice(id) {
-    const d = S.devices.find(x=>x.device_id===id);
-    if(!d) return;
-    openModal('Edit Device', `
-        <div class="form-group"><label>Display Name</label><input id="edName" value="${esc(d.device_name||'')}" placeholder="e.g., Kitchen Panel"><div class="field-hint">A friendly name to identify this device</div></div>
-        <div class="form-group"><label>Tags</label><input id="edTags" value="${esc((d.tags||[]).join(', '))}" placeholder="e.g., production, display, kitchen"><div class="field-hint">Comma-separated tags for grouping and filtering</div></div>
-        <div class="form-group"><label>Group</label><input id="edGroup" value="${esc(d.group||'')}" placeholder="e.g., home, office"><div class="field-hint">Logical group this device belongs to</div></div>
-        <div class="form-group"><label>Notes</label><textarea id="edNotes" placeholder="Any notes about this device...">${esc(d.notes||'')}</textarea></div>
-    `, `<button class="btn btn-accent" onclick="saveDevice('${esc(d.device_id)}')">Save Changes</button>
-        <button class="btn" onclick="closeModal()">Cancel</button>`);
-}
-async function saveDevice(id) {
-    try {
-        await api('PATCH', '/api/devices/'+encodeURIComponent(id), {
-            device_name: document.getElementById('edName').value,
-            tags: document.getElementById('edTags').value.split(',').map(s=>s.trim()).filter(Boolean),
-            group: document.getElementById('edGroup').value,
-            notes: document.getElementById('edNotes').value,
-        });
-        toast('Device updated successfully'); closeModal(); refresh();
-    } catch(e) { toast(e.message, 'error'); }
-}
-async function deleteDevice(id) {
-    if (!confirm('Are you sure you want to remove device "'+id+'" from the fleet? This cannot be undone.')) return;
-    try { await api('DELETE', '/api/devices/'+encodeURIComponent(id)); toast('Device removed'); closeModal(); refresh(); }
-    catch(e) { toast(e.message, 'error'); }
-}
-async function rebootDevice(id) {
-    if (!confirm('Reboot device "'+id+'"? It will restart and reconnect.')) return;
-    try { await api('POST', '/api/devices/'+encodeURIComponent(id)+'/reboot'); toast('Reboot command sent -- device will restart on next heartbeat'); closeModal(); refresh(); }
-    catch(e) { toast(e.message, 'error'); }
-}
-async function rollbackDevice(id) {
-    if (!confirm('Roll back firmware on "'+id+'"?\n\nThe device will switch to its previous firmware partition. Use this if a bad update was pushed.')) return;
-    try { await api('POST', '/api/devices/'+encodeURIComponent(id)+'/reboot', {cmd: 'rollback'}); toast('Rollback command sent'); closeModal(); refresh(); }
-    catch(e) { toast(e.message, 'error'); }
-}
-async function clearOta(id) {
-    try { await api('POST', '/api/ota/clear/'+encodeURIComponent(id)); toast('Pending update cancelled'); closeModal(); refresh(); }
-    catch(e) { toast(e.message, 'error'); }
-}
-
-// ===============================================
-//  CONFIG EDITOR
-// ===============================================
-async function editConfig(id) {
-    let cfgData;
-    try { cfgData = await api('GET', '/api/devices/'+encodeURIComponent(id)+'/config'); }
-    catch(e) { toast(e.message, 'error'); return; }
-
-    const desired = cfgData.desired_config || {};
-    const reported = cfgData.reported_config || {};
-    const allKeys = [...new Set([...Object.keys(desired), ...Object.keys(reported)])].sort();
-
-    let configRows = '';
-    if (allKeys.length) {
-        configRows = allKeys.map(k => {
-            const dv = desired[k] !== undefined ? JSON.stringify(desired[k]) : '';
-            const rv = reported[k] !== undefined ? JSON.stringify(reported[k]) : '';
-            const match = dv && rv && dv === rv;
-            const drift = dv && rv && dv !== rv;
-            return '<tr>' +
-                '<td class="mono">' + esc(k) + '</td>' +
-                '<td class="mono">' + esc(rv || '--') + '</td>' +
-                '<td class="mono">' + esc(dv || '--') + '</td>' +
-                '<td>' + (drift ? '<span class="badge badge-warn">Drift</span>' : match ? '<span class="badge badge-on">In Sync</span>' : '<span class="badge badge-dim">Pending</span>') + '</td>' +
-            '</tr>';
-        }).join('');
+  // Update sort arrows
+  document.querySelectorAll('#device-table th[data-sort]').forEach(function(th) {
+    var arrow = th.querySelector('.sort-arrow');
+    if (th.dataset.sort === sortCol) {
+      arrow.textContent = sortAsc ? ' \u25B2' : ' \u25BC';
     } else {
-        configRows = '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">No config set. Add key-value pairs below.</td></tr>';
+      arrow.textContent = '';
     }
-
-    openModal('Device Config // ' + id, `
-        <div class="callout callout-info"><span class="callout-icon">&#9881;</span><div>Set desired configuration. The device will receive changed values on its next heartbeat and apply them.</div></div>
-        <div class="panel" style="margin-bottom:16px">
-            <table><thead><tr><th>Key</th><th>Reported</th><th>Desired</th><th>Status</th></tr></thead>
-            <tbody>${configRows}</tbody></table>
-        </div>
-        <div class="section-header"><h3>Update Config</h3><p>Add or change configuration values</p></div>
-        <div class="form-row">
-            <div class="form-group"><label>Key</label><input id="cfgKey" placeholder="e.g., heartbeat_interval_s"><div class="field-hint">Config key name</div></div>
-            <div class="form-group"><label>Value</label><input id="cfgVal" placeholder="e.g., 30 or &quot;hello&quot; or true"><div class="field-hint">JSON value (number, string, boolean)</div></div>
-        </div>
-        <div class="form-group"><label>Or paste JSON</label><textarea id="cfgJson" rows="3" placeholder='{"heartbeat_interval_s": 30, "display_brightness": 80}'></textarea><div class="field-hint">Bulk update: paste a JSON object with multiple keys</div></div>
-    `, `<button class="btn btn-accent" onclick="saveConfig('${esc(id)}')">Save Config</button>
-        <button class="btn" onclick="closeModal()">Cancel</button>`);
+  });
 }
 
-async function saveConfig(id) {
-    let config = {};
-    const jsonText = document.getElementById('cfgJson').value.trim();
-    if (jsonText) {
-        try { config = JSON.parse(jsonText); } catch(e) { toast('Invalid JSON: ' + e.message, 'error'); return; }
-    }
-    const key = document.getElementById('cfgKey').value.trim();
-    const val = document.getElementById('cfgVal').value.trim();
-    if (key && val) {
-        try { config[key] = JSON.parse(val); } catch(e) { config[key] = val; }
-    }
-    if (!Object.keys(config).length) { toast('Nothing to save', 'error'); return; }
-    try {
-        await api('PUT', '/api/devices/'+encodeURIComponent(id)+'/config', config);
-        toast('Config updated — device will receive changes on next heartbeat');
-        closeModal(); refresh();
-    } catch(e) { toast(e.message, 'error'); }
-}
-
-// ===============================================
-//  OTA PUSH DIALOG
-// ===============================================
-function pushOtaDialog(deviceId) {
-    if (!S.firmware.length) {
-        openModal('No Firmware Available', `
-            <div class="callout callout-warn"><span class="callout-icon">&#128230;</span><div>You need to upload firmware before you can push an update.<br>Go to the <strong>Firmware</strong> page to upload a .bin or .ota file first.</div></div>
-        `, `<button class="btn btn-primary" onclick="closeModal();navigate('firmware')">Go to Firmware</button>
-            <button class="btn" onclick="closeModal()">Cancel</button>`);
-        return;
-    }
-    const opts = S.firmware.map(f => {
-        const badges = [];
-        if (f.signed) badges.push('Signed');
-        if (f.encrypted) badges.push('Encrypted');
-        const badgeStr = badges.length ? ' ['+badges.join(', ')+']' : ' [unsigned]';
-        return '<option value="' + f.id + '">v' + esc(f.version) + ' for ' + esc(f.board) + badgeStr + ' -- uploaded ' + fmtDateTime(f.uploaded_at) + '</option>';
-    }).join('');
-    const target = deviceId ? '<strong>' + esc(deviceId) + '</strong>' : '<strong>ALL devices</strong> in your fleet';
-    openModal('Push Firmware Update', `
-        <div class="callout callout-info"><span class="callout-icon">&#128640;</span><div>The device will download and install the firmware on its next heartbeat (usually within 60 seconds).</div></div>
-        <p style="margin-bottom:14px">Send a firmware update to ${target}:</p>
-        <div class="form-group"><label>Choose Firmware</label><select id="otaFw" style="font-size:0.8em">${opts}</select><div class="field-hint">Signed firmware is recommended for production devices</div></div>
-    `, `<button class="btn btn-accent btn-lg" onclick="doPushOta('${esc(deviceId)||''}')">Push Update</button>
-        <button class="btn" onclick="closeModal()">Cancel</button>`);
-}
-async function doPushOta(deviceId) {
-    const fwId = document.getElementById('otaFw').value;
-    try {
-        if (deviceId) {
-            await api('POST', '/api/ota/push/'+encodeURIComponent(deviceId), {firmware_id: fwId});
-            toast('Update scheduled for '+deviceId+' -- it will install on next heartbeat');
-        } else {
-            const r = await api('POST', '/api/ota/push-all', {firmware_id: fwId});
-            toast('Update scheduled for '+r.devices_updated+' devices');
-        }
-        closeModal(); refresh();
-    } catch(e) { toast(e.message, 'error'); }
-}
-
-// ===============================================
-//  FIRMWARE
-// ===============================================
-function renderFirmware() {
-    setPage('Firmware', 'Upload firmware images and deploy them to your devices', `
-        <button class="btn" onclick="refresh()">Refresh</button>
-        ${S.firmware.length ? '<button class="btn btn-accent" onclick="pushOtaDialog(\'\')">Update All Devices</button>' : ''}`);
-
-    document.getElementById('pageContent').innerHTML = `
-        <div class="panel" style="margin-bottom:20px">
-            <div class="panel-header"><h3>Upload New Firmware</h3><span class="panel-desc">Drag a file or click to browse</span></div>
-            <div style="padding:18px">
-                <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fwFileInput').click()">
-                    <div class="upload-icon">&#128230;</div>
-                    <div class="label">Drop your .bin or .ota file here</div>
-                    <div class="hint">Supports raw .bin files and signed/encrypted .ota packages.<br>Version and board info are auto-detected from .ota headers.</div>
-                </div>
-                <input type="file" id="fwFileInput" accept=".bin,.ota" style="display:none" onchange="uploadFw(this)">
-                <div class="form-row" style="margin-top:12px">
-                    <div class="form-group"><label>Version</label><input id="fwVer" placeholder="Auto-detected from .ota header"><div class="field-hint">Override if uploading a raw .bin file</div></div>
-                    <div class="form-group"><label>Target Board</label><input id="fwBoard" placeholder="any" value="any"><div class="field-hint">"any" works for all boards, or specify e.g., "touch-lcd-349"</div></div>
-                </div>
-                <div class="form-group"><label>Release Notes</label><input id="fwNotes" placeholder="What changed in this version?"></div>
-            </div>
-        </div>
-
-        ${S.firmware.length ? `
-        <div class="section-header"><h3>Uploaded Firmware</h3><p>Click "Deploy" to push firmware to all devices, or go to a specific device to update just that one.</p></div>
-        <div class="panel"><table>
-        <thead><tr><th>Version</th><th>Board</th><th>Size</th><th>Security</th><th>SHA-256</th><th>Deploys</th><th>Uploaded</th><th></th></tr></thead>
-        <tbody>${S.firmware.map(f => '<tr>' +
-            '<td><strong class="mono">' + esc(f.version) + '</strong><br><span class="text-muted" style="font-size:0.64em">' + esc(f.id) + '</span></td>' +
-            '<td>' + esc(f.board) + '</td>' +
-            '<td>' + (f.total_size/1024).toFixed(0) + ' KB</td>' +
-            '<td>' + securityBadges(f) + '</td>' +
-            '<td><span class="hash-short" title="' + esc(f.sha256||'') + '">' + shortHash(f.sha256) + '</span></td>' +
-            '<td>' + (f.deploy_count||0) + ' times</td>' +
-            '<td>' + fmtDateTime(f.uploaded_at) + '</td>' +
-            '<td class="btn-group" onclick="event.stopPropagation()">' +
-                '<button class="btn btn-sm btn-accent" onclick="pushOtaDialog(\'\')">Deploy</button>' +
-                '<a href="/api/firmware/' + esc(f.id) + '/download" class="btn btn-sm">Download</a>' +
-                '<button class="btn btn-sm btn-danger" onclick="deleteFw(\'' + esc(f.id) + '\')">Delete</button>' +
-            '</td>' +
-        '</tr>').join('')}
-        </tbody></table></div>` : `
-        <div class="empty-state">
-            <div class="es-icon">&#128230;</div>
-            <div class="es-title">No firmware uploaded yet</div>
-            <div class="es-hint">Upload a firmware file above to get started. You can use raw .bin files or signed .ota packages created with the packaging tool.</div>
-        </div>`}`;
-
-    // Drag & drop
-    const z = document.getElementById('uploadZone');
-    if (z) {
-        z.addEventListener('dragover', e => { e.preventDefault(); z.classList.add('dragover'); });
-        z.addEventListener('dragleave', () => z.classList.remove('dragover'));
-        z.addEventListener('drop', e => { e.preventDefault(); z.classList.remove('dragover');
-            if(e.dataTransfer.files.length) { document.getElementById('fwFileInput').files = e.dataTransfer.files; uploadFw(document.getElementById('fwFileInput')); }
-        });
-    }
-}
-async function uploadFw(input) {
-    if(!input.files[0]) return;
-    const form = new FormData();
-    form.append('file', input.files[0]);
-    const v = document.getElementById('fwVer').value;
-    const b = document.getElementById('fwBoard').value;
-    const n = document.getElementById('fwNotes').value;
-    if(v) form.append('version', v); if(b) form.append('board', b); if(n) form.append('notes', n);
-    try {
-        const headers = {};
-        if(apiKey) headers['X-API-Key'] = apiKey;
-        const r = await fetch('/api/firmware/upload', {method:'POST', body:form, headers});
-        if(r.status === 401) { const k = prompt('Enter your API key:'); if(k) { setApiKey(k); return uploadFw(input); } return; }
-        const d = await r.json();
-        if(!r.ok) throw new Error(d.detail);
-        toast('Firmware uploaded: v' + d.version + ' (' + d.id + ')');
-        input.value = ''; refresh();
-    } catch(e) { toast(e.message, 'error'); }
-}
-async function deleteFw(id) {
-    if(!confirm('Delete this firmware image? Devices that already have it installed will not be affected.')) return;
-    try { await api('DELETE', '/api/firmware/'+encodeURIComponent(id)); toast('Firmware deleted'); refresh(); }
-    catch(e) { toast(e.message, 'error'); }
-}
-
-// ===============================================
-//  SECURITY
-// ===============================================
-function renderSecurity() {
-    setPage('Security', 'Firmware integrity, attestation, and delivery pathway status', '<button class="btn btn-primary" onclick="refresh()">Refresh</button>');
-
-    const s = S.stats;
-    const totalDev = s.total_devices || 0;
-    const attested = s.attested_devices || 0;
-    const unattested = s.unattested_devices || 0;
-    const noHash = s.no_attestation || 0;
-    const signedFw = s.signed_firmware || 0;
-    const totalFw = s.total_firmware || 0;
-    const attestPct = totalDev ? Math.round(attested / totalDev * 100) : 0;
-    const signedPct = totalFw ? Math.round(signedFw / totalFw * 100) : 0;
-
-    const secEvents = S.events.filter(e =>
-        e.type && (e.type.includes('attestation') || e.type.includes('ota_fail') ||
-                   e.type.includes('rollback') || e.type.includes('unknown'))
-    );
-
-    let alertHtml = '';
-    if (unattested > 0) {
-        alertHtml = '<div class="callout callout-danger"><span class="callout-icon">&#9888;</span><div><strong>' + unattested + ' device' + (unattested>1?'s are':' is') + ' running unverified firmware!</strong> The firmware hash reported by ' + (unattested>1?'these devices':'this device') + ' doesn\'t match any firmware image you\'ve uploaded. This could mean the device was updated outside this system, or potentially compromised.</div></div>';
-    } else if (noHash > 0) {
-        alertHtml = '<div class="callout callout-warn"><span class="callout-icon">&#128270;</span><div><strong>' + noHash + ' device' + (noHash>1?'s have':'has') + ' not reported a firmware hash.</strong> These devices may be running older firmware that doesn\'t support attestation. Update them to the latest OTA firmware to enable this feature.</div></div>';
-    } else if (totalDev > 0) {
-        alertHtml = '<div class="callout callout-success"><span class="callout-icon">&#9989;</span><div><strong>All devices are running verified firmware.</strong> Every device\'s firmware hash matches a known image.</div></div>';
-    }
-
-    document.getElementById('pageContent').innerHTML = `
-        ${alertHtml}
-
-        <div class="gauge-row">
-            <div class="gauge">
-                <div class="ring ${attestPct>=80?'ring-ok':attestPct>=50?'ring-warn':'ring-danger'}" style="--pct:${attestPct}%">
-                    <div class="ring-inner">${attestPct}%</div>
-                </div>
-                <div class="gauge-label">Devices Attested</div>
-                <div class="gauge-hint">${attested} of ${totalDev} devices verified</div>
-            </div>
-            <div class="gauge">
-                <div class="ring ${signedPct>=80?'ring-ok':signedPct>=50?'ring-warn':'ring-danger'}" style="--pct:${signedPct}%">
-                    <div class="ring-inner">${signedPct}%</div>
-                </div>
-                <div class="gauge-label">Firmware Signed</div>
-                <div class="gauge-hint">${signedFw} of ${totalFw} images cryptographically signed</div>
-            </div>
-            <div class="gauge">
-                <div class="ring ${noHash===0?'ring-ok':noHash<=2?'ring-warn':'ring-danger'}" style="--pct:${totalDev?Math.round((totalDev-noHash)/totalDev*100):0}%">
-                    <div class="ring-inner">${noHash}</div>
-                </div>
-                <div class="gauge-label">Missing Attestation</div>
-                <div class="gauge-hint">${noHash} device${noHash!==1?'s':''} with no firmware hash</div>
-            </div>
-        </div>
-
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
-            <div class="panel">
-                <div class="panel-header"><h3>Device Firmware Verification</h3><span class="panel-desc">Each device reports a SHA-256 hash of its running firmware</span></div>
-                ${S.devices.length ? '<table><thead><tr><th>Device</th><th>Board</th><th>Version</th><th>Status</th></tr></thead><tbody>' +
-                S.devices.map(d => '<tr class="clickable" onclick="showDevice(\'' + esc(d.device_id) + '\')">' +
-                    '<td><strong>' + esc(d.device_name||d.device_id) + '</strong></td>' +
-                    '<td>' + (esc(d.board)||'--') + '</td>' +
-                    '<td class="mono">' + shortVer(d.version) + '</td>' +
-                    '<td>' + attestBadge(d) + '</td>' +
-                '</tr>').join('') +
-                '</tbody></table>' : '<div class="empty-state"><div class="es-title">No devices</div></div>'}
-            </div>
-
-            <div class="panel">
-                <div class="panel-header"><h3>Firmware Image Integrity</h3><span class="panel-desc">Cryptographic properties of uploaded firmware</span></div>
-                ${S.firmware.length ? '<table><thead><tr><th>Version</th><th>Board</th><th>Security</th></tr></thead><tbody>' +
-                S.firmware.map(f => '<tr>' +
-                    '<td class="mono">' + esc(f.version) + '</td>' +
-                    '<td>' + esc(f.board) + '</td>' +
-                    '<td>' + securityBadges(f) + '</td>' +
-                '</tr>').join('') +
-                '</tbody></table>' : '<div class="empty-state"><div class="es-title">No firmware</div></div>'}
-            </div>
-        </div>
-
-        ${secEvents.length ? `
-        <div class="panel" style="margin-top:4px">
-            <div class="panel-header"><h3>Security Events</h3><span class="panel-desc">Attestation failures, unknown firmware, and rollbacks</span></div>
-            <div class="event-list" style="max-height:none">
-            ${secEvents.map(e => '<div class="event-item">' +
-                '<span class="ts">' + fmtDateTime(e.ts) + '</span>' +
-                '<span class="type ' + eventTypeClass(e.type) + '">' + esc(e.type) + '</span>' +
-                '<span class="detail">' + (e.device_id?'<span class="mono">'+esc(e.device_id)+'</span> ':'') + ' ' + esc(e.detail||'') + '</span>' +
-            '</div>').join('')}
-            </div>
-        </div>` : ''}
-
-        <div class="panel">
-            <div class="panel-header"><h3>OTA Delivery Pathways</h3><span class="panel-desc">All 7 ways firmware can reach a device</span></div>
-            <div style="padding:16px">
-                <table><thead><tr><th>Method</th><th>How It Works</th><th>Signing</th><th>Encryption</th><th>Status</th></tr></thead><tbody>
-                    <tr><td><strong>WiFi Pull</strong></td><td>Device downloads .ota from a URL</td><td><span class="badge badge-on">Yes</span></td><td><span class="badge badge-purple">Yes</span></td><td><span class="badge badge-on">Active</span></td></tr>
-                    <tr><td><strong>WiFi Push</strong></td><td>Upload via device's built-in web page</td><td><span class="badge badge-on">Yes</span></td><td><span class="badge badge-purple">Yes</span></td><td><span class="badge badge-on">Active</span></td></tr>
-                    <tr><td><strong>SD Card</strong></td><td>Place .ota file on SD card, device picks it up</td><td><span class="badge badge-on">Yes</span></td><td><span class="badge badge-purple">Yes</span></td><td><span class="badge badge-on">Active</span></td></tr>
-                    <tr><td><strong>Serial USB</strong></td><td>Push via USB cable using serial_ota.py</td><td><span class="badge badge-on">Yes</span></td><td><span class="badge badge-purple">Yes</span></td><td><span class="badge badge-on">Active</span></td></tr>
-                    <tr><td><strong>Bluetooth (BLE)</strong></td><td>Push via BLE using ble_ota.py</td><td><span class="badge badge-on">Yes</span></td><td><span class="badge badge-purple">Yes</span></td><td><span class="badge badge-on">Active</span></td></tr>
-                    <tr><td><strong>Mesh (ESP-NOW)</strong></td><td>Device-to-device over ESP-NOW radio</td><td><span class="badge badge-on">Yes</span></td><td><span class="badge badge-purple">Yes</span></td><td><span class="badge badge-blue">Beta</span></td></tr>
-                    <tr><td><strong>USB Drive</strong></td><td>Drag &amp; drop .ota via USB mass storage</td><td><span class="badge badge-on">Yes</span></td><td><span class="badge badge-purple">Yes</span></td><td><span class="badge badge-blue">Beta</span></td></tr>
-                </tbody></table>
-            </div>
-        </div>`;
-}
-
-// ===============================================
-//  COMMISSION
-// ===============================================
-function renderCommission() {
-    setPage('Add New Device', 'Flash firmware and provision a new ESP32 for your fleet', '');
-
-    document.getElementById('pageContent').innerHTML = `
-        <div class="callout callout-info"><span class="callout-icon">&#128161;</span><div>There are two ways to add a device: <strong>USB Serial</strong> (plug in the ESP32 and flash it directly) or <strong>SD Card Package</strong> (generate config files to put on an SD card). Most people use USB Serial.</div></div>
-
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
-            <div class="panel">
-                <div class="panel-header"><h3>Option 1: USB Serial Setup</h3><span class="panel-desc">Recommended for most users</span></div>
-                <div style="padding:18px">
-                    <p style="font-size:0.8em;color:var(--text2);margin-bottom:16px">Plug your ESP32 into this computer via USB. We'll detect it, flash the OTA firmware, and set up its identity.</p>
-
-                    <button class="btn btn-primary" onclick="scanPorts()">Scan for Connected Devices</button>
-                    <div id="portsResult" style="margin-top:12px"></div>
-
-                    <hr style="border-color:rgba(0,240,255,0.1);margin:16px 0">
-
-                    <div class="form-group"><label>Board Type</label>
-                        <select id="cmBoard">
-                            <option value="touch-lcd-349">touch-lcd-349 (3.49" LCD)</option>
-                            <option value="touch-lcd-35bc">touch-lcd-35bc (3.5" LCD)</option>
-                            <option value="touch-amoled-241b">touch-amoled-241b (2.41" AMOLED)</option>
-                            <option value="amoled-191m">amoled-191m (1.91" AMOLED)</option>
-                            <option value="touch-amoled-18">touch-amoled-18 (1.8" AMOLED)</option>
-                            <option value="touch-lcd-43c-box">touch-lcd-43c-box (4.3" LCD)</option>
-                        </select>
-                        <div class="field-hint">Must match the physical board you're setting up</div>
-                    </div>
-                    <div class="form-group"><label>Serial Port</label><input id="cmPort" value="/dev/ttyACM1" placeholder="/dev/ttyACM0"><div class="field-hint">Click "Scan" above to auto-detect, or type the port manually</div></div>
-                    <div class="form-group"><label>Device Name</label><input id="cmName" placeholder="e.g., kitchen-display"><div class="field-hint">A friendly name you'll recognize later</div></div>
-                    <div class="form-row">
-                        <div class="form-group"><label>WiFi Network Name</label><input id="cmSsid" placeholder="YourNetworkName"></div>
-                        <div class="form-group"><label>WiFi Password</label><input id="cmPass" type="password" placeholder="Your WiFi password"></div>
-                    </div>
-                    <div class="form-group"><label>Fleet Server URL</label><input id="cmServer" placeholder="http://192.168.1.100:8080"><div class="field-hint">The address of this server so the device can phone home</div></div>
-
-                    <div class="steps" id="cmSteps">
-                        <div class="step" id="cmStep1"><div class="num">1</div><div class="text">Flash OTA firmware to the board</div><div class="status"></div></div>
-                        <div class="step" id="cmStep2"><div class="num">2</div><div class="text">Wait for the device to boot up</div><div class="status"></div></div>
-                        <div class="step" id="cmStep3"><div class="num">3</div><div class="text">Send identity and WiFi credentials</div><div class="status"></div></div>
-                        <div class="step" id="cmStep4"><div class="num">4</div><div class="text">Register device with fleet</div><div class="status"></div></div>
-                    </div>
-
-                    <div class="btn-group" style="margin-top:16px;flex-wrap:wrap">
-                        <button class="btn btn-accent btn-lg" onclick="startCommission()">Set Up Device (Full Process)</button>
-                        <button class="btn btn-primary" onclick="startFlashOnly()">Flash Only</button>
-                        <button class="btn" onclick="startProvisionOnly()">Provision Only</button>
-                    </div>
-                    <div id="cmOutput" style="margin-top:12px;font-size:0.72em;color:var(--text2);max-height:200px;overflow-y:auto;white-space:pre-wrap;font-family:var(--mono);background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:10px;display:none"></div>
-                </div>
-            </div>
-
-            <div class="panel">
-                <div class="panel-header"><h3>Option 2: SD Card Package</h3><span class="panel-desc">For offline or batch setup</span></div>
-                <div style="padding:18px">
-                    <p style="font-size:0.8em;color:var(--text2);margin-bottom:16px">Generate a provisioning package. Copy the files to an SD card, insert it into the ESP32, and it will configure itself on boot.</p>
-
-                    <div class="form-group"><label>Device Name</label><input id="genName" placeholder="e.g., living-room-panel"><div class="field-hint">A friendly name for this device</div></div>
-                    <div class="form-group"><label>Fleet Server URL</label><input id="genServer" placeholder="https://your-server.com:8080"></div>
-                    <div class="form-row">
-                        <div class="form-group"><label>WiFi Network</label><input id="genSsid" placeholder="YourNetworkName"></div>
-                        <div class="form-group"><label>WiFi Password</label><input id="genPass" type="password"></div>
-                    </div>
-                    <div class="form-group"><label>MQTT Broker (optional)</label><input id="genMqtt" placeholder="broker.example.com"><div class="field-hint">Only needed if your devices use MQTT</div></div>
-                    <button class="btn btn-accent" style="margin-top:8px" onclick="generateProvision()">Generate Package</button>
-                    <div id="genResult" style="margin-top:14px"></div>
-                </div>
-            </div>
-        </div>`;
-}
-
-async function scanPorts() {
-    document.getElementById('portsResult').innerHTML = '<span class="text-muted">Scanning USB ports...</span>';
-    try {
-        const ports = await api('GET', '/api/commission/ports');
-        if (!ports.length) { document.getElementById('portsResult').innerHTML = '<div class="callout callout-warn" style="margin:0"><span class="callout-icon">&#128268;</span><div>No USB serial devices found. Make sure your ESP32 is plugged in via USB.</div></div>'; return; }
-        document.getElementById('portsResult').innerHTML = ports.map(p => `
-            <div style="display:flex;align-items:center;gap:10px;padding:7px 0;font-size:0.8em;border-bottom:1px solid rgba(0,240,255,0.06)">
-                <span class="mono" style="min-width:100px">${esc(p.port)}</span>
-                ${p.device ? '<span class="badge badge-on">'+esc(p.device.board)+'</span> <span class="text-muted">'+esc(p.device.app||'detected')+'</span>' : (p.busy ? '<span class="badge badge-off">In Use</span>' : '<span class="badge badge-dim">No Response</span>')}
-                <button class="btn btn-sm" onclick="document.getElementById('cmPort').value='${esc(p.port)}'">Use This Port</button>
-            </div>
-        `).join('');
-    } catch(e) { document.getElementById('portsResult').innerHTML = '<span style="color:var(--magenta)">' + esc(e.message) + '</span>'; }
-}
-
-function setStep(n, state, status='') {
-    const el = document.getElementById('cmStep'+n);
-    el.className = 'step ' + state;
-    el.querySelector('.status').textContent = status;
-}
-function showCmOutput(text) {
-    const el = document.getElementById('cmOutput');
-    el.style.display = 'block';
-    el.textContent += text;
-    el.scrollTop = el.scrollHeight;
-}
-
-async function startFlashOnly() {
-    const port = document.getElementById('cmPort').value;
-    const board = document.getElementById('cmBoard').value;
-    setStep(1, 'active', 'Flashing...'); setStep(2, '', ''); setStep(3, '', ''); setStep(4, '', '');
-    document.getElementById('cmOutput').textContent = '';
-    showCmOutput('Flashing ' + board + ' firmware to ' + port + '...\n');
-    try {
-        const r = await api('POST', '/api/commission/flash', {port, board});
-        showCmOutput(r.output + '\n');
-        setStep(1, r.success?'done':'fail', r.success?'Done':'Failed');
-        toast(r.success ? 'Flash complete!' : 'Flash failed -- check the log below', r.success ? 'success' : 'error');
-    } catch(e) { setStep(1, 'fail', e.message); toast(e.message, 'error'); }
-}
-
-async function startProvisionOnly() {
-    const port = document.getElementById('cmPort').value;
-    setStep(1, '', 'Skipped'); setStep(2, '', 'Skipped');
-    setStep(3, 'active', 'Sending config...');
-    document.getElementById('cmOutput').textContent = '';
-    showCmOutput('Provisioning device on ' + port + '...\n');
-    try {
-        const r = await api('POST', '/api/commission/provision', {
-            port, device_name: document.getElementById('cmName').value,
-            server_url: document.getElementById('cmServer').value,
-            wifi_ssid: document.getElementById('cmSsid').value,
-            wifi_pass: document.getElementById('cmPass').value,
-        });
-        r.steps.forEach(s => showCmOutput(s.step + ': ' + (s.ok?'OK':'FAILED') + ' -- ' + s.response + '\n'));
-        setStep(3, r.success?'done':'fail', r.success?'Done':'Failed');
-        if (r.success) { setStep(4, 'done', r.device_id); toast('Device provisioned: '+r.device_id); refresh(); }
-        else { setStep(4, '', ''); toast('Provisioning failed -- check the log below', 'error'); }
-    } catch(e) { setStep(3, 'fail', e.message); toast(e.message, 'error'); }
-}
-
-async function startCommission() {
-    const port = document.getElementById('cmPort').value;
-    const board = document.getElementById('cmBoard').value;
-    document.getElementById('cmOutput').textContent = '';
-    document.getElementById('cmOutput').style.display = 'block';
-
-    // Step 1: Flash
-    setStep(1, 'active', 'Flashing...'); setStep(2, '', ''); setStep(3, '', ''); setStep(4, '', '');
-    showCmOutput('--- Step 1: Flashing ' + board + ' firmware ---\n');
-    try {
-        const r = await api('POST', '/api/commission/flash', {port, board});
-        showCmOutput(r.output.slice(-500) + '\n');
-        setStep(1, r.success?'done':'fail', r.success?'Done':'Failed');
-        if(!r.success) { toast('Flash failed', 'error'); return; }
-    } catch(e) { setStep(1, 'fail', e.message); return; }
-
-    // Step 2: Wait
-    setStep(2, 'active', 'Waiting...');
-    showCmOutput('\n--- Step 2: Waiting for device to boot ---\n');
-    await new Promise(r => setTimeout(r, 5000));
-    try {
-        const ports = await api('GET', '/api/commission/ports');
-        const found = ports.find(p => p.port === port && p.device);
-        if (found) {
-            setStep(2, 'done', found.device.board);
-            showCmOutput('Device detected: ' + JSON.stringify(found.device) + '\n');
-        } else {
-            setStep(2, 'done', 'Port available');
-        }
-    } catch(e) { setStep(2, 'done', 'Assumed booted'); }
-
-    // Step 3: Provision
-    setStep(3, 'active', 'Sending config...');
-    showCmOutput('\n--- Step 3: Provisioning ---\n');
-    try {
-        const r = await api('POST', '/api/commission/provision', {
-            port, device_name: document.getElementById('cmName').value,
-            server_url: document.getElementById('cmServer').value,
-            wifi_ssid: document.getElementById('cmSsid').value,
-            wifi_pass: document.getElementById('cmPass').value,
-        });
-        r.steps.forEach(s => showCmOutput(s.step + ': ' + (s.ok?'OK':'FAILED') + '\n'));
-        setStep(3, r.success?'done':'fail', r.success?'Done':'Failed');
-        if (r.success) { setStep(4, 'done', r.device_id); toast('Device is ready! ID: '+r.device_id); refresh(); }
-        else { setStep(4, '', ''); toast('Provisioning failed', 'error'); }
-    } catch(e) { setStep(3, 'fail', e.message); toast(e.message, 'error'); }
-}
-
-async function generateProvision() {
-    try {
-        const r = await api('POST', '/api/provision/generate', {
-            device_name: document.getElementById('genName').value,
-            server_url: document.getElementById('genServer').value,
-            wifi_ssid: document.getElementById('genSsid').value,
-            wifi_pass: document.getElementById('genPass').value,
-            mqtt_broker: document.getElementById('genMqtt').value,
-        });
-        document.getElementById('genResult').innerHTML = `
-            <div class="callout callout-success"><span class="callout-icon">&#9989;</span><div>
-                <strong>Package generated!</strong><br>
-                Device ID: <span class="mono">${esc(r.device_id)}</span><br>
-                <span style="font-size:0.8em;color:var(--text2)">Copy the provisioning files from the server's data directory to an SD card, then insert it into the device.</span>
-            </div></div>`;
-        toast('Provisioning package ready: ' + r.device_id); refresh();
-    } catch(e) { toast(e.message, 'error'); }
-}
-
-// ===============================================
-//  PROFILES
-// ===============================================
-function renderProfiles() {
-    setPage('Device Profiles', 'Reusable config templates for groups of devices', `
-        <button class="btn" onclick="refresh()">Refresh</button>
-        <button class="btn btn-accent" onclick="createProfileDialog()">+ New Profile</button>`);
-
-    document.getElementById('pageContent').innerHTML = `
-        <div class="callout callout-info"><span class="callout-icon">&#9881;</span><div>Profiles are config templates. Assign a profile to a device, and its config will be applied on each heartbeat. Device-level config overrides profile values.</div></div>
-
-        ${S.profiles.length ? `
-        <div class="panel"><table>
-        <thead><tr><th>Name</th><th>Description</th><th>Config Keys</th><th>Devices</th><th>Created</th><th></th></tr></thead>
-        <tbody>${S.profiles.map(p => {
-            const devCount = S.devices.filter(d => d.profile_id === p.id).length;
-            const keys = Object.keys(p.config || {});
-            return '<tr>' +
-                '<td><strong>' + esc(p.name) + '</strong><br><span class="mono text-muted" style="font-size:0.64em">' + esc(p.id) + '</span></td>' +
-                '<td>' + esc(p.description || '--') + '</td>' +
-                '<td>' + (keys.length ? keys.map(k=>'<span class="tag">'+esc(k)+'</span>').join(' ') : '<span class="text-muted">none</span>') + '</td>' +
-                '<td>' + devCount + ' device' + (devCount!==1?'s':'') + '</td>' +
-                '<td>' + fmtDateTime(p.created_at) + '</td>' +
-                '<td class="btn-group">' +
-                    '<button class="btn btn-sm btn-primary" onclick="editProfileDialog(\'' + esc(p.id) + '\')">Edit</button>' +
-                    '<button class="btn btn-sm btn-accent" onclick="applyProfile(\'' + esc(p.id) + '\')">Apply</button>' +
-                    '<button class="btn btn-sm btn-danger" onclick="deleteProfile(\'' + esc(p.id) + '\')">Delete</button>' +
-                '</td>' +
-            '</tr>';
-        }).join('')}</tbody></table></div>` : `
-        <div class="empty-state">
-            <div class="es-icon">&#9881;</div>
-            <div class="es-title">No profiles yet</div>
-            <div class="es-hint">Create a profile to define config templates for groups of devices. Example profiles: "display-kiosk", "sensor-node", "mesh-relay".</div>
-        </div>`}
-
-        ${S.profiles.length ? `
-        <div class="section-header" style="margin-top:20px"><h3>Assignment</h3><p>Assign profiles to devices to push config</p></div>
-        <div class="panel"><table>
-        <thead><tr><th>Device</th><th>Board</th><th>Profile</th><th></th></tr></thead>
-        <tbody>${S.devices.map(d => {
-            const opts = '<option value="">None</option>' + S.profiles.map(p =>
-                '<option value="' + esc(p.id) + '"' + (d.profile_id===p.id?' selected':'') + '>' + esc(p.name) + '</option>'
-            ).join('');
-            return '<tr>' +
-                '<td><strong>' + esc(d.device_name||d.device_id) + '</strong></td>' +
-                '<td>' + esc(d.board||'--') + '</td>' +
-                '<td><select style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;font-family:var(--mono);font-size:0.8em;border-radius:2px" onchange="assignProfile(\'' + esc(d.device_id) + '\',this.value)">' + opts + '</select></td>' +
-                '<td>' + (d.profile_id ? '<span class="badge badge-blue">' + esc(d.profile_id) + '</span>' : '') + '</td>' +
-            '</tr>';
-        }).join('')}</tbody></table></div>` : ''}`;
-}
-
-function createProfileDialog() {
-    openModal('Create Profile', `
-        <div class="form-group"><label>Name</label><input id="profName" placeholder="e.g., display-kiosk"><div class="field-hint">Short name to identify this profile</div></div>
-        <div class="form-group"><label>Description</label><input id="profDesc" placeholder="Config for wall-mounted display devices"></div>
-        <div class="form-group"><label>Config (JSON)</label><textarea id="profConfig" rows="5" placeholder='{\n  "heartbeat_interval_s": 30,\n  "display_brightness": 80,\n  "sleep_timeout_s": 0\n}'></textarea><div class="field-hint">JSON object with config key-value pairs</div></div>
-    `, `<button class="btn btn-accent" onclick="createProfile()">Create</button>
-        <button class="btn" onclick="closeModal()">Cancel</button>`);
-}
-
-async function createProfile() {
-    const name = document.getElementById('profName').value.trim();
-    if (!name) { toast('Name required', 'error'); return; }
-    let config = {};
-    const cfgText = document.getElementById('profConfig').value.trim();
-    if (cfgText) {
-        try { config = JSON.parse(cfgText); } catch(e) { toast('Invalid JSON: '+e.message, 'error'); return; }
-    }
-    try {
-        await api('POST', '/api/profiles', {
-            name, description: document.getElementById('profDesc').value, config
-        });
-        toast('Profile created: ' + name); closeModal(); refresh();
-    } catch(e) { toast(e.message, 'error'); }
-}
-
-function editProfileDialog(id) {
-    const p = S.profiles.find(x => x.id === id);
-    if (!p) return;
-    openModal('Edit Profile: ' + p.name, `
-        <div class="form-group"><label>Name</label><input id="profName" value="${esc(p.name)}"></div>
-        <div class="form-group"><label>Description</label><input id="profDesc" value="${esc(p.description||'')}"></div>
-        <div class="form-group"><label>Config (JSON)</label><textarea id="profConfig" rows="6">${esc(JSON.stringify(p.config||{}, null, 2))}</textarea></div>
-    `, `<button class="btn btn-accent" onclick="updateProfile('${esc(id)}')">Save</button>
-        <button class="btn" onclick="closeModal()">Cancel</button>`);
-}
-
-async function updateProfile(id) {
-    let config = {};
-    const cfgText = document.getElementById('profConfig').value.trim();
-    if (cfgText) {
-        try { config = JSON.parse(cfgText); } catch(e) { toast('Invalid JSON', 'error'); return; }
-    }
-    try {
-        await api('PUT', '/api/profiles/'+encodeURIComponent(id), {
-            name: document.getElementById('profName').value,
-            description: document.getElementById('profDesc').value,
-            config
-        });
-        toast('Profile updated'); closeModal(); refresh();
-    } catch(e) { toast(e.message, 'error'); }
-}
-
-async function deleteProfile(id) {
-    if (!confirm('Delete this profile? Devices assigned to it will keep their current config.')) return;
-    try { await api('DELETE', '/api/profiles/'+encodeURIComponent(id)); toast('Profile deleted'); refresh(); }
-    catch(e) { toast(e.message, 'error'); }
-}
-
-async function applyProfile(id) {
-    const p = S.profiles.find(x => x.id === id);
-    if (!confirm('Apply profile "' + (p?p.name:id) + '" to all assigned devices?\n\nThis will push the profile config to each device on their next heartbeat.')) return;
-    try {
-        const r = await api('POST', '/api/profiles/'+encodeURIComponent(id)+'/apply');
-        toast('Profile applied to ' + r.devices_updated + ' devices');
-        refresh();
-    } catch(e) { toast(e.message, 'error'); }
-}
-
-async function assignProfile(deviceId, profileId) {
-    try {
-        await api('PATCH', '/api/devices/'+encodeURIComponent(deviceId), { profile_id: profileId || null });
-        toast('Profile ' + (profileId ? 'assigned' : 'removed'));
-        refresh();
-    } catch(e) { toast(e.message, 'error'); }
-}
-
-// ===============================================
-//  MESH NETWORK
-// ===============================================
-function renderMesh() {
-    setPage('Mesh Network', 'Topology visualization of your device fleet', '<button class="btn btn-primary" onclick="refresh()">Refresh</button>');
-
-    const onlineCount = S.devices.filter(d => d._online).length;
-    const offlineCount = S.devices.length - onlineCount;
-
-    document.getElementById('pageContent').innerHTML = `
-        <div class="stats-row">
-            <div class="stat-card"><div class="val">${S.devices.length}</div><div class="lbl">Nodes</div><div class="hint">Total mesh participants</div></div>
-            <div class="stat-card"><div class="val">${onlineCount}</div><div class="lbl">Online</div><div class="hint">Responding to heartbeat</div></div>
-            <div class="stat-card ${offlineCount?'danger':''}"><div class="val">${offlineCount}</div><div class="lbl">Unreachable</div><div class="hint">No recent heartbeat</div></div>
-            <div class="stat-card blue"><div class="val">${new Set(S.devices.map(d=>d.board).filter(Boolean)).size}</div><div class="lbl">Board Types</div><div class="hint">Unique hardware platforms</div></div>
-        </div>
-
-        <div class="panel">
-            <div class="panel-header"><h3>Network Topology</h3><span class="panel-desc">Each node represents a device. Server is the central hub.</span></div>
-            <div style="padding:0;position:relative;overflow:hidden">
-                <canvas id="meshCanvas" width="900" height="500" style="width:100%;background:var(--bg);cursor:grab"></canvas>
-            </div>
-        </div>
-
-        <div class="panel">
-            <div class="panel-header"><h3>Transport Capabilities</h3><span class="panel-desc">Available communication channels per device</span></div>
-            <table><thead><tr><th>Device</th><th>Board</th><th>WiFi</th><th>ESP-NOW</th><th>BLE</th><th>Signal</th><th>IP</th></tr></thead>
-            <tbody>${S.devices.map(d => '<tr>' +
-                '<td><strong>' + esc(d.device_name||d.device_id) + '</strong></td>' +
-                '<td>' + esc(d.board||'--') + '</td>' +
-                '<td><span class="badge badge-on">Active</span></td>' +
-                '<td><span class="badge badge-blue">Available</span></td>' +
-                '<td><span class="badge badge-blue">Available</span></td>' +
-                '<td>' + (d.rssi!=null ? d.rssi+' dBm' : '--') + '</td>' +
-                '<td class="mono">' + esc(d.ip||'--') + '</td>' +
-            '</tr>').join('')}</tbody></table>
-        </div>`;
-
-    drawMesh();
-}
-
-function drawMesh() {
-    const canvas = document.getElementById('meshCanvas');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width, H = canvas.height;
-    const cx = W/2, cy = H/2;
-
-    ctx.clearRect(0, 0, W, H);
-
-    // Grid lines
-    ctx.strokeStyle = 'rgba(0,240,255,0.04)';
-    ctx.lineWidth = 1;
-    for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
-    for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
-
-    // Server node (center)
-    const serverNode = { x: cx, y: cy, label: 'TRITIUM-EDGE', sub: 'Fleet Server', color: '#00f0ff', r: 28 };
-
-    // Device nodes arranged in a circle around server
-    const devices = S.devices.map((d, i) => {
-        const angle = (i / Math.max(S.devices.length, 1)) * Math.PI * 2 - Math.PI/2;
-        const radius = 160;
-        return {
-            x: cx + Math.cos(angle) * radius,
-            y: cy + Math.sin(angle) * radius,
-            label: d.device_name || d.device_id,
-            sub: d.board || 'unknown',
-            color: d._online ? '#05ffa1' : '#ff2a6d',
-            r: 20,
-            online: d._online,
-            rssi: d.rssi,
-        };
-    });
-
-    // Draw connections (server to each device)
-    devices.forEach(node => {
-        // Connection line
-        const grad = ctx.createLinearGradient(serverNode.x, serverNode.y, node.x, node.y);
-        grad.addColorStop(0, 'rgba(0,240,255,0.3)');
-        grad.addColorStop(1, node.online ? 'rgba(5,255,161,0.3)' : 'rgba(255,42,109,0.15)');
-        ctx.strokeStyle = grad;
-        ctx.lineWidth = node.online ? 2 : 1;
-        ctx.setLineDash(node.online ? [] : [4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(serverNode.x, serverNode.y);
-        ctx.lineTo(node.x, node.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Signal strength indicator on the line
-        if (node.online && node.rssi != null) {
-            const mx = (serverNode.x + node.x) / 2;
-            const my = (serverNode.y + node.y) / 2;
-            ctx.fillStyle = 'rgba(0,240,255,0.6)';
-            ctx.font = '9px JetBrains Mono, monospace';
-            ctx.textAlign = 'center';
-            ctx.fillText(node.rssi + ' dBm', mx, my - 6);
-        }
-    });
-
-    // Draw mesh connections between nearby devices
-    for (let i = 0; i < devices.length; i++) {
-        for (let j = i+1; j < devices.length; j++) {
-            if (devices[i].online && devices[j].online) {
-                ctx.strokeStyle = 'rgba(176,124,255,0.12)';
-                ctx.lineWidth = 1;
-                ctx.setLineDash([2, 6]);
-                ctx.beginPath();
-                ctx.moveTo(devices[i].x, devices[i].y);
-                ctx.lineTo(devices[j].x, devices[j].y);
-                ctx.stroke();
-                ctx.setLineDash([]);
-            }
-        }
-    }
-
-    // Draw device nodes
-    devices.forEach(node => {
-        // Glow
-        ctx.shadowColor = node.color;
-        ctx.shadowBlur = node.online ? 15 : 5;
-        // Circle
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2);
-        ctx.fillStyle = '#0a0a0f';
-        ctx.fill();
-        ctx.strokeStyle = node.color;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-        // Label
-        ctx.fillStyle = node.color;
-        ctx.font = 'bold 10px JetBrains Mono, monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(node.label.length > 16 ? node.label.substring(0,14)+'..' : node.label, node.x, node.y + node.r + 16);
-        ctx.fillStyle = 'rgba(255,255,255,0.4)';
-        ctx.font = '8px JetBrains Mono, monospace';
-        ctx.fillText(node.sub, node.x, node.y + node.r + 27);
-        // Inner icon text
-        ctx.fillStyle = node.color;
-        ctx.font = 'bold 11px JetBrains Mono, monospace';
-        ctx.fillText(node.online ? 'ON' : 'OFF', node.x, node.y + 4);
-    });
-
-    // Draw server node
-    ctx.shadowColor = serverNode.color;
-    ctx.shadowBlur = 25;
-    ctx.beginPath();
-    ctx.arc(serverNode.x, serverNode.y, serverNode.r, 0, Math.PI * 2);
-    ctx.fillStyle = '#0a0a0f';
-    ctx.fill();
-    ctx.strokeStyle = serverNode.color;
-    ctx.lineWidth = 3;
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-    // Outer ring pulse
-    ctx.beginPath();
-    ctx.arc(serverNode.x, serverNode.y, serverNode.r + 6, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(0,240,255,0.15)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    // Server label
-    ctx.fillStyle = serverNode.color;
-    ctx.font = 'bold 9px JetBrains Mono, monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText('SERVER', serverNode.x, serverNode.y + 4);
-    ctx.fillStyle = 'rgba(0,240,255,0.7)';
-    ctx.font = '9px JetBrains Mono, monospace';
-    ctx.fillText(serverNode.label, serverNode.x, serverNode.y + serverNode.r + 16);
-}
-
-// ===============================================
-//  TERMINAL (Serial Monitor)
-// ===============================================
-let serialWs = null;
-let termBuffer = '';
-
-function renderTerminal() {
-    setPage('Serial Terminal', 'Live serial monitor for connected ESP32 devices', '');
-
-    document.getElementById('pageContent').innerHTML = `
-        <div class="callout callout-info"><span class="callout-icon">&#9618;</span><div>Connect to a USB serial port to monitor device output in real-time. You can also send commands.</div></div>
-
-        <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:14px">
-            <div class="form-group" style="margin:0;flex:0 0 200px"><label>Port</label><input id="termPort" value="/dev/ttyACM1" style="font-size:0.82em"></div>
-            <div class="form-group" style="margin:0;flex:0 0 120px"><label>Baud</label>
-                <select id="termBaud" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:9px 12px;font-size:0.82em;font-family:var(--mono);border-radius:2px;width:100%">
-                    <option value="9600">9600</option>
-                    <option value="115200" selected>115200</option>
-                    <option value="230400">230400</option>
-                    <option value="460800">460800</option>
-                </select>
-            </div>
-            <button class="btn btn-accent" id="termConnBtn" onclick="toggleSerial()">Connect</button>
-            <button class="btn" onclick="clearTerminal()">Clear</button>
-            <div id="termStatus" style="font-size:0.72em;color:var(--text3);margin-left:auto"></div>
-        </div>
-
-        <div class="panel" style="margin-bottom:10px">
-            <div id="termOutput" style="height:420px;overflow-y:auto;padding:12px 16px;font-family:var(--mono);font-size:0.78em;line-height:1.6;background:var(--bg);white-space:pre-wrap;word-break:break-all;color:var(--green)"></div>
-        </div>
-
-        <div style="display:flex;gap:8px">
-            <input id="termInput" style="flex:1;background:var(--bg);border:1px solid var(--border);color:var(--cyan);padding:9px 12px;font-family:var(--mono);font-size:0.82em;border-radius:2px" placeholder="Type a command and press Enter..." onkeydown="if(event.key==='Enter')sendSerial()">
-            <button class="btn btn-primary" onclick="sendSerial()">Send</button>
-        </div>`;
-}
-
-function toggleSerial() {
-    if (serialWs && serialWs.readyState === 1) {
-        serialWs.close();
-        return;
-    }
-    const port = document.getElementById('termPort').value;
-    const baud = document.getElementById('termBaud').value;
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    serialWs = new WebSocket(`${proto}//${location.host}/ws/serial?port=${encodeURIComponent(port)}&baud=${baud}`);
-    const btn = document.getElementById('termConnBtn');
-    const status = document.getElementById('termStatus');
-
-    serialWs.onopen = () => {
-        btn.textContent = 'Disconnect';
-        btn.className = 'btn btn-danger';
-        status.innerHTML = '<span style="color:var(--green)">Connected to ' + esc(port) + '</span>';
-        appendTerm('--- Connected to ' + port + ' @ ' + baud + ' ---\n', 'var(--cyan)');
-    };
-    serialWs.onclose = () => {
-        btn.textContent = 'Connect';
-        btn.className = 'btn btn-accent';
-        status.innerHTML = '<span style="color:var(--text3)">Disconnected</span>';
-        appendTerm('--- Disconnected ---\n', 'var(--magenta)');
-    };
-    serialWs.onmessage = (e) => {
-        try {
-            const msg = JSON.parse(e.data);
-            if (msg.type === 'data') appendTerm(msg.text);
-            else if (msg.type === 'error') appendTerm('ERROR: ' + msg.message + '\n', 'var(--magenta)');
-        } catch(err) {}
-    };
-}
-
-function appendTerm(text, color) {
-    const el = document.getElementById('termOutput');
-    if (!el) return;
-    if (color) {
-        el.innerHTML += '<span style="color:' + color + '">' + esc(text) + '</span>';
+// Table sorting
+document.querySelectorAll('#device-table th[data-sort]').forEach(function(th) {
+  th.addEventListener('click', function() {
+    var col = th.dataset.sort;
+    if (sortCol === col) {
+      sortAsc = !sortAsc;
     } else {
-        el.innerHTML += esc(text);
+      sortCol = col;
+      sortAsc = true;
     }
-    // Limit buffer size
-    if (el.innerHTML.length > 200000) {
-        el.innerHTML = el.innerHTML.slice(-100000);
-    }
-    el.scrollTop = el.scrollHeight;
+    renderDeviceTable();
+  });
+});
+
+// BLE Presence
+async function refreshBLE() {
+  const data = await fetchJSON('/api/presence/ble');
+  if (!data) return;
+
+  document.getElementById('ble-stats').innerHTML =
+    '<div class="stat-card"><div class="label">Unique BLE MACs</div><div class="value">' + data.total_ble_macs + '</div></div>' +
+    '<div class="stat-card"><div class="label">Reporting Nodes</div><div class="value green">' + data.reporting_nodes + '</div></div>';
+
+  const list = document.getElementById('ble-list');
+  if (data.devices.length === 0) {
+    list.innerHTML = '<div class="loading">No BLE devices detected by any node.</div>';
+    return;
+  }
+
+  list.innerHTML = data.devices.map(function(d, i) {
+    var best = d.sightings.reduce(function(a, b) {
+      return (b.ble_rssi || -999) > (a.ble_rssi || -999) ? b : a;
+    }, d.sightings[0]);
+
+    return '<div class="ble-card" data-idx="' + i + '">' +
+      '<div class="ble-header"><div>' +
+        '<span class="ble-mac">' + escHtml(d.mac) + '</span>' +
+        (d.name ? '<span class="ble-name"> &mdash; ' + escHtml(d.name) + '</span>' : '') +
+        (d.known ? ' <span class="known-badge">Known</span>' : '') +
+      '</div>' +
+      '<div class="ble-nodes">' + d.sightings.length + ' node' + (d.sightings.length !== 1 ? 's' : '') + '</div></div>' +
+      '<div>' + rssiBarHTML(best.ble_rssi) +
+        ' <span style="font-size:10px;color:var(--text-dim)">strongest via ' + escHtml(best.node_id) + '</span>' +
+      '</div>' +
+      '<div class="ble-expand" id="ble-expand-' + i + '">' +
+        d.sightings.map(function(s) {
+          return '<div class="ble-sighting">' +
+            '<span class="node">' + escHtml(s.node_id) + '</span>' +
+            '<span class="rssi-val">' + (s.ble_rssi != null ? s.ble_rssi + ' dBm' : '--') + '</span>' +
+            rssiBarHTML(s.ble_rssi) +
+            '<span style="color:var(--text-dim);font-size:10px">seen ' + (s.seen_count || 0) + 'x</span>' +
+          '</div>';
+        }).join('') +
+      '</div></div>';
+  }).join('');
+
+  list.querySelectorAll('.ble-card').forEach(function(card) {
+    card.addEventListener('click', function() {
+      var idx = card.dataset.idx;
+      var expand = document.getElementById('ble-expand-' + idx);
+      if (expand) expand.classList.toggle('open');
+    });
+  });
 }
 
-function clearTerminal() {
-    const el = document.getElementById('termOutput');
-    if (el) el.innerHTML = '';
+// Firmware
+async function refreshFirmware() {
+  const fws = await fetchJSON('/api/firmware');
+  if (!fws) return;
+  const tbody = document.getElementById('fw-tbody');
+  if (!Array.isArray(fws) || fws.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="loading">No firmware images uploaded.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = fws.map(function(f) {
+    return '<tr>' +
+      '<td style="color:var(--cyan)">' + escHtml(f.id) + '</td>' +
+      '<td>' + (escHtml(f.version) || '--') + '</td>' +
+      '<td>' + (escHtml(f.board) || '--') + '</td>' +
+      '<td>' + (f.signed ? '<span class="fw-badge fw-signed">Signed</span>' : '<span class="fw-badge fw-unsigned">Unsigned</span>') + '</td>' +
+      '<td>' + (f.size ? Math.round(f.size / 1024) + ' KB' : '--') + '</td>' +
+      '<td>' + (escHtml(f.uploaded_at) || '--') + '</td>' +
+    '</tr>';
+  }).join('');
 }
 
-function sendSerial() {
-    const input = document.getElementById('termInput');
-    if (!input || !input.value) return;
-    if (serialWs && serialWs.readyState === 1) {
-        serialWs.send(input.value);
-        appendTerm('> ' + input.value + '\n', 'var(--cyan)');
-        input.value = '';
+// OTA
+async function refreshOTA() {
+  const [stats, devs] = await Promise.all([
+    fetchJSON('/api/stats'),
+    fetchJSON('/api/devices'),
+  ]);
+
+  if (stats) {
+    document.getElementById('ota-stats').innerHTML =
+      '<div class="stat-card"><div class="label">Pending OTA</div><div class="value yellow">' + (stats.pending_ota || 0) + '</div></div>' +
+      '<div class="stat-card"><div class="label">Attested</div><div class="value green">' + (stats.attested_devices || 0) + '</div></div>' +
+      '<div class="stat-card"><div class="label">Unattested</div><div class="value red">' + (stats.unattested_devices || 0) + '</div></div>' +
+      '<div class="stat-card"><div class="label">Total Firmware</div><div class="value">' + (stats.total_firmware || 0) + '</div></div>';
+  }
+
+  if (devs) {
+    var tbody = document.getElementById('ota-tbody');
+    var otaDevices = devs.filter(function(d) { return d.pending_ota || d.fw_attested === false; });
+    if (otaDevices.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="loading">No pending OTA deployments.</td></tr>';
     } else {
-        toast('Not connected to serial port', 'error');
+      tbody.innerHTML = otaDevices.map(function(d) {
+        return '<tr>' +
+          '<td style="color:var(--cyan)">' + escHtml(d.device_id) + '</td>' +
+          '<td>' + statusBadge(d) + '</td>' +
+          '<td>' + (escHtml(d.version) || '--') + '</td>' +
+          '<td>' + (d.pending_ota ? escHtml(JSON.stringify(d.pending_ota)) : '--') + '</td>' +
+          '<td>' + (d.fw_attested === true ? '<span class="fw-badge fw-signed">Trusted</span>' :
+                     d.fw_attested === false ? '<span class="fw-badge fw-unsigned">Unknown</span>' : '--') + '</td>' +
+        '</tr>';
+      }).join('');
     }
+  }
 }
 
-// ===============================================
-//  EVENTS
-// ===============================================
-function renderEvents() {
-    setPage('Activity Log', 'Everything that happened across your fleet', '<button class="btn" onclick="refreshEvents()">Refresh</button>');
-
-    document.getElementById('pageContent').innerHTML = `
-        ${S.events.length ? `
-        <div class="panel"><div class="event-list" style="max-height:none">
-        ${S.events.map(e => '<div class="event-item">' +
-            '<span class="ts">' + fmtDateTime(e.ts) + '</span>' +
-            '<span class="type ' + eventTypeClass(e.type) + '">' + esc(e.type) + '</span>' +
-            '<span class="detail">' + (e.device_id?'<span class="mono">'+esc(e.device_id)+'</span> ':'') + ' ' + esc(e.detail||'') + '</span>' +
-        '</div>').join('')}
-        </div></div>` : `
-        <div class="empty-state">
-            <div class="es-icon">&#128196;</div>
-            <div class="es-title">No activity recorded yet</div>
-            <div class="es-hint">Events are logged automatically when devices connect, firmware is uploaded or deployed, and provisioning happens. Come back after interacting with your fleet.</div>
-        </div>`}`;
-}
+// Events
 async function refreshEvents() {
-    try { S.events = await api('GET', '/api/events?limit=100'); render(); } catch(e) { toast(e.message, 'error'); }
+  const events = await fetchJSON('/api/events?limit=100');
+  if (!events) return;
+  renderEvents(document.getElementById('events-full'), Array.isArray(events) ? events : []);
 }
 
-// ─── Page helpers ───
-function setPage(title, desc, actionsHtml) {
-    document.getElementById('pageTitle').textContent = title;
-    document.getElementById('pageDesc').textContent = desc;
-    document.getElementById('pageActions').innerHTML = actionsHtml;
+function renderEvents(container, events) {
+  if (events.length === 0) {
+    container.innerHTML = '<div class="loading">No events recorded.</div>';
+    return;
+  }
+  container.innerHTML = events.map(function(e) {
+    return '<div class="event-item">' +
+      '<span class="event-time">' + formatEventTime(e.timestamp || e.ts) + '</span>' +
+      '<span class="event-type">' + escHtml(e.type || e.event) + '</span>' +
+      '<span class="event-device">' + (escHtml(e.device_id) || '') + '</span>' +
+      '<span class="event-detail">' + (escHtml(e.detail || e.message || '')) + '</span>' +
+    '</div>';
+  }).join('');
 }
 
-// ─── WebSocket for real-time updates ───
-let ws = null;
-let wsHeartbeats = 0;
-function connectWS() {
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${proto}//${location.host}/ws`);
-    ws.onopen = () => { updateConnStatus(true); };
-    ws.onclose = () => { updateConnStatus(false); setTimeout(connectWS, 3000); };
-    ws.onerror = () => { ws.close(); };
-    ws.onmessage = (e) => {
-        try {
-            const msg = JSON.parse(e.data);
-            if (msg.type === 'pong') return;
-            if (msg.type === 'device_heartbeat' || msg.type === 'device_registered') {
-                wsHeartbeats++;
-                const dev = msg.data;
-                const idx = S.devices.findIndex(d => d.device_id === dev.device_id);
-                if (idx >= 0) S.devices[idx] = dev;
-                else S.devices.unshift(dev);
-                if (S.page === 'dashboard' || S.page === 'devices' || S.page === 'mesh') render();
-                // Update pulse counter in topbar
-                const label = document.getElementById('connLabel');
-                label.textContent = 'Live // ' + wsHeartbeats + ' pulses';
-            }
-            if (msg.type === 'firmware_uploaded') {
-                S.firmware.unshift(msg.data);
-                if (S.page === 'firmware') render();
-            }
-            if (msg.type === 'ota_scheduled') {
-                if (S.page === 'dashboard' || S.page === 'devices') refresh();
-            }
-            // Flash the connection dot on any message
-            const dot = document.getElementById('connDot');
-            dot.style.boxShadow = '0 0 14px var(--green)';
-            setTimeout(() => { dot.style.boxShadow = ''; }, 500);
-        } catch (err) {}
-    };
+// Plugin Nav
+async function loadPluginNav() {
+  const pages = await fetchJSON('/api/plugins/pages');
+  if (!pages || !Array.isArray(pages) || pages.length === 0) return;
+  const nav = document.getElementById('plugin-nav');
+  pages.forEach(function(p) {
+    var item = document.createElement('div');
+    item.className = 'nav-item';
+    item.dataset.view = 'plugin-' + p.id;
+    item.innerHTML = '<span class="icon">&#9733;</span> ' + escHtml(p.name);
+    item.addEventListener('click', function() {
+      window.open(p.url || p.path, '_blank');
+    });
+    nav.appendChild(item);
+  });
 }
 
-// ─── Init ───
-refresh();
-connectWS();
-// Keep WS alive + fallback polling
-setInterval(() => { if (ws && ws.readyState === 1) ws.send('ping'); }, 25000);
-setInterval(refresh, 30000);
+// Init + Auto-refresh
+refreshView();
+loadPluginNav();
+setInterval(refreshView, 5000);
 </script>
 </body>
 </html>
