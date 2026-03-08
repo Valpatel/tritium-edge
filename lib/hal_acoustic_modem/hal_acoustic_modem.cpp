@@ -20,6 +20,7 @@
 #include "hal_audio.h"
 
 #include <cstring>
+#include <cstdlib>
 #include <cmath>
 
 #ifndef M_PI
@@ -408,8 +409,7 @@ int AcousticModem::receive(uint8_t *buf, size_t max_len, uint32_t timeout_ms) {
     // 256 byte payload = 2048 bits + overhead ~2200 bits = ~117K samples
     // Use a more modest buffer and read in symbol-sized chunks.
 
-    size_t rx_buf_samples = N * 2; // two symbols of audio for analysis
-    int16_t rx_audio[rx_buf_samples];
+    int16_t rx_audio[MAX_SAMPLES_PER_SYMBOL]; // one symbol of audio for analysis
 
     // State machine for reception
     _rx_state = AcousticRxState::WAIT_PREAMBLE;
@@ -472,12 +472,17 @@ int AcousticModem::receive(uint8_t *buf, size_t max_len, uint32_t timeout_ms) {
 
     // Sync detection: read 8 symbols (1 byte) and check for sync word
     if (_rx_state == AcousticRxState::WAIT_SYNC) {
-        int16_t sync_audio[samples_per_byte];
+        int16_t *sync_audio = (int16_t *)malloc(samples_per_byte * sizeof(int16_t));
+        if (!sync_audio) {
+            _rx_state = AcousticRxState::IDLE;
+            return -1;
+        }
         size_t total_read = 0;
 
         while (total_read < samples_per_byte) {
 #ifndef SIMULATOR
             if (millis() - start_ms > timeout_ms) {
+                free(sync_audio);
                 _rx_state = AcousticRxState::IDLE;
                 _stats.sync_timeouts++;
                 return 0;
@@ -495,6 +500,7 @@ int AcousticModem::receive(uint8_t *buf, size_t max_len, uint32_t timeout_ms) {
             while (total_read < samples_per_byte) {
 #ifndef SIMULATOR
                 if (millis() - start_ms > timeout_ms) {
+                    free(sync_audio);
                     _rx_state = AcousticRxState::IDLE;
                     _stats.sync_timeouts++;
                     return 0;
@@ -506,12 +512,14 @@ int AcousticModem::receive(uint8_t *buf, size_t max_len, uint32_t timeout_ms) {
             }
             sync_byte = decodeByte(sync_audio, N);
             if (sync_byte != _config.sync_word) {
+                free(sync_audio);
                 _rx_state = AcousticRxState::IDLE;
                 _stats.sync_timeouts++;
                 return 0;
             }
         }
 
+        free(sync_audio);
         _rx_state = AcousticRxState::RECEIVING_DATA;
     }
 
@@ -586,18 +594,30 @@ int AcousticModem::receive(uint8_t *buf, size_t max_len, uint32_t timeout_ms) {
         total_read += got;
     }
 
-    // Decode bytes from audio
-    uint8_t fec_bytes[fec_frame_len];
+    // Decode bytes from audio into heap-allocated buffers
+    uint8_t *fec_bytes = (uint8_t *)malloc(fec_frame_len);
+    if (!fec_bytes) {
+        free(data_audio);
+        _rx_state = AcousticRxState::IDLE;
+        return -1;
+    }
     for (size_t i = 0; i < fec_frame_len; i++) {
         fec_bytes[i] = decodeByte(data_audio + i * samples_per_byte, N);
     }
     free(data_audio);
 
     // Apply FEC decoding
-    uint8_t decoded[frame_len];
+    uint8_t *decoded = (uint8_t *)malloc(frame_len);
+    if (!decoded) {
+        free(fec_bytes);
+        _rx_state = AcousticRxState::IDLE;
+        return -1;
+    }
     size_t decoded_len = decodeFEC(fec_bytes, fec_frame_len,
-                                    decoded, sizeof(decoded));
+                                    decoded, frame_len);
+    free(fec_bytes);
     if (decoded_len != frame_len) {
+        free(decoded);
         _rx_state = AcousticRxState::IDLE;
         _stats.crc_errors++;
         return -1;
@@ -605,7 +625,12 @@ int AcousticModem::receive(uint8_t *buf, size_t max_len, uint32_t timeout_ms) {
 
     // Verify CRC over [LEN_HI, LEN_LO, DATA...]
     // We need to reconstruct the full CRC input: length + data
-    uint8_t crc_input[payload_len + 2];
+    uint8_t *crc_input = (uint8_t *)malloc(payload_len + 2);
+    if (!crc_input) {
+        free(decoded);
+        _rx_state = AcousticRxState::IDLE;
+        return -1;
+    }
     crc_input[0] = len_hi;
     crc_input[1] = len_lo;
     memcpy(&crc_input[2], decoded, payload_len);
@@ -613,8 +638,10 @@ int AcousticModem::receive(uint8_t *buf, size_t max_len, uint32_t timeout_ms) {
     uint16_t expected_crc = ((uint16_t)decoded[payload_len] << 8) |
                              decoded[payload_len + 1];
     uint16_t actual_crc = crc16(crc_input, payload_len + 2);
+    free(crc_input);
 
     if (actual_crc != expected_crc) {
+        free(decoded);
         _rx_state = AcousticRxState::IDLE;
         _stats.crc_errors++;
 #ifndef SIMULATOR
@@ -628,6 +655,7 @@ int AcousticModem::receive(uint8_t *buf, size_t max_len, uint32_t timeout_ms) {
     size_t copy_len = payload_len;
     if (copy_len > max_len) copy_len = max_len;
     memcpy(buf, decoded, copy_len);
+    free(decoded);
 
     _rx_state = AcousticRxState::IDLE;
     _stats.frames_received++;

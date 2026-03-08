@@ -44,7 +44,7 @@ enum class DiagSeverity : uint8_t {
 
 // ── Persistent event record (128 bytes, fixed-size for file seeking) ─────────
 
-struct DiagEvent {
+struct __attribute__((packed)) DiagEvent {
     uint32_t epoch;              // UTC seconds (0 if NTP unavailable)
     uint32_t uptime_ms;          // millis() at time of event
     DiagSeverity severity;       // INFO / WARN / ERR / CRITICAL
@@ -59,7 +59,7 @@ static_assert(sizeof(DiagEvent) == 128, "DiagEvent must be exactly 128 bytes");
 
 // ── File header (128 bytes, stored at offset 0) ─────────────────────────────
 
-struct DiagLogHeader {
+struct __attribute__((packed)) DiagLogHeader {
     uint32_t magic;              // 0xD1A6L06 marker
     uint16_t version;            // Format version (1)
     uint16_t max_events;         // Capacity
