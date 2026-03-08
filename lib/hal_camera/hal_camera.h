@@ -60,10 +60,23 @@ public:
     uint16_t getWidth() const { return _width; }
     uint16_t getHeight() const { return _height; }
 
+    // Frame metrics
+    uint32_t getFrameCount() const { return _frame_count; }
+    uint32_t getFailCount() const { return _fail_count; }
+    uint32_t getLastCaptureUs() const { return _last_capture_us; }
+    uint32_t getMaxCaptureUs() const { return _max_capture_us; }
+    float    getAvgFps() const;
+
 private:
     bool _initialized = false;
     uint16_t _width = 0;
     uint16_t _height = 0;
     CameraFrame _frame = {};
     void *_fb = nullptr;  // opaque handle to camera_fb_t
+    // Metrics
+    uint32_t _frame_count = 0;
+    uint32_t _fail_count = 0;
+    uint32_t _last_capture_us = 0;
+    uint32_t _max_capture_us = 0;
+    uint32_t _first_capture_ms = 0;
 };

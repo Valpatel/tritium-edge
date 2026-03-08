@@ -14,11 +14,19 @@ bool CameraHAL::setFlip(bool, bool) { return false; }
 bool CameraHAL::setBrightness(int) { return false; }
 bool CameraHAL::setContrast(int) { return false; }
 bool CameraHAL::setSaturation(int) { return false; }
+float CameraHAL::getAvgFps() const { return 0.0f; }
 
 #else // ESP32
 
 #include <Arduino.h>
 #include <esp_camera.h>
+
+#if __has_include("hal_diag.h")
+#include "hal_diag.h"
+#define CAM_HAS_DIAG 1
+#else
+#define CAM_HAS_DIAG 0
+#endif
 
 #ifndef HAS_CAMERA
 #define HAS_CAMERA 0
@@ -112,11 +120,22 @@ bool CameraHAL::init(CamResolution res, CamPixelFormat fmt) {
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {
         Serial.printf("[CAM] init failed: 0x%x\n", err);
+#if CAM_HAS_DIAG
+        hal_diag::log(hal_diag::Severity::ERROR, "camera", "Init failed: 0x%x", err);
+#endif
         return false;
     }
 
     resolutionDimensions(res, _width, _height);
     _initialized = true;
+    _frame_count = 0;
+    _fail_count = 0;
+    _last_capture_us = 0;
+    _max_capture_us = 0;
+    _first_capture_ms = 0;
+#if CAM_HAS_DIAG
+    hal_diag::log(hal_diag::Severity::INFO, "camera", "Init OK %ux%u", _width, _height);
+#endif
     return true;
 #endif
 }
@@ -141,11 +160,26 @@ CameraFrame* CameraHAL::capture() {
     // Return any previously held frame buffer first
     releaseFrame();
 
+    uint32_t t0 = micros();
     camera_fb_t *fb = esp_camera_fb_get();
+    uint32_t elapsed = micros() - t0;
+
     if (!fb) {
+        _fail_count++;
         Serial.println("[CAM] capture failed");
+#if CAM_HAS_DIAG
+        if ((_fail_count & 0x0F) == 1) { // Log every 16 failures
+            hal_diag::log(hal_diag::Severity::WARN, "camera",
+                          "Capture fail #%lu", (unsigned long)_fail_count);
+        }
+#endif
         return nullptr;
     }
+
+    _frame_count++;
+    _last_capture_us = elapsed;
+    if (elapsed > _max_capture_us) _max_capture_us = elapsed;
+    if (_first_capture_ms == 0) _first_capture_ms = millis();
 
     _fb = fb;  // stash for releaseFrame()
 
@@ -253,6 +287,13 @@ bool CameraHAL::setSaturation(int level) {
     if (!s) return false;
     return s->set_saturation(s, level) == 0;
 #endif
+}
+
+float CameraHAL::getAvgFps() const {
+    if (_frame_count < 2 || _first_capture_ms == 0) return 0.0f;
+    uint32_t elapsed_ms = millis() - _first_capture_ms;
+    if (elapsed_ms == 0) return 0.0f;
+    return (_frame_count * 1000.0f) / elapsed_ms;
 }
 
 #endif // SIMULATOR

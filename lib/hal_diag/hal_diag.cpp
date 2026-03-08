@@ -43,6 +43,7 @@ bool init(const DiagConfig& cfg) {
 void tick() {}
 
 void set_power_provider(PowerProvider) {}
+void set_camera_provider(CameraProvider) {}
 void report_loop_time(uint32_t) {}
 void report_i2c_result(uint8_t, bool, bool, int16_t) {}
 void report_display_frame(uint32_t) {}
@@ -197,6 +198,7 @@ static uint32_t         _loop_start_us = 0;
 
 // External providers
 static PowerProvider    _power_provider = nullptr;
+static CameraProvider   _camera_provider = nullptr;
 
 // NVS keys
 static constexpr const char* NVS_NAMESPACE = "hal_diag";
@@ -623,6 +625,10 @@ void set_power_provider(PowerProvider provider) {
     _power_provider = provider;
 }
 
+void set_camera_provider(CameraProvider provider) {
+    _camera_provider = provider;
+}
+
 void report_loop_time(uint32_t loop_us) {
     _loop_time_us = loop_us;
     if (loop_us > _max_loop_time_us) _max_loop_time_us = loop_us;
@@ -967,6 +973,19 @@ HealthSnapshot take_snapshot() {
         snap.pmic_temp_c = 0.0f;
     }
 
+    // Camera — pull from provider if registered
+    if (_camera_provider) {
+        CameraInfo cam = {};
+        if (_camera_provider(cam)) {
+            snap.camera_available = cam.available;
+            snap.camera_frames = cam.frame_count;
+            snap.camera_fails = cam.fail_count;
+            snap.camera_last_us = cam.last_capture_us;
+            snap.camera_max_us = cam.max_capture_us;
+            snap.camera_avg_fps = cam.avg_fps;
+        }
+    }
+
     return snap;
 }
 
@@ -1081,6 +1100,24 @@ int health_to_json(char* buf, size_t size) {
         (unsigned long)snap.uptime_s,
         (unsigned long)snap.reboot_count,
         reset_reason_str(snap.last_reset_reason));
+
+    // Append camera metrics if available
+    if (snap.camera_available && pos > 0 && pos < (int)size - 2) {
+        pos--;  // back up over final '}'
+        pos += snprintf(buf + pos, size - pos,
+            ",\"camera\":{"
+                "\"frames\":%lu,"
+                "\"fails\":%lu,"
+                "\"last_us\":%lu,"
+                "\"max_us\":%lu,"
+                "\"avg_fps\":%.1f"
+            "}}",
+            (unsigned long)snap.camera_frames,
+            (unsigned long)snap.camera_fails,
+            (unsigned long)snap.camera_last_us,
+            (unsigned long)snap.camera_max_us,
+            snap.camera_avg_fps);
+    }
 
     // Append per-slave I2C details if any are tracked
     if (snap.i2c_slave_count > 0 && pos > 0 && pos < (int)size - 2) {

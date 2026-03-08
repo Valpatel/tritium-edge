@@ -108,6 +108,13 @@ struct HealthSnapshot {
     // Display timing
     uint32_t display_frame_time_us; // Last frame push latency
     uint32_t display_max_frame_us;  // Worst frame push latency since boot
+    // Camera
+    bool     camera_available;
+    uint32_t camera_frames;         // Total frames captured
+    uint32_t camera_fails;          // Total capture failures
+    uint32_t camera_last_us;        // Last capture latency
+    uint32_t camera_max_us;         // Worst capture latency
+    float    camera_avg_fps;        // Average FPS since init
     // Task stats
     uint32_t loop_time_us;      // Last loop() duration
     uint32_t max_loop_time_us;  // Worst case since boot
@@ -153,6 +160,23 @@ using PowerProvider = bool (*)(PowerInfo& out);
 
 /// Register a power data provider so take_snapshot() includes battery/PMIC data.
 void set_power_provider(PowerProvider provider);
+
+// ── Camera data provider (optional — wired from main.cpp) ────────────────────
+
+struct CameraInfo {
+    bool     available;
+    uint32_t frame_count;
+    uint32_t fail_count;
+    uint32_t last_capture_us;
+    uint32_t max_capture_us;
+    float    avg_fps;
+};
+
+/// Callback type: fill CameraInfo and return true, or return false if unavailable.
+using CameraProvider = bool (*)(CameraInfo& out);
+
+/// Register a camera data provider so take_snapshot() includes camera metrics.
+void set_camera_provider(CameraProvider provider);
 
 // ── Loop timing provider (optional — wired from watchdog or main loop) ──────
 
