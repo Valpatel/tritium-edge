@@ -76,6 +76,8 @@ static WiFiServer* _tcp_server = nullptr;
 static WiFiClient _tcp_clients[3];  // max 3 simultaneous TCP debug clients
 static const int MAX_TCP_CLIENTS = 3;
 
+extern "C" void debug_ble_send(const char* data, size_t len) __attribute__((weak));
+
 void DebugLog::init(uint32_t backends) {
     _backends = backends;
     _initialized = true;
@@ -146,7 +148,6 @@ void DebugLog::output(const char* buf, size_t len) {
     if (_backends & DBG_BACKEND_BLE) {
         // Use BleManager singleton if available
         // Kept as a separate include to avoid hard dependency
-        extern void debug_ble_send(const char* data, size_t len) __attribute__((weak));
         if (debug_ble_send) {
             debug_ble_send(buf, len);
         }

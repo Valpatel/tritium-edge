@@ -38,4 +38,4 @@ echo "Press Ctrl+C to exit"
 echo "---"
 
 cd "$PROJECT_DIR"
-exec $PIO device monitor -b "$BAUD" -p "$PORT" --filter colorize --filter time
+exec $PIO device monitor -b "$BAUD" -p "$PORT" --filter time

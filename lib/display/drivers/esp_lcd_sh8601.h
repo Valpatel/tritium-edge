@@ -1,0 +1,103 @@
+/*
+ * SPDX-FileCopyrightText: 2023 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * @file esp_lcd_sh8601.h
+ * @brief Generic QSPI AMOLED panel driver for SH8601Z, RM690B0, and RM67162.
+ *
+ * Copied from Waveshare ESP32 components (references/Waveshare-ESP32-components/).
+ * Each panel IC is differentiated by board-specific init command arrays passed
+ * via vendor_config. The driver itself is IC-agnostic.
+ */
+
+#pragma once
+
+#include <stdint.h>
+
+#include "esp_lcd_panel_vendor.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define ESP_LCD_SH8601_VER_MAJOR    1
+#define ESP_LCD_SH8601_VER_MINOR    0
+#define ESP_LCD_SH8601_VER_PATCH    2
+
+/**
+ * @brief LCD panel initialization commands.
+ */
+typedef struct {
+    int cmd;                /*<! The specific LCD command */
+    const void *data;       /*<! Buffer that holds the command specific data */
+    size_t data_bytes;      /*<! Size of `data` in memory, in bytes */
+    unsigned int delay_ms;  /*<! Delay in milliseconds after this command */
+} sh8601_lcd_init_cmd_t;
+
+/**
+ * @brief LCD panel vendor configuration.
+ *
+ * @note  This structure can be used to select interface type and override default initialization commands.
+ * @note  This structure needs to be passed to the `vendor_config` field in `esp_lcd_panel_dev_config_t`.
+ */
+typedef struct {
+    const sh8601_lcd_init_cmd_t *init_cmds;    /*!< Pointer to initialization commands array.
+                                                 *  The array should be declared as `static const` and positioned outside the function.
+                                                 *  Please refer to `vendor_specific_init_default` in source file
+                                                 */
+    uint16_t init_cmds_size;    /*<! Number of commands in above array */
+    struct {
+        unsigned int use_qspi_interface: 1;     /*<! Set to 1 if use QSPI interface, default is SPI interface */
+    } flags;
+} sh8601_vendor_config_t;
+
+/**
+ * @brief Create LCD panel for model SH8601 (also works with RM690B0, RM67162)
+ *
+ * @param[in]  io LCD panel IO handle
+ * @param[in]  panel_dev_config General panel device configuration
+ * @param[out] ret_panel Returned LCD panel handle
+ * @return
+ *      - ESP_OK: Success
+ *      - Otherwise: Fail
+ */
+esp_err_t esp_lcd_new_panel_sh8601(const esp_lcd_panel_io_handle_t io, const esp_lcd_panel_dev_config_t *panel_dev_config, esp_lcd_panel_handle_t *ret_panel);
+
+/**
+ * @brief LCD panel bus configuration structure (QSPI)
+ */
+#define SH8601_PANEL_BUS_QSPI_CONFIG(sclk, d0, d1, d2, d3, max_trans_sz) \
+    {                                                           \
+        .sclk_io_num = sclk,                                    \
+        .data0_io_num = d0,                                     \
+        .data1_io_num = d1,                                     \
+        .data2_io_num = d2,                                     \
+        .data3_io_num = d3,                                     \
+        .max_transfer_sz = max_trans_sz,                        \
+    }
+
+/**
+ * @brief LCD panel IO configuration structure (QSPI)
+ */
+#define SH8601_PANEL_IO_QSPI_CONFIG(cs, cb, cb_ctx)             \
+    {                                                           \
+        .cs_gpio_num = cs,                                      \
+        .dc_gpio_num = -1,                                      \
+        .spi_mode = 0,                                          \
+        .pclk_hz = 40 * 1000 * 1000,                            \
+        .trans_queue_depth = 10,                                \
+        .on_color_trans_done = cb,                              \
+        .user_ctx = cb_ctx,                                     \
+        .lcd_cmd_bits = 32,                                     \
+        .lcd_param_bits = 8,                                    \
+        .flags = {                                              \
+            .quad_mode = true,                                  \
+        },                                                      \
+    }
+
+#ifdef __cplusplus
+}
+#endif

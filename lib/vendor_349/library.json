@@ -1,0 +1,9 @@
+{
+  "name": "vendor_349",
+  "version": "1.0.0",
+  "build": {
+    "srcFilter": ["+<*.c>", "+<axs15231b/*.c>", "+<touch/*.c>", "+<bl/*.c>"],
+    "includeDir": ".",
+    "flags": ["-I axs15231b", "-I touch", "-I bl"]
+  }
+}

@@ -1,0 +1,7 @@
+{
+    "name": "display",
+    "version": "1.0.0",
+    "description": "Board-dispatch display driver using esp_lcd framework",
+    "frameworks": "arduino",
+    "platforms": "espressif32"
+}

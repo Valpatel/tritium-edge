@@ -27,7 +27,7 @@
 #define LCD_QSPI_D1         12
 #define LCD_QSPI_D2         13
 #define LCD_QSPI_D3         14
-#define LCD_SPI_HOST        3   // SPI3_HOST (SD card uses SPI2_HOST)
+#define LCD_SPI_HOST        SPI3_HOST   // ESP-IDF 5.x: SPI3_HOST=2 (SD card uses SPI2_HOST)
 #define LCD_RST             21
 #define LCD_BL              8   // PWM backlight
 
