@@ -286,7 +286,12 @@ bool send_now() {
              "{\"version\":\"%s\",\"board\":\"%s\",\"partition\":\"%s\","
              "\"ip\":\"%s\",\"mac\":\"%s\",\"uptime_s\":%lu,\"free_heap\":%u,"
              "\"rssi\":%d,\"fw_hash\":\"%s\","
-             "\"reported_config\":{\"heartbeat_interval_s\":%lu}",
+             "\"reported_config\":{"
+             "\"heartbeat_interval_s\":%lu,"
+             "\"server_url\":\"%s\","
+             "\"wifi_ssid\":\"%s\","
+             "\"firmware_version\":\"%s\""
+             "}",
              _fw_version, _board_name, partition,
              WiFi.localIP().toString().c_str(),
              WiFi.macAddress().c_str(),
@@ -294,7 +299,10 @@ bool send_now() {
              (unsigned)ESP.getFreeHeap(),
              WiFi.RSSI(),
              _fw_hash,
-             (unsigned long)(_interval_ms / 1000));
+             (unsigned long)(_interval_ms / 1000),
+             _server_url,
+             WiFi.SSID().c_str(),
+             _fw_version);
 
     // Append BLE scanner data if available
 #if HAS_BLE_SCANNER
