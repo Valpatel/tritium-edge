@@ -1199,6 +1199,25 @@ int health_to_json(char* buf, size_t size) {
             snap.camera_avg_fps);
     }
 
+    // Append mesh peer list if available
+    if (_mesh_provider && snap.mesh_peers > 0 && pos > 0 && pos < (int)size - 2) {
+        MeshInfo mesh = {};
+        if (_mesh_provider(mesh) && mesh.peer_list_count > 0) {
+            pos--;  // back up over final '}'
+            pos += snprintf(buf + pos, size - pos, ",\"mesh_peers\":[");
+            for (int i = 0; i < mesh.peer_list_count && i < MeshInfo::MAX_PEERS
+                 && pos < (int)size - 60; i++) {
+                if (i > 0) buf[pos++] = ',';
+                auto& p = mesh.peers[i];
+                pos += snprintf(buf + pos, size - pos,
+                    "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"rssi\":%d,\"hops\":%u}",
+                    p.mac[0], p.mac[1], p.mac[2], p.mac[3], p.mac[4], p.mac[5],
+                    (int)p.rssi, (unsigned)p.hops);
+            }
+            pos += snprintf(buf + pos, size - pos, "]}");
+        }
+    }
+
     // Append per-slave I2C details if any are tracked
     if (snap.i2c_slave_count > 0 && pos > 0 && pos < (int)size - 2) {
         // Replace trailing '}' with ',i2c_slaves:[...]}'

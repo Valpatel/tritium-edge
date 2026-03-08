@@ -411,6 +411,15 @@ static void services_init() {
                 out.rx_count = stats.rx_count;
                 out.tx_fail = stats.tx_fail;
                 out.relay_count = stats.relay_count;
+                // Populate peer list for topology mapping
+                EspNowPeer peers[hal_diag::MeshInfo::MAX_PEERS];
+                int n = _espnow.getPeers(peers, hal_diag::MeshInfo::MAX_PEERS);
+                out.peer_list_count = (uint8_t)n;
+                for (int i = 0; i < n && i < hal_diag::MeshInfo::MAX_PEERS; i++) {
+                    memcpy(out.peers[i].mac, peers[i].mac, 6);
+                    out.peers[i].rssi = peers[i].rssi;
+                    out.peers[i].hops = peers[i].hop_count;
+                }
                 return true;
             });
 #endif

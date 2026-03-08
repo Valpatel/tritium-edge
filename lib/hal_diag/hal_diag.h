@@ -212,6 +212,12 @@ void set_ntp_provider(NtpProvider provider);
 
 // ── Mesh data provider (optional) ───────────────────────────────────────────
 
+struct MeshPeer {
+    uint8_t  mac[6];
+    int8_t   rssi;
+    uint8_t  hops;      // 0=direct, 1+=relayed
+};
+
 struct MeshInfo {
     uint8_t  peer_count;
     uint8_t  route_count;
@@ -219,6 +225,10 @@ struct MeshInfo {
     uint32_t rx_count;
     uint32_t tx_fail;
     uint32_t relay_count;
+    // Optional peer list (up to 16 peers)
+    static constexpr int MAX_PEERS = 16;
+    MeshPeer peers[MAX_PEERS] = {};
+    uint8_t  peer_list_count = 0;  // How many entries in peers[] are valid
 };
 
 using MeshProvider = bool (*)(MeshInfo& out);
