@@ -25,6 +25,8 @@
 enum class ProvisionSource : uint8_t {
     SD_CARD,        // Read provisioning data from SD card
     USB_SERIAL,     // Receive provisioning data over USB serial
+    BLE,            // Receive provisioning data over BLE GATT
+    WEB_PORTAL,     // Captive portal on WiFi AP
     NONE,
 };
 
@@ -66,6 +68,22 @@ public:
     bool startUSBProvision();
     bool processUSBProvision();  // Call in loop() during USB provisioning
     bool isUSBProvisionActive() const;
+
+    // Provision via BLE (NimBLE GATT service)
+    // Phone app writes JSON chunks to the provisioning characteristic.
+    // Requires ENABLE_BLE build flag and NimBLE library.
+    bool startBLEProvision();
+    void stopBLEProvision();
+    bool isBLEProvisionActive() const;
+    bool processBLEProvision();  // Call in loop() during BLE provisioning
+
+    // Provision via web captive portal (WiFi AP mode)
+    // Device creates AP "Tritium-XXYY", phone connects, captive portal
+    // serves form at http://192.168.4.1/commission where user enters
+    // WiFi SSID/password and server URL.
+    bool startWebProvision();
+    void stopWebProvision();
+    bool isWebProvisionActive() const;
 
     // Certificate access (for WiFiClientSecure, MQTT, etc.)
     bool getCACert(char* buf, size_t bufSize, size_t* outLen = nullptr);
@@ -112,8 +130,12 @@ private:
     ProvisionState _state = ProvisionState::UNPROVISIONED;
     DeviceIdentity _identity = {};
     bool _usbActive = false;
+    bool _bleActive = false;
+    bool _webActive = false;
     char _usbBuf[4096] = {};
     size_t _usbBufLen = 0;
+    char _bleBuf[4096] = {};
+    size_t _bleBufLen = 0;
 
     void _ensureProvDir();
     bool _loadIdentity();
