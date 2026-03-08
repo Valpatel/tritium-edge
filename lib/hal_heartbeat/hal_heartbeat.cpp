@@ -431,6 +431,40 @@ bool send_now() {
     }
 #endif
 
+    // Piggyback persistent diaglog event upload on heartbeat tick
+#if HAS_DIAGLOG
+    if (code == 200 && diaglog_count() > 0) {
+        // Upload events as JSON batch: {"events":[...],"boot_count":N}
+        static char dl_buf[4096];
+        int offset = 0;
+        int batch_size = 50;  // Upload up to 50 events per heartbeat
+        int ev_len = diaglog_get_json(dl_buf + 128, sizeof(dl_buf) - 128,
+                                       offset, batch_size);
+        if (ev_len > 0) {
+            // Build the wrapper JSON
+            static char dl_post[4096];
+            int plen = snprintf(dl_post, sizeof(dl_post),
+                "{\"events\":%s,\"boot_count\":%u}",
+                dl_buf + 128, (unsigned)diaglog_boot_count());
+
+            char dl_url[320];
+            snprintf(dl_url, sizeof(dl_url), "%s/api/devices/%s/diag/log",
+                     _server_url, _device_id);
+            HTTPClient dl_http;
+            dl_http.begin(dl_url);
+            dl_http.addHeader("Content-Type", "application/json");
+            dl_http.setTimeout(3000);
+            int dl_code = dl_http.POST((uint8_t*)dl_post, plen);
+            if (dl_code == 200) {
+                DBG_DEBUG(TAG, "Diaglog events uploaded (%d bytes)", plen);
+            } else {
+                DBG_DEBUG(TAG, "Diaglog upload failed: HTTP %d", dl_code);
+            }
+            dl_http.end();
+        }
+    }
+#endif
+
     return (code == 200);
 }
 
