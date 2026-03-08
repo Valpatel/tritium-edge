@@ -5,13 +5,19 @@
 
 Devices POST their diagnostic reports via heartbeat or dedicated /api/diag endpoint.
 The fleet server stores recent reports and exposes aggregated views for the dashboard.
+
+Also includes diagnostic event log (diaglog) collection endpoints for persistent
+device-side event ring buffers.
 """
 
 import json
 import time
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+
+from ..services.diaglog_service import DiagLogStore
 
 from tritium_lib.models.diagnostics import (
     AnomalyType,
@@ -312,3 +318,74 @@ async def fleet_health_report():
         "nodes": node_statuses,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic Event Log (diaglog) endpoints
+# ---------------------------------------------------------------------------
+
+def _get_diaglog_store(request: Request) -> DiagLogStore:
+    """Get or create the DiagLogStore from app state."""
+    if not hasattr(request.app.state, "diaglog_store"):
+        store = request.app.state.store
+        request.app.state.diaglog_store = DiagLogStore(store.data_dir)
+    return request.app.state.diaglog_store
+
+
+@router.post("/devices/{device_id}/diag/log")
+async def upload_diag_log(device_id: str, request: Request):
+    """Device uploads diagnostic event log entries.
+
+    Body: {"events": [...], "boot_count": N}
+    Each event: {timestamp, severity, subsystem, code, message, value}
+    """
+    body = await request.json()
+    events = body.get("events", [])
+    boot_count = body.get("boot_count", 0)
+
+    if not events:
+        return {"status": "ok", "stored": 0}
+
+    diaglog = _get_diaglog_store(request)
+    stored = diaglog.append_events(device_id, events, boot_count)
+
+    return {"status": "ok", "stored": stored}
+
+
+@router.get("/devices/{device_id}/diag/log")
+async def get_device_diag_log(
+    device_id: str,
+    request: Request,
+    since: Optional[float] = Query(None, description="Only events after this epoch timestamp"),
+    severity: Optional[str] = Query(None, description="Minimum severity: DEBUG, INFO, WARN, ERROR, CRITICAL"),
+    limit: int = Query(100, ge=1, le=10000),
+):
+    """Return stored diagnostic events for a device."""
+    diaglog = _get_diaglog_store(request)
+    events = diaglog.query_events(
+        device_id=device_id, since=since, severity=severity, limit=limit
+    )
+    return {"device_id": device_id, "events": events, "count": len(events)}
+
+
+@router.get("/fleet/diag/log")
+async def fleet_diag_log(
+    request: Request,
+    device_id: Optional[str] = Query(None, description="Filter to a specific device"),
+    since: Optional[float] = Query(None, description="Only events after this epoch timestamp"),
+    severity: Optional[str] = Query(None, description="Minimum severity: DEBUG, INFO, WARN, ERROR, CRITICAL"),
+    limit: int = Query(100, ge=1, le=10000),
+):
+    """Aggregate diagnostic events across all devices, sorted by timestamp desc."""
+    diaglog = _get_diaglog_store(request)
+    events = diaglog.query_events(
+        device_id=device_id, since=since, severity=severity, limit=limit
+    )
+    return {"events": events, "count": len(events)}
+
+
+@router.get("/fleet/diag/summary")
+async def fleet_diag_summary(request: Request):
+    """Summary of diagnostic events across the fleet."""
+    diaglog = _get_diaglog_store(request)
+    return diaglog.get_summary()
