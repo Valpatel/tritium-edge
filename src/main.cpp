@@ -88,6 +88,10 @@ static StarfieldApp app_instance;
 #include "system_app.h"
 static SystemApp app_instance;
 
+#elif defined(APP_DIAG)
+#include "diag_app.h"
+static DiagApp app_instance;
+
 #elif defined(APP_WIFI_SETUP)
 #error "wifi_setup app not yet ported to esp_lcd"
 #elif defined(APP_UI_DEMO)
