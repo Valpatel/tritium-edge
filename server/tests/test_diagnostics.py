@@ -443,3 +443,94 @@ def test_fleet_heap_trends_with_devices(client):
     data = resp.json()
     # Single sample per device, so no trends computed
     assert data["total_devices"] == 0
+
+
+# --- Fleet correlations ---
+
+
+def test_fleet_correlations_empty(client):
+    """Empty fleet returns no correlations."""
+    resp = client.get("/api/fleet/correlations")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_correlations"] == 0
+    assert data["correlations"] == []
+
+
+def test_fleet_correlations_with_events(client):
+    """Correlations endpoint processes anomaly events."""
+    # Submit nodes with anomalies — even without actual correlations,
+    # the endpoint should return successfully
+    for i in range(3):
+        client.post(f"/api/devices/corr-{i}/diag", json={
+            "health": {
+                "free_heap": 120000,
+                "uptime_s": 3600,
+                "reboot_count": 0,
+            },
+            "anomalies": [
+                {
+                    "subsystem": "memory",
+                    "description": f"Test anomaly {i}",
+                    "severity": 0.5,
+                    "detected_at": f"2026-03-07T12:0{i}:00Z",
+                },
+            ],
+        })
+
+    resp = client.get("/api/fleet/correlations")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "total_correlations" in data
+    assert "correlations" in data
+    assert isinstance(data["correlations"], list)
+
+
+# --- Fleet topology ---
+
+
+def test_fleet_topology_empty(client):
+    """Empty fleet returns empty topology."""
+    resp = client.get("/api/fleet/topology")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_nodes"] == 0
+    assert data["nodes"] == []
+    assert data["links"] == []
+
+
+def test_fleet_topology_with_devices(client, sample_device):
+    """Topology includes registered devices."""
+    resp = client.get("/api/fleet/topology")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_nodes"] >= 1
+    assert "test-node-001" in data["nodes"]
+
+
+def test_fleet_topology_with_mesh_data(client, sample_device):
+    """Topology includes mesh link data from diag cache."""
+    # Submit diag with mesh info
+    client.post("/api/devices/test-node-001/diag", json={
+        "health": {
+            "free_heap": 120000,
+            "mesh": {
+                "peers": 2,
+                "routes": 3,
+                "tx": 150,
+                "rx": 140,
+                "tx_fail": 5,
+                "relayed": 20,
+            },
+        },
+        "anomalies": [],
+    })
+
+    resp = client.get("/api/fleet/topology")
+    assert resp.status_code == 200
+    data = resp.json()
+    # Should have at least one link for the device with mesh peers
+    mesh_links = [l for l in data["links"] if l["source"] == "test-node-001"]
+    assert len(mesh_links) == 1
+    assert mesh_links[0]["peers"] == 2
+    assert mesh_links[0]["tx"] == 150
