@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 
+from tritium_lib.models.config import compute_fleet_config_status
+
 from ..services.device_service import enrich_devices, build_fleet_status, get_fleet_health
 
 router = APIRouter(prefix="/api", tags=["stats"])
@@ -76,5 +78,65 @@ async def fleet_health(request: Request):
         "online_count": fleet.online_count,
         "ble_total": fleet.ble_total,
         "server_uptime_s": int(time.time() - start_time),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/fleet/config")
+async def fleet_config(request: Request):
+    """Config sync status — desired vs reported drift across the fleet.
+
+    Uses tritium-lib drift detection to classify mismatches as
+    critical / moderate / minor.
+    """
+    store = request.app.state.store
+    devices = enrich_devices(store.list_devices())
+
+    # Build input for tritium-lib: each device needs desired + reported config
+    config_entries = []
+    for d in devices:
+        profile_id = d.get("profile_id")
+        desired = {}
+        if profile_id:
+            profile = store.get_profile(profile_id)
+            if profile:
+                desired = profile.get("config", {})
+        reported = d.get("reported_config", d.get("config", {}))
+        config_entries.append({
+            "device_id": d.get("device_id", d.get("id", "?")),
+            "desired_config": desired,
+            "reported_config": reported,
+        })
+
+    status = compute_fleet_config_status(config_entries)
+
+    # Build per-device drift details for drifted nodes
+    drifted_details = []
+    for dc in status.devices:
+        if not dc.is_synced:
+            drifted_details.append({
+                "device_id": dc.device_id,
+                "drift_count": dc.drift_count,
+                "max_severity": dc.max_severity.value,
+                "drifts": [
+                    {
+                        "key": drift.key,
+                        "desired": drift.desired_value,
+                        "reported": drift.reported_value,
+                        "severity": drift.severity.value,
+                        "missing": drift.is_missing,
+                        "extra": drift.is_extra,
+                    }
+                    for drift in dc.drifts
+                ],
+            })
+
+    return {
+        "total_devices": status.total_devices,
+        "synced_count": status.synced_count,
+        "drifted_count": status.drifted_count,
+        "critical_drift_count": status.critical_drift_count,
+        "sync_ratio": round(status.sync_ratio, 3),
+        "drifted_devices": drifted_details,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
