@@ -100,7 +100,8 @@ static DiagApp app_instance;
 #include "camera_app.h"
 static CameraApp app_instance;
 #elif defined(APP_EFFECTS)
-#error "effects app not yet ported to esp_lcd"
+#include "effects_app.h"
+static EffectsApp app_instance;
 #elif defined(APP_TEST)
 #error "test app not yet ported to esp_lcd"
 #else
