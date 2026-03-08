@@ -622,7 +622,34 @@ application loop:
 These capabilities are reported during provisioning and determine which
 modules the server can enable for each device.
 
-## Appendix B: Error Codes
+## Appendix B: Serial Commands
+
+Direct serial interface for diagnostics and testing. Send via USB serial (115200 baud).
+
+| Command | Args | Description |
+|---|---|---|
+| `IDENTIFY` | — | Returns device ID, board, firmware version, MAC |
+| `SD_FORMAT` | — | Formats SD card (if present) |
+| `BLE_LIST` | — | Lists known BLE devices |
+| `BLE_ADD` | `<name> <mac>` | Adds a named BLE device to tracking list |
+| `DIAG` | — | Prints diagnostic snapshot |
+| `HEALTH` | — | Prints health JSON |
+| `ANOMALIES` | — | Prints detected anomalies |
+| `MODEM_SEND` | `<hex>` | Transmit hex data via acoustic modem (FSK over speaker) |
+| `MODEM_LISTEN` | `[timeout_ms]` | Listen for acoustic data (default 5000ms) |
+| `MODEM_STATS` | — | Print modem stats (frames, CRC errors, SNR) |
+| `MODEM_TEST` | — | Send "TRITIUM" and listen for echo |
+| `SEED_STATUS` | — | Print self-seed system status |
+| `SEED_LIST` | — | List files in seed manifest |
+| `SEED_CREATE` | — | Create/update seed manifest from current firmware |
+| `COT_SEND` | — | Send CoT SA event via UDP multicast |
+| `COT_POS` | `<lat> <lon> [hae]` | Set device position for CoT |
+| `COT_STATUS` | — | Print CoT subsystem status |
+
+Commands requiring specific hardware: MODEM_* (HAS_AUDIO_CODEC), SEED_* (HAS_SDCARD),
+COT_* (ENABLE_COT build flag + WiFi connected).
+
+## Appendix C: Error Codes
 
 | Code | Context | Description |
 |---|---|---|
