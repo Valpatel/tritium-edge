@@ -174,7 +174,14 @@ static void services_init() {
     if (wifi.isConnected()) {
         Serial.printf("[tritium] WiFi: %s (%s)\n", wifi.getSSID(), wifi.getIP());
     } else {
-        Serial.printf("[tritium] WiFi: not connected (will retry in background)\n");
+        Serial.printf("[tritium] WiFi: not connected\n");
+#if defined(ENABLE_WEBSERVER)
+        // No WiFi? Start AP mode for phone commissioning
+        Serial.printf("[tritium] Starting AP mode for commissioning...\n");
+        wifi.startAP();  // Creates "Tritium-XXYY" open network
+#else
+        Serial.printf("[tritium] Will retry in background\n");
+#endif
     }
 #endif
 
@@ -211,7 +218,7 @@ static void services_init() {
 #endif
 
 #if defined(ENABLE_WEBSERVER)
-    if (_wifi_enabled && wifi.isConnected()) {
+    if (_wifi_enabled && (wifi.isConnected() || wifi.isAPMode())) {
         LittleFS.begin(true);  // Format on first mount
 
         uint16_t web_port = 80;
@@ -246,15 +253,23 @@ static void services_init() {
             });
 #endif
 
-            // Start mDNS for easy phone discovery
-            uint8_t mac[6];
-            WiFi.macAddress(mac);
-            char hostname[32];
-            snprintf(hostname, sizeof(hostname), "tritium-%02x%02x", mac[4], mac[5]);
-            _webserver.startMDNS(hostname);
-
-            Serial.printf("[tritium] Web server: http://%s:%u/ (mDNS: %s.local)\n",
-                          wifi.getIP(), web_port, hostname);
+            // In AP mode, start captive portal for auto-redirect
+            if (wifi.isAPMode()) {
+                _webserver.startCaptivePortal();
+                Serial.printf("[tritium] Web server: http://%s:%u/ (captive portal)\n",
+                              wifi.getAPIP(), web_port);
+                Serial.printf("[tritium] Connect phone to WiFi '%s' for setup\n",
+                              wifi.getSSID());
+            } else {
+                // Normal mode: start mDNS for easy phone discovery
+                uint8_t mac[6];
+                WiFi.macAddress(mac);
+                char hostname[32];
+                snprintf(hostname, sizeof(hostname), "tritium-%02x%02x", mac[4], mac[5]);
+                _webserver.startMDNS(hostname);
+                Serial.printf("[tritium] Web server: http://%s:%u/ (mDNS: %s.local)\n",
+                              wifi.getIP(), web_port, hostname);
+            }
         }
     }
 #endif

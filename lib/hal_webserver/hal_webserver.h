@@ -48,6 +48,10 @@ public:
     void sendResponse(int code, const char* contentType, const char* body);
     void sendJson(int code, const char* json);
 
+    // Captive portal (for AP commissioning mode)
+    void startCaptivePortal();
+    void stopCaptivePortal();
+
     // mDNS
     bool startMDNS(const char* hostname = "esp32");
 

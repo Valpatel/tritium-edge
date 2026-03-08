@@ -12,7 +12,8 @@ enum class WifiState : uint8_t {
     CONNECTING,
     CONNECTED,
     DISCONNECTED,
-    FAILED
+    FAILED,
+    AP_MODE
 };
 
 enum class WifiAuth : uint8_t {
@@ -57,6 +58,12 @@ public:
     bool connect();
     bool connect(const char* ssid);
     void disconnect();
+
+    // AP mode for commissioning (phone connects to ESP32 directly)
+    bool startAP(const char* ssid = nullptr, const char* password = nullptr);
+    void stopAP();
+    bool isAPMode() const;
+    const char* getAPIP() const;
 
     // Scanning
     bool startScan();

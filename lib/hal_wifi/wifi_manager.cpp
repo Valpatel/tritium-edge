@@ -186,6 +186,53 @@ bool WifiManager::startScan() {
     return true;
 }
 
+bool WifiManager::startAP(const char* ssid, const char* password) {
+    char ap_ssid[33];
+    if (ssid) {
+        strncpy(ap_ssid, ssid, sizeof(ap_ssid) - 1);
+        ap_ssid[sizeof(ap_ssid) - 1] = '\0';
+    } else {
+        uint8_t mac[6];
+        WiFi.macAddress(mac);
+        snprintf(ap_ssid, sizeof(ap_ssid), "Tritium-%02X%02X", mac[4], mac[5]);
+    }
+
+    WiFi.mode(WIFI_AP_STA);
+    bool ok;
+    if (password && strlen(password) >= 8) {
+        ok = WiFi.softAP(ap_ssid, password);
+    } else {
+        ok = WiFi.softAP(ap_ssid);
+    }
+
+    if (ok) {
+        IPAddress apIP = WiFi.softAPIP();
+        snprintf(_ip, sizeof(_ip), "%d.%d.%d.%d", apIP[0], apIP[1], apIP[2], apIP[3]);
+        strncpy(_ssid, ap_ssid, sizeof(_ssid) - 1);
+        setState(WifiState::AP_MODE);
+        Serial.printf("[WiFi] AP started: %s  IP: %s\n", ap_ssid, _ip);
+    } else {
+        Serial.printf("[WiFi] AP start failed\n");
+    }
+    return ok;
+}
+
+void WifiManager::stopAP() {
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    if (_state == WifiState::AP_MODE) {
+        setState(WifiState::DISCONNECTED);
+    }
+    Serial.printf("[WiFi] AP stopped\n");
+}
+
+bool WifiManager::isAPMode() const { return _state == WifiState::AP_MODE; }
+
+const char* WifiManager::getAPIP() const {
+    if (_state == WifiState::AP_MODE) return _ip;
+    return "0.0.0.0";
+}
+
 bool WifiManager::isConnected() const { return WiFi.status() == WL_CONNECTED; }
 int32_t WifiManager::getRSSI() const { return WiFi.RSSI(); }
 
@@ -346,6 +393,24 @@ bool WifiManager::startScan() {
     setState(_ssid[0] ? WifiState::CONNECTED : WifiState::DISCONNECTED);
     return true;
 }
+
+bool WifiManager::startAP(const char* ssid, const char* password) {
+    char ap_ssid[33] = "Tritium-SIM";
+    if (ssid) strncpy(ap_ssid, ssid, sizeof(ap_ssid) - 1);
+    strncpy(_ssid, ap_ssid, sizeof(_ssid) - 1);
+    strncpy(_ip, "192.168.4.1", sizeof(_ip) - 1);
+    setState(WifiState::AP_MODE);
+    printf("[WiFi-SIM] AP started: %s  IP: %s\n", ap_ssid, _ip);
+    return true;
+}
+
+void WifiManager::stopAP() {
+    if (_state == WifiState::AP_MODE) setState(WifiState::DISCONNECTED);
+    printf("[WiFi-SIM] AP stopped\n");
+}
+
+bool WifiManager::isAPMode() const { return _state == WifiState::AP_MODE; }
+const char* WifiManager::getAPIP() const { return "192.168.4.1"; }
 
 bool WifiManager::isConnected() const { return _state == WifiState::CONNECTED; }
 int32_t WifiManager::getRSSI() const { return _state == WifiState::CONNECTED ? -50 : 0; }

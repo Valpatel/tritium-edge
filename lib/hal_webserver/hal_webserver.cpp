@@ -18,6 +18,8 @@ void WebServerHAL::addWiFiSetup() {}
 void WebServerHAL::addBleViewer() {}
 void WebServerHAL::addAllPages() {}
 void WebServerHAL::setBleProvider(BleJsonProvider) {}
+void WebServerHAL::startCaptivePortal() {}
+void WebServerHAL::stopCaptivePortal() {}
 void WebServerHAL::sendResponse(int, const char*, const char*) {}
 void WebServerHAL::sendJson(int, const char*) {}
 bool WebServerHAL::startMDNS(const char*) { return false; }
@@ -35,12 +37,14 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
+#include <DNSServer.h>
 #include <Update.h>
 #include <LittleFS.h>
 #include <cstring>
 
 static WebServer* _server = nullptr;
 static WebServerHAL* _instance = nullptr;
+static DNSServer* _dnsServer = nullptr;
 
 // ── Dark neon hacker theme ──────────────────────────────────────────────────
 // Shared CSS used by all pages — black bg, neon cyan accents, monospace font
@@ -293,6 +297,7 @@ bool WebServerHAL::isRunning() const { return _running; }
 
 void WebServerHAL::process() {
     if (_running && _server) {
+        if (_dnsServer) _dnsServer->processNextRequest();
         _server->handleClient();
     }
 }
@@ -328,6 +333,46 @@ void WebServerHAL::sendResponse(int code, const char* contentType, const char* b
 
 void WebServerHAL::sendJson(int code, const char* json) {
     if (_server) _server->send(code, "application/json", json);
+}
+
+// ── Captive Portal ──────────────────────────────────────────────────────
+
+void WebServerHAL::startCaptivePortal() {
+    if (!_server) return;
+
+    _dnsServer = new DNSServer();
+    _dnsServer->start(53, "*", WiFi.softAPIP());
+
+    // Redirect all unknown URIs to /wifi setup page
+    _server->onNotFound([]() {
+        _server->sendHeader("Location", "http://192.168.4.1/wifi", true);
+        _server->send(302, "text/plain", "Redirecting to setup...");
+    });
+
+    // Android/iOS captive portal detection endpoints
+    _server->on("/generate_204", HTTP_GET, []() {
+        _server->sendHeader("Location", "http://192.168.4.1/wifi", true);
+        _server->send(302, "text/plain", "");
+    });
+    _server->on("/hotspot-detect.html", HTTP_GET, []() {
+        _server->sendHeader("Location", "http://192.168.4.1/wifi", true);
+        _server->send(302, "text/plain", "");
+    });
+    _server->on("/connecttest.txt", HTTP_GET, []() {
+        _server->sendHeader("Location", "http://192.168.4.1/wifi", true);
+        _server->send(302, "text/plain", "");
+    });
+
+    DBG_INFO("web", "Captive portal started — all DNS queries redirect to 192.168.4.1");
+}
+
+void WebServerHAL::stopCaptivePortal() {
+    if (_dnsServer) {
+        _dnsServer->stop();
+        delete _dnsServer;
+        _dnsServer = nullptr;
+        DBG_INFO("web", "Captive portal stopped");
+    }
 }
 
 // ── mDNS ────────────────────────────────────────────────────────────────────

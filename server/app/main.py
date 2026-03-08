@@ -8,6 +8,7 @@ Follows tritium-sc patterns: lifespan, config, router registration.
 """
 
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -39,6 +40,7 @@ async def lifespan(app: FastAPI):
     # Initialize store
     store = FleetStore(settings.data_dir)
     app.state.store = store
+    app.state.start_time = time.time()
 
     # API key setup (backward compat)
     if settings.api_key:

@@ -3,6 +3,9 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 """Fleet statistics endpoints."""
 
+import time
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Request
 
 from ..services.device_service import enrich_devices
@@ -34,4 +37,23 @@ async def fleet_stats(request: Request):
         "total_profiles": len(store.list_profiles()),
         "profiled_devices": sum(1 for d in devices if d.get("profile_id")),
         "config_drift": sum(1 for d in devices if d.get("_config_drift_logged")),
+    }
+
+
+@router.get("/fleet/status")
+async def fleet_status(request: Request):
+    """Aggregated fleet health for the admin dashboard."""
+    store = request.app.state.store
+    devices = enrich_devices(store.list_devices())
+    total_ble = 0
+    for d in devices:
+        total_ble += len(d.get("ble_devices", []))
+    start_time = getattr(request.app.state, "start_time", time.time())
+    return {
+        "total_nodes": len(devices),
+        "online": sum(1 for d in devices if d.get("_online")),
+        "offline": sum(1 for d in devices if not d.get("_online")),
+        "total_ble_devices": total_ble,
+        "server_uptime_s": int(time.time() - start_time),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }

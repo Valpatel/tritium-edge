@@ -47,7 +47,8 @@ if needs_networking:
             "SD_MMC", "SD", "SPI",
         ]
         if needs_webserver:
-            needed_libs += ["WebServer", "ESPmDNS", "Update", "Hash"]
+            needed_libs += ["WebServer", "ESPmDNS", "DNSServer", "AsyncUDP",
+                            "Update", "Hash"]
         for lib in needed_libs:
             src_dir = os.path.join(libs_dir, lib, "src")
             if os.path.isdir(src_dir):
