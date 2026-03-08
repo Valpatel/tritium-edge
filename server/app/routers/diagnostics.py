@@ -48,8 +48,11 @@ async def submit_diagnostics(device_id: str, request: Request):
     body = await request.json()
     entry = _store_diag(device_id, body)
 
-    # Log anomalies as fleet events
+    # Persist to disk for historical analysis
     store = request.app.state.store
+    store.save_diagnostic(device_id, body)
+
+    # Log anomalies as fleet events
     anomalies = body.get("anomalies", [])
     if anomalies:
         detail = "; ".join(
@@ -91,6 +94,17 @@ async def get_device_diagnostics(device_id: str):
         "report": entry["report"],
         "anomaly_count": entry["anomaly_count"],
     }
+
+
+@router.get("/devices/{device_id}/diag/history")
+async def get_device_diagnostics_history(
+    device_id: str,
+    request: Request,
+    limit: int = Query(50),
+):
+    """Get diagnostic history for a device (persisted on disk)."""
+    store = request.app.state.store
+    return store.get_diagnostics(device_id, limit=limit)
 
 
 @router.get("/fleet/diagnostics")

@@ -210,3 +210,45 @@ def test_overwrite_diagnostic_report(client):
     data = resp.json()
     assert data["report"]["health"]["free_heap"] == 200000
     assert data["anomaly_count"] == 0
+
+
+def test_diagnostics_history(client):
+    """GET /api/devices/{id}/diag/history returns persisted reports."""
+    # Submit multiple reports
+    for i in range(3):
+        client.post("/api/devices/hist-node/diag", json={
+            "health": {"free_heap": 100000 + i * 10000},
+            "anomalies": [],
+        })
+
+    resp = client.get("/api/devices/hist-node/diag/history")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 3
+    # Chronological order
+    assert data[0]["health"]["free_heap"] == 100000
+    assert data[2]["health"]["free_heap"] == 120000
+
+
+def test_diagnostics_history_empty(client):
+    """GET history for unknown device returns empty list."""
+    resp = client.get("/api/devices/no-such-node/diag/history")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_diagnostics_history_with_anomalies(client):
+    """History entries include anomaly counts."""
+    client.post("/api/devices/anom-hist/diag", json={
+        "health": {"free_heap": 50000},
+        "anomalies": [
+            {"subsystem": "memory", "severity": 0.8},
+            {"subsystem": "wifi", "severity": 0.5},
+        ],
+    })
+
+    resp = client.get("/api/devices/anom-hist/diag/history")
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["anomaly_count"] == 2
+    assert len(data[0]["anomalies"]) == 2

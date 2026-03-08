@@ -221,6 +221,45 @@ class FleetStore:
         points.reverse()
         return points
 
+    # --- Diagnostics ---
+    def save_diagnostic(self, device_id: str, report: dict) -> None:
+        """Append a diagnostic report for a device (JSONL, one file per device per day)."""
+        self.safe_id(device_id)
+        diag_dir = self.data_dir / "diagnostics"
+        diag_dir.mkdir(parents=True, exist_ok=True)
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        p = diag_dir / f"{device_id}_{day}.jsonl"
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "health": report.get("health", {}),
+            "anomaly_count": len(report.get("anomalies", [])),
+            "anomalies": report.get("anomalies", [])[:10],
+        }
+        with open(p, "a") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+
+    def get_diagnostics(self, device_id: str, limit: int = 100) -> list[dict]:
+        """Get recent diagnostic reports for a device."""
+        self.safe_id(device_id)
+        diag_dir = self.data_dir / "diagnostics"
+        if not diag_dir.exists():
+            return []
+        points = []
+        files = sorted(diag_dir.glob(f"{device_id}_*.jsonl"), reverse=True)
+        for fp in files:
+            for line in reversed(fp.read_text().splitlines()):
+                if not line.strip():
+                    continue
+                try:
+                    points.append(json.loads(line))
+                    if len(points) >= limit:
+                        points.reverse()
+                        return points
+                except Exception:
+                    pass
+        points.reverse()
+        return points
+
     # --- Events ---
     def add_event(self, event_type: str, device_id: str = None,
                   detail: str = "", extra: dict = None) -> dict:
