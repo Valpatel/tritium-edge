@@ -41,6 +41,7 @@ public:
     void addCommissionPage();   // QR code commissioning at /commission
     void addSystemPage();       // Detailed hardware info at /system
     void addLogsPage();         // Live serial log viewer at /logs
+    void addMapPage();          // Leaflet.js slippy map at /map
     void addErrorPages();       // 404 and 500 error handlers
     void addAllPages();         // Register all built-in pages
 
@@ -58,6 +59,12 @@ public:
     void setDiagEventsProvider(DiagJsonProvider provider);
     void setDiagAnomaliesProvider(DiagJsonProvider provider);
     void setMeshProvider(MeshJsonProvider provider);
+
+    // GIS tile data providers (set from main.cpp to inject map tile data)
+    using GisTileProvider = std::function<uint8_t*(const char* layer, uint8_t z, uint32_t x, uint32_t y, size_t& outLen)>;
+    using GisLayerProvider = std::function<int(char* buf, size_t size)>;
+    void setGisTileProvider(GisTileProvider provider);
+    void setGisLayerProvider(GisLayerProvider provider);
 
     // Helpers for handlers
     void sendResponse(int code, const char* contentType, const char* body);
@@ -98,4 +105,6 @@ private:
     DiagJsonProvider _diagEventsProvider = nullptr;
     DiagJsonProvider _diagAnomaliesProvider = nullptr;
     MeshJsonProvider _meshProvider = nullptr;
+    GisTileProvider _gisTileProvider = nullptr;
+    GisLayerProvider _gisLayerProvider = nullptr;
 };

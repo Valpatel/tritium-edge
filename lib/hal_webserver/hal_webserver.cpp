@@ -19,6 +19,7 @@ void WebServerHAL::addBleViewer() {}
 void WebServerHAL::addCommissionPage() {}
 void WebServerHAL::addSystemPage() {}
 void WebServerHAL::addLogsPage() {}
+void WebServerHAL::addMapPage() {}
 void WebServerHAL::addErrorPages() {}
 void WebServerHAL::addAllPages() {}
 void WebServerHAL::captureLog(const char*) {}
@@ -29,6 +30,8 @@ void WebServerHAL::setDiagHealthProvider(DiagJsonProvider) {}
 void WebServerHAL::setDiagEventsProvider(DiagJsonProvider) {}
 void WebServerHAL::setDiagAnomaliesProvider(DiagJsonProvider) {}
 void WebServerHAL::setMeshProvider(MeshJsonProvider) {}
+void WebServerHAL::setGisTileProvider(GisTileProvider) {}
+void WebServerHAL::setGisLayerProvider(GisLayerProvider) {}
 void WebServerHAL::startCaptivePortal() {}
 void WebServerHAL::stopCaptivePortal() {}
 void WebServerHAL::sendResponse(int, const char*, const char*) {}
@@ -124,6 +127,7 @@ static const char NAV_HTML[] PROGMEM = R"rawliteral(
   <a href="/config">Config</a>
   <a href="/files">Files</a>
   <a href="/commission">Commission</a>
+  <a href="/map">Map</a>
   <a href="/api/status">API</a>
 </div>
 )rawliteral";
@@ -423,6 +427,14 @@ void WebServerHAL::setDiagAnomaliesProvider(DiagJsonProvider provider) {
 
 void WebServerHAL::setMeshProvider(MeshJsonProvider provider) {
     _meshProvider = provider;
+}
+
+void WebServerHAL::setGisTileProvider(GisTileProvider provider) {
+    _gisTileProvider = provider;
+}
+
+void WebServerHAL::setGisLayerProvider(GisLayerProvider provider) {
+    _gisLayerProvider = provider;
 }
 
 void WebServerHAL::sendResponse(int code, const char* contentType, const char* body) {
@@ -2081,6 +2093,131 @@ static const char ERROR_HTML[] PROGMEM = R"rawliteral(
 </body></html>
 )rawliteral";
 
+// ── Map page (/map) — Leaflet.js slippy map with local tile serving ──────
+
+static const char MAP_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Map — Tritium Edge</title>
+%THEME%
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+  crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+  crossorigin=""></script>
+<style>
+#map{width:100%;height:calc(100vh - 120px);border:1px solid #00ffd044;
+  border-radius:6px;margin-top:8px;background:#0a0a0a}
+.leaflet-control-layers{background:#111!important;color:#c0c0c0!important;
+  border:1px solid #00ffd044!important;border-radius:4px!important}
+.leaflet-control-layers label{color:#c0c0c0!important}
+.leaflet-control-layers-selector{accent-color:#00ffd0}
+.leaflet-control-zoom a{background:#111!important;color:#00ffd0!important;
+  border-color:#00ffd044!important}
+.leaflet-control-zoom a:hover{background:#1a1a1a!important;color:#66ffe8!important}
+.leaflet-bar{border:1px solid #00ffd044!important}
+.leaflet-tile-pane{filter:brightness(0.85) contrast(1.1)}
+#no-data{display:none;text-align:center;padding:60px 20px;color:#666}
+#no-data h2{color:#ff3366;margin-bottom:12px}
+.leaflet-control-attribution{background:rgba(10,10,10,0.8)!important;
+  color:#666!important}
+.leaflet-control-attribution a{color:#00ffd0!important}
+</style>
+</head><body>
+%NAV%
+<h1>Offline Map</h1>
+<div id="no-data">
+  <h2>No Tile Data Available</h2>
+  <p>Insert an SD card with GIS tiles in OSM slippy-map format.</p>
+  <p>Expected path: <code>/sdcard/gis/{layer}/{z}/{x}/{y}.png</code></p>
+</div>
+<div id="map"></div>
+<script>
+(function(){
+  var map = L.map('map',{
+    center:[39.8283,-98.5795], zoom:4,
+    zoomControl:true, attributionControl:true
+  });
+  var mapDiv = document.getElementById('map');
+  var noData = document.getElementById('no-data');
+
+  fetch('/api/gis/layers').then(function(r){return r.json()}).then(function(layers){
+    if(!layers||layers.length===0){
+      mapDiv.style.display='none';
+      noData.style.display='block';
+      return;
+    }
+    var baseLayers={};
+    var first=true;
+    layers.forEach(function(ly){
+      var tileUrl='/api/gis/tiles/'+ly.name+'/{z}/{x}/{y}.png';
+      var layer=L.tileLayer(tileUrl,{
+        minZoom:ly.zoom_min||0, maxZoom:ly.zoom_max||18,
+        attribution:'Tritium GIS &mdash; '+ly.name,
+        errorTileUrl:''
+      });
+      baseLayers[ly.name]=layer;
+      if(first){
+        layer.addTo(map);
+        if(ly.bounds){
+          var b=ly.bounds;
+          map.fitBounds([[b.lat_min,b.lon_min],[b.lat_max,b.lon_max]]);
+        }
+        first=false;
+      }
+    });
+    if(layers.length>1){
+      L.control.layers(baseLayers,null,{position:'topright',collapsed:false}).addTo(map);
+    }
+  }).catch(function(){
+    mapDiv.style.display='none';
+    noData.style.display='block';
+  });
+})();
+</script>
+</body></html>
+)rawliteral";
+
+void WebServerHAL::addMapPage() {
+    if (!_server) return;
+
+    WebServerHAL* self = this;
+
+    // GET /map — Leaflet.js slippy map page
+    _server->on("/map", HTTP_GET, [self]() {
+        self->_requestCount++;
+
+        String html(FPSTR(MAP_HTML));
+        html.replace("%THEME%", FPSTR(THEME_CSS));
+        html.replace("%NAV%",   FPSTR(NAV_HTML));
+        _server->send(200, "text/html", html);
+    });
+
+    // GET /api/gis/layers — JSON array of available layers
+    _server->on("/api/gis/layers", HTTP_GET, [self]() {
+        self->_requestCount++;
+
+        if (self->_gisLayerProvider) {
+            static char buf[2048];
+            int len = self->_gisLayerProvider(buf, sizeof(buf));
+            if (len > 0) {
+                _server->send(200, "application/json", buf);
+                return;
+            }
+        }
+        _server->send(200, "application/json", "[]");
+    });
+
+    // Note: Tile requests at /api/gis/tiles/{layer}/{z}/{x}/{y}.png are
+    // handled in addErrorPages() onNotFound handler, since WebServer.h
+    // does not support path parameter matching.
+
+    DBG_INFO("web", "Map page added at /map");
+}
+
+// ── Error pages (/404, /500) ──────────────────────────────────────────────
+
 void WebServerHAL::addErrorPages() {
     if (!_server) return;
 
@@ -2088,6 +2225,42 @@ void WebServerHAL::addErrorPages() {
 
     _server->onNotFound([self]() {
         self->_requestCount++;
+
+        // Serve GIS tile requests: /api/gis/tiles/{layer}/{z}/{x}/{y}.png
+        String uri = _server->uri();
+        if (uri.startsWith("/api/gis/tiles/") && self->_gisTileProvider) {
+            const char* path = uri.c_str() + 15; // skip "/api/gis/tiles/"
+
+            // Parse layer name (up to next '/')
+            const char* slash1 = strchr(path, '/');
+            if (slash1) {
+                char layer[32] = {0};
+                size_t layerLen = slash1 - path;
+                if (layerLen >= sizeof(layer)) layerLen = sizeof(layer) - 1;
+                memcpy(layer, path, layerLen);
+
+                // Parse z/x/y.png
+                int z = 0, x = 0, y = 0;
+                if (sscanf(slash1, "/%d/%d/%d.png", &z, &x, &y) == 3) {
+                    size_t tileLen = 0;
+                    uint8_t* tileData = self->_gisTileProvider(
+                        layer, (uint8_t)z, (uint32_t)x, (uint32_t)y, tileLen);
+
+                    if (tileData && tileLen > 0) {
+                        _server->sendHeader("Cache-Control",
+                                            "public, max-age=86400");
+                        _server->send_P(200, "image/png",
+                                        (const char*)tileData, tileLen);
+                        free(tileData);
+                        return;
+                    }
+                    _server->send(404, "text/plain", "Tile not found");
+                    return;
+                }
+            }
+            _server->send(400, "text/plain", "Invalid tile path");
+            return;
+        }
 
         // If captive portal is active, redirect instead of 404
         if (_dnsServer) {
@@ -2124,6 +2297,7 @@ void WebServerHAL::addAllPages() {
     addCommissionPage();
     addSystemPage();
     addLogsPage();
+    addMapPage();
     addErrorPages();       // Must be last — registers onNotFound handler
     DBG_INFO("web", "All pages registered");
 }

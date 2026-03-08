@@ -79,6 +79,16 @@ static bool _espnow_enabled = true;
 static bool _espnow_enabled = false;
 #endif
 
+// Acoustic modem over audio codec (speaker/mic FSK)
+#if defined(HAS_AUDIO_CODEC) && HAS_AUDIO_CODEC && __has_include("hal_acoustic_modem.h")
+#include "hal_audio.h"
+#include "hal_acoustic_modem.h"
+static AudioHAL _audio;
+static bool _audio_ok = false;
+static AcousticModem _acoustic_modem;
+static bool _acoustic_modem_ok = false;
+#endif
+
 // --- App selection via build flag ---
 #if defined(APP_STARFIELD)
 #include "starfield_app.h"
@@ -117,7 +127,7 @@ static StarfieldApp app_instance;
 static App* app = &app_instance;
 
 // Serial command buffer
-static char _cmd_buf[128];
+static char _cmd_buf[512];
 static uint8_t _cmd_idx = 0;
 
 static void handleSerialCommands() {
@@ -202,6 +212,106 @@ static void handleSerialCommands() {
                         devs[i].rssi, (unsigned long)devs[i].seen_count,
                         devs[i].is_known ? "[KNOWN] " : "",
                         devs[i].name);
+                }
+            }
+#endif
+#if defined(HAS_AUDIO_CODEC) && HAS_AUDIO_CODEC && __has_include("hal_acoustic_modem.h")
+            else if (strncmp(_cmd_buf, "MODEM_SEND ", 11) == 0) {
+                if (!_acoustic_modem_ok) {
+                    Serial.printf("[modem] Not initialized\n");
+                } else {
+                    // Parse hex string to bytes
+                    const char* hex = _cmd_buf + 11;
+                    size_t hex_len = strlen(hex);
+                    size_t byte_len = hex_len / 2;
+                    if (byte_len == 0 || (hex_len % 2) != 0) {
+                        Serial.printf("[modem] Usage: MODEM_SEND <hex> (even number of hex chars)\n");
+                    } else {
+                        uint8_t tx_buf[256];
+                        if (byte_len > sizeof(tx_buf)) byte_len = sizeof(tx_buf);
+                        bool parse_ok = true;
+                        for (size_t i = 0; i < byte_len; i++) {
+                            char hi = hex[i * 2], lo = hex[i * 2 + 1];
+                            auto hexval = [](char c) -> int {
+                                if (c >= '0' && c <= '9') return c - '0';
+                                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                                return -1;
+                            };
+                            int h = hexval(hi), l = hexval(lo);
+                            if (h < 0 || l < 0) { parse_ok = false; break; }
+                            tx_buf[i] = (uint8_t)((h << 4) | l);
+                        }
+                        if (!parse_ok) {
+                            Serial.printf("[modem] Invalid hex characters\n");
+                        } else {
+                            Serial.printf("[modem] Sending %u bytes...\n", (unsigned)byte_len);
+                            int sent = _acoustic_modem.send(tx_buf, byte_len);
+                            Serial.printf("[modem] Sent: %d bytes\n", sent);
+                        }
+                    }
+                }
+            }
+            else if (strncmp(_cmd_buf, "MODEM_LISTEN", 12) == 0) {
+                if (!_acoustic_modem_ok) {
+                    Serial.printf("[modem] Not initialized\n");
+                } else {
+                    uint32_t timeout_ms = 5000;  // default 5s
+                    if (_cmd_buf[12] == ' ' && _cmd_buf[13] != '\0') {
+                        timeout_ms = (uint32_t)atol(_cmd_buf + 13);
+                        if (timeout_ms == 0) timeout_ms = 5000;
+                    }
+                    Serial.printf("[modem] Listening for %lu ms...\n", (unsigned long)timeout_ms);
+                    uint8_t rx_buf[256];
+                    int len = _acoustic_modem.receive(rx_buf, sizeof(rx_buf), timeout_ms);
+                    if (len > 0) {
+                        Serial.printf("[modem] Received %d bytes: ", len);
+                        for (int i = 0; i < len; i++) Serial.printf("%02X", rx_buf[i]);
+                        Serial.printf("\n");
+                    } else if (len == 0) {
+                        Serial.printf("[modem] Timeout — no data received\n");
+                    } else {
+                        Serial.printf("[modem] Error (CRC fail or decode error)\n");
+                    }
+                }
+            }
+            else if (strcmp(_cmd_buf, "MODEM_STATS") == 0) {
+                if (!_acoustic_modem_ok) {
+                    Serial.printf("[modem] Not initialized\n");
+                } else {
+                    const auto& s = _acoustic_modem.stats();
+                    Serial.printf("[modem] frames_sent=%lu frames_received=%lu "
+                                  "crc_errors=%lu sync_timeouts=%lu snr=%.1f dB\n",
+                                  (unsigned long)s.frames_sent,
+                                  (unsigned long)s.frames_received,
+                                  (unsigned long)s.crc_errors,
+                                  (unsigned long)s.sync_timeouts,
+                                  s.last_snr_db);
+                }
+            }
+            else if (strcmp(_cmd_buf, "MODEM_TEST") == 0) {
+                if (!_acoustic_modem_ok) {
+                    Serial.printf("[modem] Not initialized\n");
+                } else {
+                    const uint8_t test_msg[] = "TRITIUM";
+                    Serial.printf("[modem] Self-test: sending 'TRITIUM'...\n");
+                    int sent = _acoustic_modem.send(test_msg, sizeof(test_msg) - 1);
+                    Serial.printf("[modem] Sent %d bytes, listening for echo...\n", sent);
+                    uint8_t rx_buf[256];
+                    int len = _acoustic_modem.receive(rx_buf, sizeof(rx_buf), 3000);
+                    if (len > 0) {
+                        rx_buf[len < 255 ? len : 255] = '\0';
+                        Serial.printf("[modem] Echo received: '%s' (%d bytes)\n",
+                                      (const char*)rx_buf, len);
+                    } else {
+                        Serial.printf("[modem] No echo (timeout or error)\n");
+                    }
+                    const auto& s = _acoustic_modem.stats();
+                    Serial.printf("[modem] Stats: sent=%lu recv=%lu crc_err=%lu snr=%.1f dB\n",
+                                  (unsigned long)s.frames_sent,
+                                  (unsigned long)s.frames_received,
+                                  (unsigned long)s.crc_errors,
+                                  s.last_snr_db);
                 }
             }
 #endif
@@ -433,6 +543,20 @@ static void services_init() {
             _espnow.meshDiscovery();
         } else {
             Serial.printf("[tritium] ESP-NOW Mesh: init failed\n");
+        }
+    }
+#endif
+
+// Acoustic modem — init audio codec + FSK modem on boards with audio hardware
+#if defined(HAS_AUDIO_CODEC) && HAS_AUDIO_CODEC && __has_include("hal_acoustic_modem.h")
+    {
+        _audio_ok = _audio.initLgfx(0);
+        Serial.printf("[tritium] Audio codec: %s\n", _audio_ok ? "OK" : "FAIL");
+        if (_audio_ok) {
+            AcousticModemConfig modem_cfg;
+            _acoustic_modem_ok = _acoustic_modem.init(_audio, modem_cfg);
+            Serial.printf("[tritium] Acoustic modem: %s\n",
+                          _acoustic_modem_ok ? "OK" : "FAIL");
         }
     }
 #endif
