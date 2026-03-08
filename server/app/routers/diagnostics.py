@@ -17,6 +17,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from ..services.correlation_service import correlate_events
 from ..services.diaglog_service import DiagLogStore
 
 from tritium_lib.models.diagnostics import (
@@ -500,4 +501,83 @@ async def fleet_heap_trends(
         "leak_suspects": sum(1 for t in trends if t.leak_suspected),
         "trends": [t.model_dump() for t in trends],
         "threshold_per_hour": threshold,
+    }
+
+
+@router.get("/fleet/correlations")
+async def fleet_correlations():
+    """Detect cross-device event correlations in the fleet.
+
+    Analyzes diagnostic data for:
+    - Synchronized reboots (3+ devices within 5min)
+    - Cascading failures (errors propagating between devices)
+    - Environmental correlations (I2C/temp issues across devices)
+    - Time-of-day periodic patterns
+    """
+    # Build snapshot list from diagnostic cache
+    snapshots = []
+    for device_id, entry in _diag_cache.items():
+        report = entry["report"]
+        health = report.get("health", {})
+        events = []
+        for a in entry.get("anomalies", []):
+            events.append({
+                "timestamp": a.get("detected_at", entry["received_at"]),
+                "type": a.get("subsystem", "unknown"),
+                "description": a.get("description", ""),
+                "severity": a.get("severity", a.get("score", 0.5)),
+            })
+        snapshots.append({
+            "device_id": device_id,
+            "timestamp": entry["received_at"],
+            "reboot_count": health.get("reboot_count", 0),
+            "uptime_s": health.get("uptime_s", 0),
+            "events": events,
+        })
+
+    correlations = correlate_events(snapshots)
+
+    return {
+        "total_correlations": len(correlations),
+        "correlations": correlations,
+    }
+
+
+@router.get("/fleet/topology")
+async def fleet_topology(request: Request):
+    """Fleet mesh topology — nodes and links from ESP-NOW mesh data.
+
+    Builds a topology graph from device diagnostic data including
+    mesh peer information.
+    """
+    store = request.app.state.store
+    devices = store.list_devices()
+
+    nodes = []
+    links = []
+    for d in devices:
+        did = d.get("device_id", d.get("id", ""))
+        nodes.append(did)
+
+        # Extract mesh peer data from diagnostic cache if available
+        entry = _diag_cache.get(did)
+        if entry:
+            health = entry["report"].get("health", {})
+            mesh = health.get("mesh", {})
+            peers = mesh.get("peers", 0)
+            # We don't have peer MACs in the health JSON yet,
+            # but we can represent the mesh stats
+            if peers > 0:
+                links.append({
+                    "source": did,
+                    "peers": peers,
+                    "routes": mesh.get("routes", 0),
+                    "tx": mesh.get("tx", 0),
+                    "rx": mesh.get("rx", 0),
+                })
+
+    return {
+        "total_nodes": len(nodes),
+        "nodes": nodes,
+        "links": links,
     }
