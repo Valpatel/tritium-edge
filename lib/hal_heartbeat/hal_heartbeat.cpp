@@ -79,6 +79,21 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #define HAS_DIAGLOG 0
 #endif
 
+// ESP-NOW mesh status — use ENABLE_ESPNOW build flag
+#if defined(ENABLE_ESPNOW)
+#define HAS_ESPNOW 1
+#else
+#define HAS_ESPNOW 0
+#endif
+
+// Optional LoRa — include status in heartbeat
+#if __has_include("hal_lora.h")
+#include "hal_lora.h"
+#define HAS_LORA 1
+#else
+#define HAS_LORA 0
+#endif
+
 namespace hal_heartbeat {
 
 // Internal state
@@ -333,6 +348,30 @@ bool send_now() {
                     ",\"diag_event_count\":%d,\"diag_boot_count\":%u",
                     diaglog_count(), (unsigned)diaglog_boot_count());
 #endif
+
+    // Append transport status array — lists all available communication channels
+    pos += snprintf(body + pos, sizeof(body) - pos,
+                    ",\"transports\":[{\"type\":\"wifi\",\"state\":\"available\",\"rssi\":%d}",
+                    WiFi.RSSI());
+#if HAS_ESPNOW
+    pos += snprintf(body + pos, sizeof(body) - pos,
+                    ",{\"type\":\"esp_now\",\"state\":\"available\"}");
+#endif
+#if HAS_BLE_SCANNER
+    if (hal_ble_scanner::is_active()) {
+        pos += snprintf(body + pos, sizeof(body) - pos,
+                        ",{\"type\":\"ble\",\"state\":\"available\"}");
+    }
+#endif
+#if HAS_LORA
+    if (hal_lora::is_active()) {
+        const char* mode = hal_lora::get_mode();
+        int lora_rssi = hal_lora::get_last_rssi();
+        pos += snprintf(body + pos, sizeof(body) - pos,
+                        ",{\"type\":\"lora\",\"state\":\"available\",\"rssi\":%d}", lora_rssi);
+    }
+#endif
+    pos += snprintf(body + pos, sizeof(body) - pos, "]");
 
     // Close JSON object
     if (pos < (int)sizeof(body) - 1) {
