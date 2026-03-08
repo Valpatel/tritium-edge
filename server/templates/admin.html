@@ -693,6 +693,9 @@ body::after {
     <div class="nav-item" data-view="provision">
       <span class="icon">&#9881;</span> Provision
     </div>
+    <div class="nav-item" data-view="commands">
+      <span class="icon">&#9655;</span> Commands
+    </div>
     <div class="nav-item" data-view="diagnostics">
       <span class="icon">&#9762;</span> Diagnostics
     </div>
@@ -863,6 +866,41 @@ body::after {
 
       <div class="section-header">Commissioned Nodes</div>
       <div id="prov-commissioned"></div>
+    </div>
+
+    <!-- COMMANDS VIEW -->
+    <div id="view-commands" class="view">
+      <div class="stat-cards" id="cmd-stats"></div>
+      <div class="section-header">Pending Commands</div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Device</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Expires</th>
+            <th>Payload</th>
+          </tr>
+        </thead>
+        <tbody id="cmd-pending-tbody"></tbody>
+      </table>
+      <div class="section-header">Command History</div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Device</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Expires</th>
+            <th>Payload</th>
+          </tr>
+        </thead>
+        <tbody id="cmd-history-tbody"></tbody>
+      </table>
     </div>
 
     <!-- EVENTS VIEW -->
@@ -1062,6 +1100,7 @@ async function refreshView() {
     case 'map': await refreshMap(); break;
     case 'fleet-ota': await refreshFleetOTA(); break;
     case 'provision': await refreshProvision(); break;
+    case 'commands': await refreshCommands(); break;
     case 'diagnostics': await refreshDiagnostics(); break;
   }
   await refreshTopBar();
@@ -1172,7 +1211,36 @@ function renderDeviceTable() {
           '<div><span class="detail-label">Capabilities:</span> <span class="detail-value">' + ((d.capabilities || []).join(', ') || '--') + '</span></div>' +
           '<div><span class="detail-label">BLE Devices:</span> <span class="detail-value">' + (d.ble_devices || []).length + '</span></div>' +
         '</div>' +
-        '<div style="margin-top:10px"><button class="ota-btn" style="padding:3px 10px;font-size:10px" onclick="loadDeviceTelemetry(\'' + did + '\')">Load Telemetry</button>' +
+        '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">' +
+          '<span class="detail-label" style="display:block;margin-bottom:6px;color:var(--cyan);text-transform:uppercase;letter-spacing:1px;font-size:10px">Device Commands</span>' +
+          '<div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">' +
+            '<button class="ota-btn" style="padding:4px 12px;font-size:10px;border-color:var(--red);color:var(--red)" onclick="event.stopPropagation();rebootDevice(\'' + did + '\')">Reboot</button>' +
+            '<button class="ota-btn" style="padding:4px 12px;font-size:10px" onclick="event.stopPropagation();toggleCmdForm(\'' + did + '\')">Send Command</button>' +
+            '<button class="ota-btn" style="padding:4px 12px;font-size:10px" onclick="event.stopPropagation();loadDeviceCommands(\'' + did + '\')">View Commands</button>' +
+          '</div>' +
+          '<div id="cmd-form-' + did + '" style="display:none;margin-top:8px;padding:10px;background:#080808;border:1px solid var(--border);border-radius:4px" onclick="event.stopPropagation()">' +
+            '<div class="form-row">' +
+              '<select class="form-select" id="cmd-type-' + did + '">' +
+                '<option value="reboot">reboot</option>' +
+                '<option value="sleep">sleep</option>' +
+                '<option value="wake">wake</option>' +
+                '<option value="config_update">config_update</option>' +
+                '<option value="diag">diag</option>' +
+                '<option value="identify">identify</option>' +
+              '</select>' +
+              '<select class="form-select" id="cmd-ttl-' + did + '">' +
+                '<option value="60">TTL: 60s</option>' +
+                '<option value="300" selected>TTL: 300s</option>' +
+                '<option value="3600">TTL: 3600s</option>' +
+              '</select>' +
+              '<button class="ota-btn" style="padding:4px 12px;font-size:10px;background:rgba(0,255,208,0.1);border-color:var(--cyan)" onclick="sendDeviceCommand(\'' + did + '\')">Send</button>' +
+            '</div>' +
+            '<textarea class="form-input" id="cmd-payload-' + did + '" placeholder=\'{"key": "value"}\' style="width:100%;height:50px;margin-top:6px;resize:vertical;font-size:10px"></textarea>' +
+            '<div id="cmd-status-' + did + '" style="margin-top:4px;font-size:10px;color:var(--text-dim)"></div>' +
+          '</div>' +
+          '<div id="cmd-list-' + did + '" style="margin-top:8px"></div>' +
+        '</div>' +
+        '<div style="margin-top:10px"><button class="ota-btn" style="padding:3px 10px;font-size:10px" onclick="event.stopPropagation();loadDeviceTelemetry(\'' + did + '\')">Load Telemetry</button>' +
         '<div id="telemetry-' + did + '" style="margin-top:8px"></div></div>' +
         (d.sensors ? '<div style="margin-top:10px"><span class="detail-label">Sensors:</span><pre style="color:var(--text);margin-top:4px;font-size:10px;max-height:150px;overflow:auto">' + escHtml(JSON.stringify(d.sensors, null, 2)) + '</pre></div>' : '') +
         ((d.ble_devices || []).length > 0 ?
@@ -1923,6 +1991,155 @@ async function loadDiagHistory(deviceId) {
   });
 }
 
+// ========================================================================
+// DEVICE COMMANDS
+// ========================================================================
+async function rebootDevice(deviceId) {
+  if (!confirm('Reboot device ' + deviceId + '?')) return;
+  var statusEl = document.getElementById('cmd-status-' + deviceId);
+  try {
+    var r = await fetch('/api/devices/' + encodeURIComponent(deviceId) + '/reboot', { method: 'POST' });
+    var data = await r.json();
+    if (r.ok) {
+      if (statusEl) { statusEl.textContent = 'Reboot scheduled'; statusEl.style.color = 'var(--green)'; }
+    } else {
+      if (statusEl) { statusEl.textContent = 'Error: ' + (data.detail || JSON.stringify(data)); statusEl.style.color = 'var(--red)'; }
+    }
+  } catch(err) {
+    if (statusEl) { statusEl.textContent = 'Failed: ' + err.message; statusEl.style.color = 'var(--red)'; }
+  }
+}
+
+function toggleCmdForm(deviceId) {
+  var el = document.getElementById('cmd-form-' + deviceId);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function sendDeviceCommand(deviceId) {
+  var typeEl = document.getElementById('cmd-type-' + deviceId);
+  var ttlEl = document.getElementById('cmd-ttl-' + deviceId);
+  var payloadEl = document.getElementById('cmd-payload-' + deviceId);
+  var statusEl = document.getElementById('cmd-status-' + deviceId);
+
+  var cmdType = typeEl.value;
+  var ttl = parseInt(ttlEl.value, 10);
+  var payload = {};
+  var payloadText = payloadEl.value.trim();
+  if (payloadText) {
+    try {
+      payload = JSON.parse(payloadText);
+    } catch(e) {
+      statusEl.textContent = 'Invalid JSON payload';
+      statusEl.style.color = 'var(--red)';
+      return;
+    }
+  }
+
+  statusEl.textContent = 'Sending...';
+  statusEl.style.color = 'var(--yellow)';
+
+  try {
+    var r = await fetch('/api/devices/' + encodeURIComponent(deviceId) + '/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: cmdType, payload: payload, ttl_s: ttl }),
+    });
+    var data = await r.json();
+    if (r.ok) {
+      statusEl.textContent = 'Command sent: ' + data.id + ' (' + data.type + ')';
+      statusEl.style.color = 'var(--green)';
+      payloadEl.value = '';
+    } else {
+      statusEl.textContent = 'Error: ' + (data.detail || JSON.stringify(data));
+      statusEl.style.color = 'var(--red)';
+    }
+  } catch(err) {
+    statusEl.textContent = 'Failed: ' + err.message;
+    statusEl.style.color = 'var(--red)';
+  }
+}
+
+async function loadDeviceCommands(deviceId) {
+  var el = document.getElementById('cmd-list-' + deviceId);
+  if (!el) return;
+  el.innerHTML = '<span style="color:var(--text-dim)">Loading commands...</span>';
+  var cmds = await fetchJSON('/api/devices/' + encodeURIComponent(deviceId) + '/commands');
+  if (!cmds || cmds.length === 0) {
+    el.innerHTML = '<span style="color:var(--text-dim)">No commands for this device.</span>';
+    return;
+  }
+  el.innerHTML = '<table class="data-table" style="font-size:10px;margin-top:4px">' +
+    '<thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Created</th><th>Expires</th></tr></thead><tbody>' +
+    cmds.map(function(c) {
+      var statusColor = c.status === 'pending' ? 'var(--yellow)' : c.status === 'delivered' ? 'var(--green)' : c.status === 'expired' ? 'var(--red)' : 'var(--text-dim)';
+      return '<tr>' +
+        '<td style="color:var(--cyan)">' + escHtml(c.id || '--') + '</td>' +
+        '<td>' + escHtml(c.type) + '</td>' +
+        '<td style="color:' + statusColor + '">' + escHtml(c.status || '--') + '</td>' +
+        '<td>' + formatEventTime(c.created_at) + '</td>' +
+        '<td>' + formatEventTime(c.expires_at) + '</td>' +
+      '</tr>';
+    }).join('') +
+    '</tbody></table>';
+}
+
+function cmdStatusBadge(status) {
+  if (status === 'pending') return '<span style="color:var(--yellow);font-weight:bold;text-transform:uppercase;font-size:10px;letter-spacing:1px">PENDING</span>';
+  if (status === 'delivered') return '<span style="color:var(--green);font-weight:bold;text-transform:uppercase;font-size:10px;letter-spacing:1px">DELIVERED</span>';
+  if (status === 'expired') return '<span style="color:var(--red);font-weight:bold;text-transform:uppercase;font-size:10px;letter-spacing:1px">EXPIRED</span>';
+  return '<span style="color:var(--text-dim);font-weight:bold;text-transform:uppercase;font-size:10px;letter-spacing:1px">' + escHtml(status || 'UNKNOWN') + '</span>';
+}
+
+async function refreshCommands() {
+  var cmds = await fetchJSON('/api/commands');
+  if (!cmds) cmds = [];
+
+  var pending = cmds.filter(function(c) { return c.status === 'pending'; });
+  var history = cmds.filter(function(c) { return c.status !== 'pending'; });
+
+  document.getElementById('cmd-stats').innerHTML =
+    '<div class="stat-card"><div class="label">Total Commands</div><div class="value">' + cmds.length + '</div></div>' +
+    '<div class="stat-card"><div class="label">Pending</div><div class="value yellow">' + pending.length + '</div></div>' +
+    '<div class="stat-card"><div class="label">Delivered</div><div class="value green">' + cmds.filter(function(c){return c.status==='delivered'}).length + '</div></div>' +
+    '<div class="stat-card"><div class="label">Expired</div><div class="value red">' + cmds.filter(function(c){return c.status==='expired'}).length + '</div></div>';
+
+  var pendingTbody = document.getElementById('cmd-pending-tbody');
+  if (pending.length === 0) {
+    pendingTbody.innerHTML = '<tr><td colspan="7" class="loading">No pending commands.</td></tr>';
+  } else {
+    pendingTbody.innerHTML = pending.map(function(c) {
+      var payloadStr = c.payload && Object.keys(c.payload).length > 0 ? JSON.stringify(c.payload) : '--';
+      return '<tr>' +
+        '<td style="color:var(--cyan)">' + escHtml(c.id || '--') + '</td>' +
+        '<td style="color:var(--cyan)">' + escHtml(c.device_id) + '</td>' +
+        '<td>' + escHtml(c.type) + '</td>' +
+        '<td>' + cmdStatusBadge(c.status) + '</td>' +
+        '<td>' + formatEventTime(c.created_at) + '</td>' +
+        '<td>' + formatEventTime(c.expires_at) + '</td>' +
+        '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(payloadStr) + '">' + escHtml(payloadStr) + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  var historyTbody = document.getElementById('cmd-history-tbody');
+  if (history.length === 0) {
+    historyTbody.innerHTML = '<tr><td colspan="7" class="loading">No command history.</td></tr>';
+  } else {
+    historyTbody.innerHTML = history.map(function(c) {
+      var payloadStr = c.payload && Object.keys(c.payload).length > 0 ? JSON.stringify(c.payload) : '--';
+      return '<tr>' +
+        '<td style="color:var(--cyan)">' + escHtml(c.id || '--') + '</td>' +
+        '<td style="color:var(--cyan)">' + escHtml(c.device_id) + '</td>' +
+        '<td>' + escHtml(c.type) + '</td>' +
+        '<td>' + cmdStatusBadge(c.status) + '</td>' +
+        '<td>' + formatEventTime(c.created_at) + '</td>' +
+        '<td>' + formatEventTime(c.expires_at) + '</td>' +
+        '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(payloadStr) + '">' + escHtml(payloadStr) + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+}
+
 // Plugin Nav
 async function loadPluginNav() {
   const pages = await fetchJSON('/api/plugins/pages');
@@ -1989,6 +2206,9 @@ function handleWsEvent(msg) {
   }
   if (type === 'ota_started' || type === 'ota_result') {
     if (currentView === 'ota' || currentView === 'fleet-ota') refreshView();
+  }
+  if (type === 'command_sent' || type === 'reboot_scheduled') {
+    if (currentView === 'commands') refreshCommands();
   }
   // Always refresh top bar on device events
   if (['device_heartbeat', 'device_registered', 'device_offline'].includes(type)) {

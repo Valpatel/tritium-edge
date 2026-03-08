@@ -93,6 +93,43 @@ async def send_command(device_id: str, body: CommandRequest, request: Request):
     return cmd
 
 
+@router.get("/devices/{device_id}/commands")
+async def get_device_commands(device_id: str, request: Request):
+    """Get all commands (pending + history) for a device."""
+    store = _get_store(request)
+    device = store.get_device(device_id)
+    if not device:
+        raise HTTPException(404, "Device not found")
+    p = store.commands_dir / f"{device_id}.json"
+    if not p.exists():
+        return []
+    import json as _json
+    try:
+        return _json.loads(p.read_text())
+    except Exception:
+        return []
+
+
+@router.get("/commands")
+async def list_all_commands(request: Request):
+    """Get all commands across all devices."""
+    store = _get_store(request)
+    import json as _json
+    all_commands = []
+    for f in sorted(store.commands_dir.glob("*.json")):
+        device_id = f.stem
+        try:
+            commands = _json.loads(f.read_text())
+            for cmd in commands:
+                cmd["device_id"] = device_id
+                all_commands.append(cmd)
+        except Exception:
+            pass
+    # Sort by created_at descending
+    all_commands.sort(key=lambda c: c.get("created_at", ""), reverse=True)
+    return all_commands
+
+
 @router.get("/devices/{device_id}/telemetry")
 async def get_device_telemetry(device_id: str, request: Request, limit: int = 60):
     """Get recent telemetry time-series for a device."""
