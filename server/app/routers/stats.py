@@ -190,12 +190,29 @@ async def fleet_dashboard(request: Request):
             else:
                 alert_counts["info"] += 1
 
+    # Diagnostic health classification (from diag cache)
+    from .diagnostics import _diag_cache, _cache_entry_to_report
+    from tritium_lib.models.diagnostics import classify_node_health, aggregate_fleet_health
+
+    diag_reports = []
+    for device_id, entry in _diag_cache.items():
+        diag_reports.append(_cache_entry_to_report(device_id, entry))
+
+    diag_summary = aggregate_fleet_health(diag_reports) if diag_reports else None
+
     return {
         "health": {
             "score": round(health_score, 3),
             "total_nodes": fleet.total_nodes,
             "online_count": fleet.online_count,
             "ble_total": fleet.ble_total,
+        },
+        "diagnostics": {
+            "total_nodes": diag_summary.total_nodes if diag_summary else 0,
+            "healthy_nodes": diag_summary.healthy_nodes if diag_summary else 0,
+            "warning_nodes": diag_summary.warning_nodes if diag_summary else 0,
+            "critical_nodes": diag_summary.critical_nodes if diag_summary else 0,
+            "health_score": round(diag_summary.health_score, 3) if diag_summary else 1.0,
         },
         "config": {
             "synced_count": config_status.synced_count,
