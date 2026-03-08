@@ -5,6 +5,10 @@
 
 from datetime import datetime, timezone
 
+from tritium_lib.models import DeviceHeartbeat
+from tritium_lib.models.fleet import FleetNode, FleetStatus, NodeStatus, fleet_health_score
+from tritium_lib.models.ble import BleDevice
+
 from ..store.fleet_store import FleetStore
 
 
@@ -34,12 +38,78 @@ def enrich_devices(devices: list[dict]) -> list[dict]:
     return devices
 
 
+def validate_heartbeat(device_id: str, body: dict) -> DeviceHeartbeat:
+    """Validate raw heartbeat dict against tritium-lib DeviceHeartbeat model."""
+    body_with_id = {**body, "device_id": device_id}
+    return DeviceHeartbeat(**body_with_id)
+
+
+def device_to_fleet_node(device: dict) -> FleetNode:
+    """Convert a raw device dict to a tritium-lib FleetNode."""
+    online = device.get("_online", False)
+    ls = device.get("last_seen")
+    last_hb = datetime.fromisoformat(ls) if ls else datetime.now(timezone.utc)
+    return FleetNode(
+        device_id=device.get("device_id", ""),
+        mac=device.get("mac", ""),
+        ip=device.get("ip", ""),
+        firmware_version=device.get("version", device.get("firmware_version", "unknown")),
+        uptime_s=device.get("uptime_s") or 0,
+        wifi_rssi=device.get("rssi") or 0,
+        free_heap=device.get("free_heap") or 0,
+        partition=device.get("partition", ""),
+        last_heartbeat=last_hb,
+        status=NodeStatus.ONLINE if online else NodeStatus.OFFLINE,
+        capabilities=device.get("capabilities", []),
+        ble_device_count=len(device.get("ble_devices", [])),
+    )
+
+
+def build_fleet_status(devices: list[dict]) -> FleetStatus:
+    """Build a tritium-lib FleetStatus from enriched device dicts."""
+    nodes = [device_to_fleet_node(d) for d in devices]
+    online_count = sum(1 for n in nodes if n.status == NodeStatus.ONLINE)
+    total_ble = sum(n.ble_device_count for n in nodes)
+    return FleetStatus(
+        nodes=nodes,
+        total_nodes=len(nodes),
+        online_count=online_count,
+        ble_total=total_ble,
+    )
+
+
+def get_fleet_health(devices: list[dict]) -> float:
+    """Compute fleet health score using tritium-lib."""
+    fleet = build_fleet_status(devices)
+    return fleet_health_score(fleet)
+
+
+def parse_ble_devices(ble_list: list[dict]) -> list[BleDevice]:
+    """Parse raw BLE device dicts into tritium-lib BleDevice models."""
+    result = []
+    for raw in ble_list:
+        try:
+            result.append(BleDevice(
+                mac=raw.get("mac", ""),
+                rssi=raw.get("rssi", -100),
+                name=raw.get("name", ""),
+                seen_count=raw.get("seen", raw.get("seen_count", 1)),
+                is_known=raw.get("known", raw.get("is_known", False)),
+            ))
+        except Exception:
+            continue
+    return result
+
+
 def process_heartbeat(store: FleetStore, device_id: str, body: dict) -> dict:
     """Process device heartbeat, return response dict.
 
     Handles: device registration, firmware attestation, OTA result tracking,
     pending OTA directives, and pending commands.
     """
+    # Validate heartbeat payload against tritium-lib model
+    heartbeat = validate_heartbeat(device_id, body)
+
     device = store.get_device(device_id)
     if not device:
         existing = store.list_devices()

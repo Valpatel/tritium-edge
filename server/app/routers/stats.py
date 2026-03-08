@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 
-from ..services.device_service import enrich_devices
+from ..services.device_service import enrich_devices, build_fleet_status, get_fleet_health
 
 router = APIRouter(prefix="/api", tags=["stats"])
 
@@ -54,6 +54,27 @@ async def fleet_status(request: Request):
         "online": sum(1 for d in devices if d.get("_online")),
         "offline": sum(1 for d in devices if not d.get("_online")),
         "total_ble_devices": total_ble,
+        "server_uptime_s": int(time.time() - start_time),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/fleet/health")
+async def fleet_health(request: Request):
+    """Fleet health score (0.0-1.0) computed by tritium-lib.
+
+    Factors: online ratio (50%), avg WiFi RSSI (25%), avg heap usage (25%).
+    """
+    store = request.app.state.store
+    devices = enrich_devices(store.list_devices())
+    fleet = build_fleet_status(devices)
+    score = get_fleet_health(devices)
+    start_time = getattr(request.app.state, "start_time", time.time())
+    return {
+        "health_score": score,
+        "total_nodes": fleet.total_nodes,
+        "online_count": fleet.online_count,
+        "ble_total": fleet.ble_total,
         "server_uptime_s": int(time.time() - start_time),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

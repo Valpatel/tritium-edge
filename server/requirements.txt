@@ -8,3 +8,4 @@ bcrypt>=4.1.0
 pyserial>=3.5
 cryptography>=41.0.0
 aiofiles>=23.2.1
+tritium-lib
