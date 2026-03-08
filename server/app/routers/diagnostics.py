@@ -20,6 +20,14 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from ..services.correlation_service import correlate_events
 from ..services.diaglog_service import DiagLogStore
 
+from tritium_lib.models.correlation import (
+    CorrelationType,
+    CorrelationEvent as LibCorrelationEvent,
+    CorrelationSummary,
+    classify_correlation_severity,
+    summarize_correlations,
+)
+
 from tritium_lib.models.diagnostics import (
     AnomalyType,
     HealthSnapshot,
@@ -535,11 +543,41 @@ async def fleet_correlations():
             "events": events,
         })
 
-    correlations = correlate_events(snapshots)
+    raw_correlations = correlate_events(snapshots)
+
+    # Convert to typed tritium-lib models
+    typed_events = []
+    for c in raw_correlations:
+        try:
+            evt = LibCorrelationEvent(
+                type=CorrelationType(c.get("type", "environmental")),
+                description=c.get("description", ""),
+                devices_involved=c.get("devices_involved", []),
+                confidence=c.get("confidence", 0.0),
+                timestamp=c.get("timestamp", ""),
+            )
+            typed_events.append(evt)
+        except (ValueError, KeyError):
+            pass  # Skip malformed events
+
+    summary = CorrelationSummary(
+        events=typed_events,
+        snapshot_count=len(snapshots),
+        device_count=len(set(s.get("device_id", "") for s in snapshots)),
+    )
 
     return {
-        "total_correlations": len(correlations),
-        "correlations": correlations,
+        "total_correlations": summary.total_events,
+        "high_confidence": len(summary.high_confidence_events),
+        "affected_devices": len(summary.affected_devices()),
+        "summary": summarize_correlations(typed_events),
+        "correlations": [
+            {
+                **e.model_dump(mode="json"),
+                "severity": classify_correlation_severity(e),
+            }
+            for e in typed_events
+        ],
     }
 
 
