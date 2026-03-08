@@ -16,6 +16,7 @@ void WebServerHAL::addFileManager() {}
 void WebServerHAL::addApiEndpoints() {}
 void WebServerHAL::addWiFiSetup() {}
 void WebServerHAL::addBleViewer() {}
+void WebServerHAL::addCommissionPage() {}
 void WebServerHAL::addAllPages() {}
 void WebServerHAL::setBleProvider(BleJsonProvider) {}
 void WebServerHAL::startCaptivePortal() {}
@@ -98,6 +99,7 @@ static const char NAV_HTML[] PROGMEM = R"rawliteral(
   <a href="/update">OTA Update</a>
   <a href="/config">Config</a>
   <a href="/files">Files</a>
+  <a href="/commission">Commission</a>
   <a href="/api/status">API</a>
 </div>
 )rawliteral";
@@ -1053,6 +1055,413 @@ void WebServerHAL::addBleViewer() {
     DBG_INFO("web", "BLE viewer added at /ble");
 }
 
+// ── Commission page (/commission) ────────────────────────────────────────
+
+static const char COMMISSION_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Commission Node</title>
+%THEME%
+<style>
+#qr-canvas{margin:16px auto;display:block;image-rendering:pixelated}
+.qr-wrap{text-align:center;padding:16px;background:#fff;border-radius:8px;
+  display:inline-block;margin:12px 0}
+.center{text-align:center}
+.conn-str{background:#0a0a0a;border:1px solid #00ffd044;padding:10px;
+  border-radius:4px;font-family:'Courier New',monospace;color:#00ffd0;
+  word-break:break-all;margin:8px 0}
+input[type=text],input[type=url]{background:#0a0a0a;color:#00ffd0;
+  border:1px solid #00ffd044;padding:6px;width:100%;max-width:400px;
+  font-family:inherit;border-radius:4px}
+</style>
+</head><body>
+%NAV%
+<h1>// Node Commissioning</h1>
+
+<div class="card">
+<h2>Node Identity</h2>
+<table>
+<tr><td class="label">Device ID</td><td style="font-family:monospace">%DEVICE_ID%</td></tr>
+<tr><td class="label">MAC</td><td style="font-family:monospace">%MAC%</td></tr>
+<tr><td class="label">Mode</td><td>%MODE%</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>Connect to This Node</h2>
+<p class="label">Scan this QR code with your phone:</p>
+<div class="center">
+  <div class="qr-wrap"><canvas id="qr-canvas"></canvas></div>
+</div>
+<p class="label">Or manually:</p>
+<div class="conn-str" id="conn-str">%CONN_STR%</div>
+</div>
+
+<div class="card">
+<h2>Fleet Server</h2>
+<p class="label">URL of the Tritium fleet server this node reports to:</p>
+<form method="POST" action="/commission">
+  <input type="url" name="fleet_url" value="%FLEET_URL%" placeholder="https://fleet.example.com">
+  <br><br>
+  <button type="submit">Save</button>
+</form>
+</div>
+
+<script>
+// Minimal QR Code generator (QR Code Model 2, alphanumeric/byte mode)
+// Based on Project Nayuki QR Code generator library (MIT license)
+// Minified inline to avoid external dependency
+var QR=(function(){
+'use strict';
+function QrCode(dc,ecl){
+var size,modules,isFunc;
+function init(){
+var ver=1,dataLen=dc.length,ecBits;
+for(;ver<=40;ver++){
+  var cap=getNumDataCodewords(ver,ecl)*8;
+  if(dataLen*8+(dataLen>0?4:0)<=cap)break;
+}
+if(ver>40)throw'Data too long';
+size=ver*4+17;
+modules=[];isFunc=[];
+for(var i=0;i<size;i++){modules.push(new Array(size).fill(false));isFunc.push(new Array(size).fill(false));}
+drawFinderPattern(3,3);drawFinderPattern(size-4,3);drawFinderPattern(3,size-4);
+var aligns=getAlignmentPatternPositions(ver);
+for(var i=0;i<aligns.length;i++)for(var j=0;j<aligns.length;j++){
+  if((i==0&&j==0)||(i==0&&j==aligns.length-1)||(i==aligns.length-1&&j==0))continue;
+  drawAlignmentPattern(aligns[i],aligns[j]);
+}
+drawTimingPatterns();
+drawFormatBits(0);
+if(ver>=7)drawVersionBits();
+var rawData=encodeData(dc,ver,ecl);
+drawCodewords(rawData);
+var bestMask=-1,bestPen=Infinity;
+for(var m=0;m<8;m++){
+  applyMask(m);drawFormatBits(m);
+  var pen=getPenaltyScore();
+  if(pen<bestPen){bestPen=pen;bestMask=m;}
+  applyMask(m);
+}
+applyMask(bestMask);drawFormatBits(bestMask);
+isFunc=null;
+}
+function drawFinderPattern(cx,cy){
+for(var dy=-4;dy<=4;dy++)for(var dx=-4;dx<=4;dx++){
+  var xx=cx+dx,yy=cy+dy;
+  if(xx<0||xx>=size||yy<0||yy>=size)continue;
+  var d=Math.max(Math.abs(dx),Math.abs(dy));
+  setModule(xx,yy,d!=2&&d!=4,true);
+}}
+function drawAlignmentPattern(cx,cy){
+for(var dy=-2;dy<=2;dy++)for(var dx=-2;dx<=2;dx++)
+  setModule(cx+dx,cy+dy,Math.max(Math.abs(dx),Math.abs(dy))!=1,true);
+}
+function drawTimingPatterns(){
+for(var i=0;i<size;i++){setModule(6,i,i%2==0,true);setModule(i,6,i%2==0,true);}
+}
+function drawFormatBits(mask){
+var data=ecl.fmtBits<<3|mask,rem=data;
+for(var i=0;i<10;i++)rem=(rem<<1)^((rem>>>9)*0x537);
+var bits=(data<<10|rem)^0x5412;
+for(var i=0;i<=5;i++)setModule(8,i,getBit(bits,i),true);
+setModule(8,7,getBit(bits,6),true);setModule(8,8,getBit(bits,7),true);
+setModule(7,8,getBit(bits,8),true);
+for(var i=9;i<15;i++)setModule(14-i,8,getBit(bits,i),true);
+for(var i=0;i<8;i++)setModule(size-1-i,8,getBit(bits,i),true);
+setModule(8,size-8,true,true);
+for(var i=8;i<15;i++)setModule(8,size-15+i,getBit(bits,i),true);
+}
+function drawVersionBits(){
+var ver=Math.floor((size-17)/4),rem=ver;
+for(var i=0;i<12;i++)rem=(rem<<1)^((rem>>>11)*0x1F25);
+var bits=ver<<12|rem;
+for(var i=0;i<18;i++){
+  var bt=getBit(bits,i);
+  var a=Math.floor(i/3),b=i%3+size-11;
+  setModule(a,b,bt,true);setModule(b,a,bt,true);
+}}
+function drawCodewords(data){
+var i=0,right=size-1;
+while(right>=1){
+  if(right==6)right=5;
+  for(var vert=0;vert<size;vert++){
+    for(var j=0;j<2;j++){
+      var x=right-j,upward=((right+1)&2)==0;
+      var y=upward?size-1-vert:vert;
+      if(!isFunc[y][x]&&i<data.length*8){
+        modules[y][x]=getBit(data[i>>>3],7-(i&7));i++;
+      }
+    }
+  }
+  right-=2;
+}}
+function applyMask(mask){
+for(var y=0;y<size;y++)for(var x=0;x<size;x++){
+  if(isFunc[y][x])continue;
+  var inv=false;
+  switch(mask){
+    case 0:inv=(x+y)%2==0;break;case 1:inv=y%2==0;break;
+    case 2:inv=x%3==0;break;case 3:inv=(x+y)%3==0;break;
+    case 4:inv=(Math.floor(x/3)+Math.floor(y/2))%2==0;break;
+    case 5:inv=x*y%2+x*y%3==0;break;
+    case 6:inv=(x*y%2+x*y%3)%2==0;break;
+    case 7:inv=((x+y)%2+x*y%3)%2==0;break;
+  }
+  if(inv)modules[y][x]=!modules[y][x];
+}}
+function getPenaltyScore(){
+var pen=0;
+for(var y=0;y<size;y++){
+  var run=0,last=false;
+  for(var x=0;x<size;x++){
+    if(modules[y][x]==last){run++;if(run==5)pen+=3;else if(run>5)pen++;}
+    else{last=modules[y][x];run=1;}
+  }
+}
+for(var x=0;x<size;x++){
+  var run=0,last=false;
+  for(var y=0;y<size;y++){
+    if(modules[y][x]==last){run++;if(run==5)pen+=3;else if(run>5)pen++;}
+    else{last=modules[y][x];run=1;}
+  }
+}
+for(var y=0;y<size-1;y++)for(var x=0;x<size-1;x++){
+  var c=modules[y][x];
+  if(c==modules[y][x+1]&&c==modules[y+1][x]&&c==modules[y+1][x+1])pen+=3;
+}
+var dark=0;
+for(var y=0;y<size;y++)for(var x=0;x<size;x++)if(modules[y][x])dark++;
+var total=size*size;
+pen+=Math.abs(Math.ceil(dark*20/total-10))*10;
+return pen;
+}
+function setModule(x,y,dark,func){modules[y][x]=dark;if(func)isFunc[y][x]=true;}
+function getBit(x,i){return((x>>>i)&1)!=0;}
+init();
+this.size=size;
+this.getModule=function(x,y){return(x>=0&&x<size&&y>=0&&y<size)?modules[y][x]:false;};
+}
+function encodeData(data,ver,ecl){
+var bb=[];
+pushBits(bb,4,4);
+pushBits(bb,data.length,ver<=9?8:16);
+for(var i=0;i<data.length;i++)pushBits(bb,data.charCodeAt(i),8);
+var cap=getNumDataCodewords(ver,ecl)*8;
+pushBits(bb,0,Math.min(4,cap-bb.length));
+pushBits(bb,0,(8-bb.length%8)%8);
+for(var pad=0xEC;bb.length<cap;pad^=0xEC^0x11)pushBits(bb,pad,8);
+var bytes=[];for(var i=0;i<bb.length;i+=8){
+  var b=0;for(var j=0;j<8;j++)b=(b<<1)|(bb[i+j]||0);bytes.push(b);
+}
+return addEccAndInterleave(bytes,ver,ecl);
+}
+function pushBits(bb,val,len){for(var i=len-1;i>=0;i--)bb.push((val>>>i)&1);}
+function addEccAndInterleave(data,ver,ecl){
+var nb=NUM_EC_BLOCKS[ecl.ord][ver],
+    tb=getNumRawDataModules(ver)/8,
+    eccLen=(tb-getNumDataCodewords(ver,ecl))/nb,
+    shortLen=Math.floor(getNumDataCodewords(ver,ecl)/nb),
+    numShort=nb-getNumDataCodewords(ver,ecl)%nb,
+    blocks=[],eccBlocks=[];
+var gen=reedSolomonGeneratePolynomial(eccLen);
+for(var i=0,off=0;i<nb;i++){
+  var len=shortLen+(i>=numShort?1:0);
+  var blk=data.slice(off,off+len);off+=len;
+  blocks.push(blk);
+  eccBlocks.push(reedSolomonComputeRemainder(blk,gen));
+}
+var result=[];
+for(var i=0;i<=shortLen;i++)for(var j=0;j<nb;j++){
+  if(i==shortLen&&j<numShort)continue;
+  result.push(blocks[j][i<blocks[j].length?i:blocks[j].length-1]);
+}
+for(var i=0;i<eccLen;i++)for(var j=0;j<nb;j++)result.push(eccBlocks[j][i]);
+return result;
+}
+function reedSolomonComputeRemainder(data,gen){
+var r=new Array(gen.length).fill(0);
+data.forEach(function(b){
+  var f=b^r.shift();r.push(0);
+  gen.forEach(function(g,i){r[i]^=reedSolomonMultiply(g,f);});
+});
+return r;
+}
+function reedSolomonMultiply(x,y){
+var z=0;for(var i=7;i>=0;i--){z=(z<<1)^((z>>>7)*0x11D);z^=((y>>>i)&1)*x;}return z;
+}
+function reedSolomonGeneratePolynomial(degree){
+var r=[1];
+for(var i=0;i<degree;i++){
+  var nr=new Array(r.length+1).fill(0);
+  var f=reedSolomonPow(2,i);
+  for(var j=0;j<r.length;j++){nr[j]^=reedSolomonMultiply(r[j],f);nr[j+1]^=r[j];}
+  r=nr;
+}
+return r.slice(1);
+}
+function reedSolomonPow(b,e){var r=1;for(var i=0;i<e;i++)r=reedSolomonMultiply(r,b);return r;}
+function getAlignmentPatternPositions(ver){
+if(ver==1)return[];
+var num=Math.floor(ver/7)+2,step=ver==32?26:Math.ceil((ver*4+4)/(num*2-2))*2;
+var pos=[6];for(var i=0,p=ver*4+10;i<num-1;i++,p-=step)pos.splice(1,0,p);
+return pos;
+}
+function getNumRawDataModules(ver){
+var s=ver*4+17,r=s*s-8*8*3-2*(s-16)-1-((ver>=2?(Math.floor(ver/7)+2)*(Math.floor(ver/7)+2)-3:0)*25);
+if(ver>=7)r-=36;return r;
+}
+function getNumDataCodewords(ver,ecl){return Math.floor(getNumRawDataModules(ver)/8)-ECC_CODEWORDS_PER_BLOCK[ecl.ord][ver]*NUM_EC_BLOCKS[ecl.ord][ver];}
+var ECC_CODEWORDS_PER_BLOCK=[
+[null,7,10,15,20,26,18,20,24,30,18,20,24,26,30,22,24,28,30,28,28,28,28,30,30,26,28,30,30,30,30,30,30,30,30,30,30,30,30,30,30],
+[null,10,16,26,18,24,16,18,22,22,26,30,22,22,24,24,28,28,26,26,26,26,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28],
+[null,13,22,18,26,18,24,18,22,20,24,28,26,24,20,30,24,28,28,26,30,28,30,30,30,30,28,30,30,30,30,30,30,30,30,30,30,30,30,30,30],
+[null,17,28,22,16,22,28,26,26,24,28,24,28,22,24,24,30,28,28,26,28,30,24,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30]];
+var NUM_EC_BLOCKS=[
+[null,1,1,1,1,1,2,2,2,2,4,4,4,4,4,6,6,6,6,7,8,8,9,9,10,12,12,12,13,14,15,16,17,18,19,19,20,21,22,24,25],
+[null,1,1,1,2,2,4,4,4,4,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],
+[null,1,1,2,2,4,4,6,6,8,8,8,10,12,16,12,17,16,18,21,20,23,23,25,27,29,34,34,35,38,40,43,45,48,51,53,56,59,62,65,68],
+[null,1,1,2,4,4,4,5,6,8,8,11,11,16,16,18,16,19,21,25,25,25,34,30,32,35,37,40,42,45,48,51,54,57,60,63,66,70,74,77,81]];
+var Ecl={LOW:{ord:0,fmtBits:1},MEDIUM:{ord:1,fmtBits:0},QUARTILE:{ord:2,fmtBits:3},HIGH:{ord:3,fmtBits:2}};
+return{QrCode:QrCode,Ecl:Ecl};
+})();
+
+// Render QR code to canvas
+function renderQR(text){
+  var qr=new QR.QrCode(text,QR.Ecl.LOW);
+  var scale=Math.max(4,Math.floor(240/qr.size));
+  var canvas=document.getElementById('qr-canvas');
+  canvas.width=canvas.height=qr.size*scale;
+  var ctx=canvas.getContext('2d');
+  ctx.fillStyle='#ffffff';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle='#000000';
+  for(var y=0;y<qr.size;y++)for(var x=0;x<qr.size;x++){
+    if(qr.getModule(x,y))ctx.fillRect(x*scale,y*scale,scale,scale);
+  }
+}
+var connStr=document.getElementById('conn-str').textContent;
+renderQR(connStr);
+</script>
+</body></html>
+)rawliteral";
+
+void WebServerHAL::addCommissionPage() {
+    if (!_server) return;
+
+    WebServerHAL* self = this;
+
+    // GET /commission — show commissioning page with QR code
+    _server->on("/commission", HTTP_GET, [self]() {
+        self->_requestCount++;
+
+        String html(FPSTR(COMMISSION_HTML));
+        html.replace("%THEME%", FPSTR(THEME_CSS));
+        html.replace("%NAV%",   FPSTR(NAV_HTML));
+
+        uint8_t mac[6];
+        WiFi.macAddress(mac);
+        char macStr[18];
+        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        char deviceId[13];
+        snprintf(deviceId, sizeof(deviceId), "%02X%02X%02X%02X%02X%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+        html.replace("%MAC%", macStr);
+        html.replace("%DEVICE_ID%", deviceId);
+
+        // Determine mode and connection string for QR code
+        wifi_mode_t mode = WiFi.getMode();
+        bool isAP = (mode == WIFI_AP || mode == WIFI_AP_STA);
+
+        if (isAP) {
+            // AP mode — QR encodes WiFi credentials for phone to join
+            String ssid = WiFi.softAPSSID();
+            String connStr = "WIFI:T:nopass;S:" + ssid + ";;";
+            html.replace("%MODE%", "Access Point: " + ssid);
+            html.replace("%CONN_STR%", connStr);
+        } else {
+            // STA mode — QR encodes the node's web URL
+            String ip = WiFi.localIP().toString();
+            String connStr = "http://" + ip + "/";
+            html.replace("%MODE%", "WiFi Client (" + WiFi.SSID() + ")");
+            html.replace("%CONN_STR%", connStr);
+        }
+
+        // Fleet URL from config
+        String fleetUrl = "";
+        File f = LittleFS.open("/config.json", "r");
+        if (f) {
+            String cfg = f.readString();
+            f.close();
+            // Simple parse: find "fleet_url":"..."
+            int idx = cfg.indexOf("\"fleet_url\"");
+            if (idx >= 0) {
+                int q1 = cfg.indexOf('\"', idx + 11);
+                int q2 = cfg.indexOf('\"', q1 + 1);
+                if (q1 >= 0 && q2 > q1) {
+                    fleetUrl = cfg.substring(q1 + 1, q2);
+                }
+            }
+        }
+        html.replace("%FLEET_URL%", fleetUrl);
+
+        _server->send(200, "text/html", html);
+    });
+
+    // POST /commission — save fleet server URL to config
+    _server->on("/commission", HTTP_POST, [self]() {
+        self->_requestCount++;
+
+        if (_server->hasArg("fleet_url")) {
+            String fleetUrl = _server->arg("fleet_url");
+
+            // Read existing config or start fresh
+            String cfg = "{}";
+            File f = LittleFS.open("/config.json", "r");
+            if (f) {
+                cfg = f.readString();
+                f.close();
+            }
+
+            // Simple update: replace or insert fleet_url
+            int idx = cfg.indexOf("\"fleet_url\"");
+            if (idx >= 0) {
+                // Replace existing value
+                int q1 = cfg.indexOf('\"', idx + 11);
+                int q2 = cfg.indexOf('\"', q1 + 1);
+                if (q1 >= 0 && q2 > q1) {
+                    cfg = cfg.substring(0, q1 + 1) + fleetUrl + cfg.substring(q2);
+                }
+            } else {
+                // Insert before closing brace
+                int brace = cfg.lastIndexOf('}');
+                if (brace >= 0) {
+                    String prefix = cfg.substring(0, brace);
+                    prefix.trim();
+                    // Add comma if there's existing content
+                    if (prefix.length() > 1 && prefix[prefix.length() - 1] != '{') {
+                        prefix += ",";
+                    }
+                    cfg = prefix + "\"fleet_url\":\"" + fleetUrl + "\"}";
+                }
+            }
+
+            File w = LittleFS.open("/config.json", "w");
+            if (w) {
+                w.print(cfg);
+                w.close();
+                DBG_INFO("web", "Fleet URL saved: %s", fleetUrl.c_str());
+            }
+        }
+        _server->sendHeader("Location", "/commission", true);
+        _server->send(302, "text/plain", "Saved");
+    });
+
+    DBG_INFO("web", "Commission page added at /commission");
+}
+
 // ── addAllPages() ────────────────────────────────────────────────────────
 
 void WebServerHAL::addAllPages() {
@@ -1063,6 +1472,7 @@ void WebServerHAL::addAllPages() {
     addApiEndpoints();
     addWiFiSetup();
     addBleViewer();
+    addCommissionPage();
     DBG_INFO("web", "All pages registered");
 }
 

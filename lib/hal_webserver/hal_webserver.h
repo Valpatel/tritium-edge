@@ -38,6 +38,7 @@ public:
     void addApiEndpoints();     // REST API at /api/*
     void addWiFiSetup();        // WiFi network configuration at /wifi
     void addBleViewer();        // Live BLE device list at /ble
+    void addCommissionPage();   // QR code commissioning at /commission
     void addAllPages();         // Register all built-in pages
 
     // Data provider callbacks (set from main.cpp to inject sensor data)
