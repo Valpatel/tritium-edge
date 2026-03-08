@@ -408,14 +408,29 @@ Key API: `esp_ota_begin()`, `esp_ota_write()`, `esp_ota_end()`, `esp_ota_set_boo
 - JSON-based messaging adds overhead
 - Our ESP-NOW mesh with flooding is simpler and meets our needs
 
-### ESP-WIFI-MESH (ESP-MDF)
+### ESP-WIFI-MESH (ESP-MDF) — ARCHIVED
 
 | | |
 |---|---|
 | **Source** | https://github.com/espressif/esp-mdf |
-| **What it does** | Espressif's official WiFi mesh framework, tree topology |
+| **What it does** | Espressif's original WiFi mesh framework, tree topology |
 | **Compatibility** | ESP-IDF only, NOT compatible with Arduino framework |
-| **Status** | **Not usable** — requires pure ESP-IDF |
+| **Status** | **Archived** — Espressif has replaced this with ESP-MESH-LITE (see below) |
+
+### ESP-MESH-LITE (successor to ESP-MDF)
+
+| | |
+|---|---|
+| **Source** | https://github.com/espressif/esp-mesh-lite |
+| **What it does** | Wi-Fi mesh where each node can independently access the external network. Self-organizing and self-healing topology. Replaces the archived ESP-MDF. |
+| **Compatibility** | ESP-IDF 5.x only, NOT compatible with Arduino framework |
+| **Status** | **Evaluated, not adopted** |
+
+**Why we don't use it:**
+- Requires pure ESP-IDF — not compatible with our Arduino/PlatformIO build
+- Relies on WiFi AP+STA mode, which means each node needs AP infrastructure
+- Our ESP-NOW flooding mesh (`hal_espnow`) works with Arduino framework, needs no AP, and has sub-ms latency
+- ESP-MESH-LITE is the right choice for projects already on ESP-IDF that need IP-layer mesh routing
 
 ---
 
@@ -816,13 +831,48 @@ Dual-core tile decode, 128KB per 256px tile in PSRAM. Could complement our offli
 | **What it does** | Commercial fleet management for ESP-IDF devices — OTA, logging, settings |
 | **Status** | Competitive reference — Tritium does this open-source and self-hosted |
 
-### Espressif ESP-MDF
+### Espressif ESP-MDF / ESP-MESH-LITE
 
 | | |
 |---|---|
-| **Source** | https://github.com/espressif/esp-mdf |
-| **What it does** | ESP32 mesh networking framework (ESP-IDF only, not Arduino) |
-| **Status** | Reference — we use ESP-NOW mesh instead (works with Arduino framework) |
+| **Source** | https://github.com/espressif/esp-mdf (archived), https://github.com/espressif/esp-mesh-lite (successor) |
+| **What it does** | ESP32 mesh networking. ESP-MDF is archived; ESP-MESH-LITE is the active replacement with per-node internet access. |
+| **Status** | Reference — we use ESP-NOW mesh instead (works with Arduino framework). See [Mesh Networking](#10-mesh-networking) for details. |
+
+### Edgehog Device Manager
+
+| | |
+|---|---|
+| **Source** | https://github.com/edgehog-device-manager |
+| **What it does** | Open-source ESP32 device management via Astarte MQTT — remote device management, OTA, telemetry |
+| **Compatibility** | ESP-IDF component |
+| **Status** | **Evaluated, not adopted** |
+
+Edgehog provides a full device management stack built on the Astarte IoT platform. Includes device-side telemetry collection, remote OTA triggering, and fleet-wide configuration management.
+
+**Why we don't use it:** Tritium has its own fleet server (tritium-edge) with tighter integration to our specific hardware and OTA paths. However, Edgehog's device-side telemetry patterns (structured hardware info reporting, base image versioning, runtime info collection) are worth studying as a reference for our own telemetry design.
+
+### Deploy the Fleet
+
+| | |
+|---|---|
+| **Source** | https://github.com/deploythefleet/arduino_esp32_update |
+| **What it does** | Commercial OTA service with Arduino ESP32 library — simplified integration with hosted update service |
+| **Status** | **Evaluated, not adopted** |
+
+Deploy the Fleet offers a hosted OTA management platform with a drop-in Arduino library. Simple to integrate for basic WiFi-pull OTA.
+
+**Why we don't use it:** Tritium's `hal_ota` supports 7 OTA paths (WiFi push, WiFi pull, SD card, BLE, ESP-NOW mesh relay, fleet server push, manual upload) — far more comprehensive than a single hosted pull service. We also require self-hosted infrastructure with no cloud dependency.
+
+### Blynk ESP-IDF Component
+
+| | |
+|---|---|
+| **Source** | https://github.com/blynkkk |
+| **What it does** | Enterprise IoT platform with provisioning, OTA, dashboards, device management. Released native ESP-IDF support October 2025. |
+| **Status** | **Evaluated, not adopted** |
+
+**Why we don't use it:** Blynk is a cloud-dependent platform. Tritium is fully self-hosted with no cloud dependency. Blynk's provisioning UX (mobile app-driven) is a useful reference but doesn't fit our SD card / fleet server provisioning model.
 
 ---
 
@@ -842,4 +892,6 @@ Dual-core tile decode, 128KB per 256px tile in PSRAM. Could complement our offli
 | Voice | MFCC/DTW over esp-sr | Works with Arduino framework, no ESP-IDF dependency |
 | Acoustic modem | Custom I2S over ESP32Modem | Bidirectional (speaker+mic), DMA buffers, better frequency control |
 | GIS tiles | Custom hal_gis over IceNav | Same tile format, but decoupled from GPS/nav — pure tile serving and caching |
-| Fleet management | Custom server over Golioth | Self-hosted, open source, no cloud dependency |
+| Mesh framework | ESP-NOW over ESP-MESH-LITE | Arduino compatible, no AP infrastructure, sub-ms latency |
+| Fleet management | Custom server over Golioth/Edgehog/Blynk | Self-hosted, open source, no cloud dependency |
+| OTA service | hal_ota over Deploy the Fleet | 7 OTA paths vs single hosted pull, self-hosted |
