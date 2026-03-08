@@ -663,6 +663,7 @@ body::after {
       <div class="topbar-stat">NODES <span class="val" id="top-nodes">--</span></div>
       <div class="topbar-stat">ONLINE <span class="val" id="top-online">--</span></div>
       <div class="topbar-stat">BLE <span class="val" id="top-ble">--</span></div>
+      <div class="topbar-stat"><span id="ws-indicator" style="color:var(--text-dim)" title="WebSocket disconnected">&#9679;</span> WS</div>
     </div>
   </div>
 
@@ -1872,10 +1873,67 @@ async function loadPluginNav() {
   });
 }
 
+// WebSocket real-time updates
+var ws = null;
+var wsReconnectTimer = null;
+
+function connectWebSocket() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+  ws.onopen = function() {
+    var indicator = document.getElementById('ws-indicator');
+    if (indicator) { indicator.style.color = 'var(--green)'; indicator.title = 'WebSocket connected'; }
+  };
+
+  ws.onclose = function() {
+    var indicator = document.getElementById('ws-indicator');
+    if (indicator) { indicator.style.color = 'var(--text-dim)'; indicator.title = 'WebSocket disconnected'; }
+    // Reconnect after 3s
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = setTimeout(connectWebSocket, 3000);
+  };
+
+  ws.onmessage = function(evt) {
+    try {
+      var msg = JSON.parse(evt.data);
+      handleWsEvent(msg);
+    } catch(e) {}
+  };
+
+  // Keepalive
+  setInterval(function() {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send('ping');
+  }, 25000);
+}
+
+function handleWsEvent(msg) {
+  var type = msg.type;
+  // Refresh relevant views on real-time events
+  if (type === 'device_heartbeat' || type === 'device_registered' || type === 'device_offline') {
+    if (currentView === 'dashboard') refreshDashboard();
+    else if (currentView === 'devices') refreshDevices();
+  }
+  if (type === 'node_diag' || type === 'node_anomaly') {
+    if (currentView === 'diagnostics') refreshDiagnostics();
+  }
+  if (type === 'firmware_uploaded') {
+    if (currentView === 'firmware') refreshFirmware();
+  }
+  if (type === 'ota_started' || type === 'ota_result') {
+    if (currentView === 'ota' || currentView === 'fleet-ota') refreshView();
+  }
+  // Always refresh top bar on device events
+  if (['device_heartbeat', 'device_registered', 'device_offline'].includes(type)) {
+    refreshTopBar();
+  }
+}
+
 // Init + Auto-refresh
 refreshView();
 loadPluginNav();
-setInterval(refreshView, 5000);
+connectWebSocket();
+setInterval(refreshView, 10000);  // Slower polling since WS handles real-time
 </script>
 </body>
 </html>
