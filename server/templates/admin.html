@@ -692,6 +692,9 @@ body::after {
     <div class="nav-item" data-view="provision">
       <span class="icon">&#9881;</span> Provision
     </div>
+    <div class="nav-item" data-view="diagnostics">
+      <span class="icon">&#9762;</span> Diagnostics
+    </div>
     <div class="nav-item" data-view="events">
       <span class="icon">&#9679;</span> Events
     </div>
@@ -862,6 +865,41 @@ body::after {
     </div>
 
     <!-- EVENTS VIEW -->
+    <!-- DIAGNOSTICS VIEW -->
+    <div id="view-diagnostics" class="view">
+      <div class="stat-cards" id="diag-stats"></div>
+      <div class="section-header">Critical Nodes</div>
+      <div id="diag-critical" style="margin-bottom: 20px;"></div>
+      <div class="section-header">Fleet Anomalies</div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Subsystem</th>
+            <th>Description</th>
+            <th>Severity</th>
+          </tr>
+        </thead>
+        <tbody id="diag-anomaly-tbody"></tbody>
+      </table>
+      <div class="section-header" style="margin-top: 20px;">Node Health</div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Heap</th>
+            <th>Min Heap</th>
+            <th>CPU Temp</th>
+            <th>RSSI</th>
+            <th>Reboots</th>
+            <th>Anomalies</th>
+            <th>Age</th>
+          </tr>
+        </thead>
+        <tbody id="diag-node-tbody"></tbody>
+      </table>
+    </div>
+
     <div id="view-events" class="view">
       <div class="section-header">Event Log</div>
       <div class="event-list" id="events-full" style="max-height: none;"></div>
@@ -978,6 +1016,7 @@ async function refreshView() {
     case 'map': await refreshMap(); break;
     case 'fleet-ota': await refreshFleetOTA(); break;
     case 'provision': await refreshProvision(); break;
+    case 'diagnostics': await refreshDiagnostics(); break;
   }
   await refreshTopBar();
 }
@@ -1751,6 +1790,69 @@ async function scanForNodes() {
     status.style.color = 'var(--red)';
   }
   btn.disabled = false;
+}
+
+// Diagnostics
+async function refreshDiagnostics() {
+  var diag = await fetchJSON('/api/fleet/diagnostics');
+  var anomalies = await fetchJSON('/api/fleet/anomalies');
+  if (!diag) return;
+
+  // Stats cards
+  document.getElementById('diag-stats').innerHTML =
+    '<div class="stat-card"><div class="label">Nodes Reporting</div><div class="value cyan">' + diag.total_nodes + '</div></div>' +
+    '<div class="stat-card"><div class="label">Total Anomalies</div><div class="value ' + (diag.total_anomalies > 0 ? 'red' : 'green') + '">' + diag.total_anomalies + '</div></div>' +
+    '<div class="stat-card"><div class="label">Critical</div><div class="value ' + (diag.critical_nodes.length > 0 ? 'red' : 'green') + '">' + diag.critical_nodes.length + '</div></div>' +
+    '<div class="stat-card"><div class="label">Stale</div><div class="value ' + (diag.stale_nodes.length > 0 ? 'yellow' : 'green') + '">' + diag.stale_nodes.length + '</div></div>';
+
+  // Critical nodes
+  var critEl = document.getElementById('diag-critical');
+  if (diag.critical_nodes.length === 0) {
+    critEl.innerHTML = '<div class="loading" style="color:var(--green)">No critical nodes.</div>';
+  } else {
+    critEl.innerHTML = diag.critical_nodes.map(function(id) {
+      return '<span style="display:inline-block;background:rgba(255,51,85,0.15);border:1px solid var(--red);color:var(--red);padding:3px 10px;margin:3px;border-radius:3px;font-size:11px">' + escHtml(id) + '</span>';
+    }).join('');
+  }
+
+  // Anomalies table
+  var aTbody = document.getElementById('diag-anomaly-tbody');
+  if (!anomalies || anomalies.anomalies.length === 0) {
+    aTbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-dim)">No anomalies detected.</td></tr>';
+  } else {
+    aTbody.innerHTML = anomalies.anomalies.map(function(a) {
+      var sevColor = a.severity >= 0.7 ? 'var(--red)' : a.severity >= 0.4 ? 'var(--yellow)' : 'var(--text-dim)';
+      var barWidth = Math.round(a.severity * 100);
+      return '<tr>' +
+        '<td style="color:var(--cyan)">' + escHtml(a.device_id) + '</td>' +
+        '<td>' + escHtml(a.subsystem) + '</td>' +
+        '<td>' + escHtml(a.description) + '</td>' +
+        '<td><div style="display:flex;align-items:center;gap:6px"><div style="width:50px;height:6px;background:#222;border-radius:3px"><div style="width:' + barWidth + '%;height:100%;background:' + sevColor + ';border-radius:3px"></div></div><span style="color:' + sevColor + '">' + a.severity.toFixed(2) + '</span></div></td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  // Node health table
+  var nTbody = document.getElementById('diag-node-tbody');
+  if (diag.nodes.length === 0) {
+    nTbody.innerHTML = '<tr><td colspan="8" style="color:var(--text-dim)">No diagnostic data.</td></tr>';
+  } else {
+    nTbody.innerHTML = diag.nodes.map(function(n) {
+      var heapColor = (n.min_heap && n.min_heap < 30000) ? 'var(--red)' : (n.min_heap && n.min_heap < 60000) ? 'var(--yellow)' : 'var(--green)';
+      var tempColor = (n.cpu_temp_c && n.cpu_temp_c > 70) ? 'var(--red)' : (n.cpu_temp_c && n.cpu_temp_c > 55) ? 'var(--yellow)' : 'var(--text)';
+      var anomColor = n.anomaly_count > 0 ? 'var(--red)' : 'var(--text-dim)';
+      return '<tr>' +
+        '<td style="color:var(--cyan)">' + escHtml(n.device_id) + '</td>' +
+        '<td>' + (n.free_heap ? (n.free_heap / 1024).toFixed(0) + ' KB' : '--') + '</td>' +
+        '<td style="color:' + heapColor + '">' + (n.min_heap ? (n.min_heap / 1024).toFixed(0) + ' KB' : '--') + '</td>' +
+        '<td style="color:' + tempColor + '">' + (n.cpu_temp_c ? n.cpu_temp_c.toFixed(1) + 'C' : '--') + '</td>' +
+        '<td>' + (n.wifi_rssi ? n.wifi_rssi + ' dBm' : '--') + '</td>' +
+        '<td>' + (n.reboot_count != null ? n.reboot_count : '--') + '</td>' +
+        '<td style="color:' + anomColor + '">' + n.anomaly_count + '</td>' +
+        '<td>' + (n.age_s < 60 ? n.age_s.toFixed(0) + 's' : (n.age_s / 60).toFixed(0) + 'm') + '</td>' +
+      '</tr>';
+    }).join('');
+  }
 }
 
 // Plugin Nav
