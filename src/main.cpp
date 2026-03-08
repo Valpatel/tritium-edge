@@ -18,6 +18,13 @@ static bool _heartbeat_enabled = true;
 static bool _heartbeat_enabled = false;
 #endif
 
+#if defined(ENABLE_BLE_SCANNER) && __has_include("hal_ble_scanner.h")
+#include "hal_ble_scanner.h"
+static bool _ble_scanner_enabled = true;
+#else
+static bool _ble_scanner_enabled = false;
+#endif
+
 // --- App selection via build flag ---
 #if defined(APP_STARFIELD)
 #include "starfield_app.h"
@@ -109,6 +116,20 @@ static void services_init() {
             Serial.printf("[tritium] Heartbeat: active\n");
         } else {
             Serial.printf("[tritium] Heartbeat: not configured\n");
+        }
+    }
+#endif
+
+#if defined(ENABLE_BLE_SCANNER)
+    {
+        hal_ble_scanner::ScanConfig ble_cfg;
+        ble_cfg.scan_duration_s = 5;
+        ble_cfg.pause_between_ms = 10000;  // Scan every 10s
+        ble_cfg.active_scan = false;       // Passive — less intrusive
+        if (hal_ble_scanner::init(ble_cfg)) {
+            Serial.printf("[tritium] BLE Scanner: active\n");
+        } else {
+            Serial.printf("[tritium] BLE Scanner: failed to start\n");
         }
     }
 #endif

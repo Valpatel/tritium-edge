@@ -26,17 +26,15 @@ if os.path.isdir(lvgl_dir):
 build_flags = env.get("BUILD_FLAGS", [])
 cppdefines = env.get("CPPDEFINES", [])
 
-# Check if ENABLE_WIFI is in build flags
+# Check which services are enabled
 needs_networking = False
-for flag in build_flags:
-    if isinstance(flag, str) and "ENABLE_WIFI" in flag:
-        needs_networking = True
-        break
-for d in cppdefines:
-    if isinstance(d, str) and d == "ENABLE_WIFI":
-        needs_networking = True
-    elif isinstance(d, tuple) and d[0] == "ENABLE_WIFI":
-        needs_networking = True
+needs_ble = False
+all_flags_str = " ".join(str(f) for f in build_flags)
+all_defs_str = " ".join(str(d) for d in cppdefines)
+combined = all_flags_str + " " + all_defs_str
+
+needs_networking = "ENABLE_WIFI" in combined
+needs_ble = "ENABLE_BLE_SCANNER" in combined
 
 if needs_networking:
     fw_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32")
