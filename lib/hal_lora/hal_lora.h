@@ -35,10 +35,16 @@ bool send(const uint8_t* data, uint16_t len);
 int receive(LoRaMessage* msg);  // Non-blocking, returns 0 if no message
 
 // Meshtastic serial bridge (for external Meshtastic nodes)
+// Uses TEXTMSG mode: plain text over UART, no protobuf needed.
+// Configure Meshtastic device: serial.enabled=true, serial.mode=TEXTMSG
 bool init_meshtastic_serial(int uart_num, int rx_pin, int tx_pin, uint32_t baud = 115200);
 bool init_meshtastic_ble(const char* device_name);
 bool meshtastic_send_text(const char* text, uint32_t dest = 0xFFFFFFFF);
+bool meshtastic_receive_poll();  // Check UART for incoming messages, call from loop
+const char* meshtastic_get_last_message();  // Last received text (or nullptr)
+uint32_t meshtastic_get_last_message_time();  // millis() of last received message
 int meshtastic_get_nodes(char* json_buf, size_t buf_size);
+bool meshtastic_is_connected();  // True if serial link appears active
 
 // Info
 int get_last_rssi();

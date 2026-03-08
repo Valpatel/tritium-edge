@@ -391,6 +391,39 @@ static void handleSerialCommands() {
                 }
             }
 #endif
+#if defined(ENABLE_LORA)
+            else if (strncmp(_cmd_buf, "MESH_SEND ", 10) == 0) {
+                const char* text = _cmd_buf + 10;
+                if (text[0] == '\0') {
+                    Serial.printf("[lora] Usage: MESH_SEND <text>\n");
+                } else if (hal_lora::meshtastic_send_text(text)) {
+                    Serial.printf("[lora] Sent: \"%s\"\n", text);
+                } else {
+                    Serial.printf("[lora] Send failed (mode: %s)\n", hal_lora::get_mode());
+                }
+            }
+            else if (strcmp(_cmd_buf, "MESH_RECV") == 0) {
+                const char* msg = hal_lora::meshtastic_get_last_message();
+                if (msg) {
+                    uint32_t age = millis() - hal_lora::meshtastic_get_last_message_time();
+                    Serial.printf("[lora] Last message (%lu ms ago): \"%s\"\n",
+                                  (unsigned long)age, msg);
+                } else {
+                    Serial.printf("[lora] No messages received yet\n");
+                }
+            }
+            else if (strcmp(_cmd_buf, "MESH_STATUS") == 0) {
+                Serial.printf("[lora] Mode: %s\n", hal_lora::get_mode());
+                Serial.printf("[lora] Connected: %s\n",
+                              hal_lora::meshtastic_is_connected() ? "yes" : "no");
+                Serial.printf("[lora] TX: %lu  RX: %lu\n",
+                              (unsigned long)hal_lora::get_messages_sent(),
+                              (unsigned long)hal_lora::get_messages_received());
+                static char nbuf[512];
+                hal_lora::meshtastic_get_nodes(nbuf, sizeof(nbuf));
+                Serial.printf("[lora] Nodes: %s\n", nbuf);
+            }
+#endif
 #if defined(ENABLE_COT)
             else if (strcmp(_cmd_buf, "COT_SEND") == 0) {
                 if (!_cot_enabled || !hal_cot::is_active()) {
@@ -534,12 +567,30 @@ static void services_init() {
 
 #if defined(ENABLE_LORA)
     {
+        // Default: init raw LoRa. Override with MESHTASTIC_UART_NUM build flag
+        // to use Meshtastic TEXTMSG serial bridge instead.
+#if defined(MESHTASTIC_UART_NUM) && defined(MESHTASTIC_RX_PIN) && defined(MESHTASTIC_TX_PIN)
+        uint32_t mesh_baud = 115200;
+#if defined(MESHTASTIC_BAUD)
+        mesh_baud = MESHTASTIC_BAUD;
+#endif
+        if (hal_lora::init_meshtastic_serial(MESHTASTIC_UART_NUM,
+                                              MESHTASTIC_RX_PIN,
+                                              MESHTASTIC_TX_PIN,
+                                              mesh_baud)) {
+            Serial.printf("[tritium] Meshtastic: active (UART%d, %lu baud)\n",
+                          MESHTASTIC_UART_NUM, (unsigned long)mesh_baud);
+        } else {
+            Serial.printf("[tritium] Meshtastic: serial init failed\n");
+        }
+#else
         hal_lora::LoRaConfig lora_cfg;
         if (hal_lora::init(lora_cfg)) {
             Serial.printf("[tritium] LoRa: active (%s)\n", hal_lora::get_mode());
         } else {
             Serial.printf("[tritium] LoRa: init failed\n");
         }
+#endif
     }
 #endif
 
@@ -819,6 +870,9 @@ static void services_tick() {
 #endif
 #if defined(ENABLE_DIAG)
     hal_diag::tick();
+#endif
+#if defined(ENABLE_LORA)
+    hal_lora::meshtastic_receive_poll();
 #endif
 #if defined(ENABLE_ESPNOW)
     _espnow.process();

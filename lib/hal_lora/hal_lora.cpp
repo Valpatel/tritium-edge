@@ -17,6 +17,10 @@ int receive(LoRaMessage*) { return 0; }
 bool init_meshtastic_serial(int, int, int, uint32_t) { return false; }
 bool init_meshtastic_ble(const char*) { return false; }
 bool meshtastic_send_text(const char*, uint32_t) { return false; }
+bool meshtastic_receive_poll() { return false; }
+const char* meshtastic_get_last_message() { return nullptr; }
+uint32_t meshtastic_get_last_message_time() { return 0; }
+bool meshtastic_is_connected() { return false; }
 int meshtastic_get_nodes(char* buf, size_t buf_size) {
     if (buf_size > 2) { buf[0] = '['; buf[1] = ']'; buf[2] = '\0'; return 2; }
     return 0;
@@ -66,10 +70,14 @@ static float _last_snr = 0.0f;
 static uint32_t _msgs_sent = 0;
 static uint32_t _msgs_received = 0;
 
-// Meshtastic serial state
+// Meshtastic serial state (TEXTMSG mode — plain text, no protobuf)
 static HardwareSerial* _mesh_serial = nullptr;
-static uint8_t _mesh_rx_buf[512];
+static char _mesh_rx_line[256];       // Line accumulator for incoming text
 static uint16_t _mesh_rx_pos = 0;
+static char _mesh_last_msg[256];      // Last complete received message
+static bool _mesh_has_new_msg = false;
+static uint32_t _mesh_last_msg_time = 0;
+static uint32_t _mesh_last_rx_time = 0;  // Last time any byte was received
 
 // ---------------------------------------------------------------------------
 // Raw LoRa radio (SX1262/SX1276)
@@ -114,6 +122,8 @@ void shutdown() {
 
     _mode = Mode::INACTIVE;
     _mesh_rx_pos = 0;
+    _mesh_last_msg[0] = '\0';
+    _mesh_has_new_msg = false;
 }
 
 bool is_active() {
@@ -176,11 +186,18 @@ bool init_meshtastic_serial(int uart_num, int rx_pin, int tx_pin, uint32_t baud)
 
     _mesh_serial->begin(baud, SERIAL_8N1, rx_pin, tx_pin);
     _mesh_rx_pos = 0;
+    _mesh_last_msg[0] = '\0';
+    _mesh_has_new_msg = false;
+    _mesh_last_msg_time = 0;
+    _mesh_last_rx_time = 0;
 
-    // Meshtastic serial protocol uses protobuf-encoded frames:
-    //   [START1=0x94] [START2=0xc3] [MSB len] [LSB len] [protobuf payload...]
-    // TODO: Implement Meshtastic serial protobuf framing
-    // For now, just verify UART connectivity
+    // TEXTMSG mode: plain text in/out, no protobuf framing needed.
+    // The Meshtastic device must be configured with:
+    //   serial.enabled = true
+    //   serial.mode = TEXTMSG
+    //   serial.baud = <matching baud rate>
+    //   serial.rxd = <GPIO connected to our TX>
+    //   serial.txd = <GPIO connected to our RX>
 
     _mode = Mode::MESHTASTIC_SERIAL;
     _msgs_sent = 0;
@@ -233,11 +250,24 @@ bool meshtastic_send_text(const char* text, uint32_t dest) {
              (unsigned long)dest, text);
 
     if (_mode == Mode::MESHTASTIC_SERIAL && _mesh_serial) {
-        // TODO: Encode as Meshtastic protobuf ToRadio message
-        // Frame: [0x94][0xc3][len_msb][len_lsb][protobuf...]
-        // The protobuf payload contains a MeshPacket with TEXT_MESSAGE_APP portnum
-        DBG_WARN(TAG, "Meshtastic serial protobuf encoding not yet implemented");
-        return false;
+        // TEXTMSG mode: write plain text + newline to UART.
+        // The Meshtastic Serial Module in TEXTMSG mode accepts a line of text
+        // and broadcasts it as a TEXT_MESSAGE_APP packet on the default channel.
+        // Note: dest parameter is ignored in TEXTMSG mode (always broadcasts).
+        size_t len = strlen(text);
+        size_t written = _mesh_serial->write((const uint8_t*)text, len);
+        _mesh_serial->write('\n');
+        _mesh_serial->flush();
+
+        if (written == len) {
+            _msgs_sent++;
+            DBG_INFO(TAG, "Sent %u bytes via Meshtastic serial", (unsigned)len);
+            return true;
+        } else {
+            DBG_ERROR(TAG, "Serial write failed: wrote %u of %u bytes",
+                      (unsigned)written, (unsigned)len);
+            return false;
+        }
     }
 
     if (_mode == Mode::MESHTASTIC_BLE) {
@@ -249,18 +279,75 @@ bool meshtastic_send_text(const char* text, uint32_t dest) {
     return false;
 }
 
+bool meshtastic_receive_poll() {
+    if (_mode != Mode::MESHTASTIC_SERIAL || !_mesh_serial) return false;
+
+    bool got_message = false;
+
+    while (_mesh_serial->available()) {
+        char c = (char)_mesh_serial->read();
+        _mesh_last_rx_time = millis();
+
+        if (c == '\n' || c == '\r') {
+            if (_mesh_rx_pos > 0) {
+                // Complete line received
+                _mesh_rx_line[_mesh_rx_pos] = '\0';
+
+                // In TEXTMSG mode, incoming messages are prefixed with sender short name:
+                //   "ABC: Hello world"
+                // Store the full line including the prefix.
+                strncpy(_mesh_last_msg, _mesh_rx_line, sizeof(_mesh_last_msg) - 1);
+                _mesh_last_msg[sizeof(_mesh_last_msg) - 1] = '\0';
+                _mesh_has_new_msg = true;
+                _mesh_last_msg_time = millis();
+                _msgs_received++;
+
+                DBG_INFO(TAG, "Mesh RX: \"%s\"", _mesh_last_msg);
+                got_message = true;
+            }
+            _mesh_rx_pos = 0;
+        } else if (_mesh_rx_pos < sizeof(_mesh_rx_line) - 1) {
+            _mesh_rx_line[_mesh_rx_pos++] = c;
+        }
+        // else: line too long, drop character
+    }
+
+    return got_message;
+}
+
+const char* meshtastic_get_last_message() {
+    if (!_mesh_has_new_msg && _mesh_last_msg[0] == '\0') return nullptr;
+    return _mesh_last_msg;
+}
+
+uint32_t meshtastic_get_last_message_time() {
+    return _mesh_last_msg_time;
+}
+
+bool meshtastic_is_connected() {
+    if (_mode != Mode::MESHTASTIC_SERIAL || !_mesh_serial) return false;
+    // Consider connected if we received any data within the last 60 seconds.
+    // Meshtastic serial module sends periodic output (nodeinfo, telemetry).
+    if (_mesh_last_rx_time == 0) return false;
+    return (millis() - _mesh_last_rx_time) < 60000;
+}
+
 int meshtastic_get_nodes(char* json_buf, size_t buf_size) {
     if (_mode != Mode::MESHTASTIC_SERIAL && _mode != Mode::MESHTASTIC_BLE) {
         if (buf_size > 2) { json_buf[0] = '['; json_buf[1] = ']'; json_buf[2] = '\0'; }
         return 2;
     }
 
-    // TODO: Query node database from Meshtastic device
-    // Serial: send AdminMessage requesting NodeInfo
-    // BLE: read FromRadio with want_config_id set
-    DBG_DEBUG(TAG, "meshtastic_get_nodes() — not yet implemented");
-
-    return snprintf(json_buf, buf_size, "[]");
+    // In TEXTMSG mode we don't have access to the full node database.
+    // Return local bridge status as a single-node array.
+    return snprintf(json_buf, buf_size,
+        "[{\"role\":\"bridge\",\"mode\":\"%s\",\"connected\":%s,"
+        "\"tx\":%lu,\"rx\":%lu,\"last_rx_age_ms\":%lu}]",
+        get_mode(),
+        meshtastic_is_connected() ? "true" : "false",
+        (unsigned long)_msgs_sent,
+        (unsigned long)_msgs_received,
+        _mesh_last_rx_time > 0 ? (unsigned long)(millis() - _mesh_last_rx_time) : 0UL);
 }
 
 // ---------------------------------------------------------------------------
