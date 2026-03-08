@@ -169,6 +169,84 @@ def test_set_config_not_found(client):
     assert r.status_code == 404
 
 
+def test_push_config(client, sample_device):
+    """POST config stores desired_config and returns updated device."""
+    r = client.post("/api/devices/test-node-001/config", json={
+        "scan_interval": 30,
+        "brightness": 80,
+    })
+    assert r.status_code == 200
+    data = r.json()
+    assert data["device_id"] == "test-node-001"
+    assert data["desired_config"]["scan_interval"] == 30
+    assert data["desired_config"]["brightness"] == 80
+
+    # Verify it persists
+    r = client.get("/api/devices/test-node-001/config")
+    assert r.status_code == 200
+    assert r.json()["desired_config"]["scan_interval"] == 30
+
+
+def test_push_config_not_found(client):
+    """POST config to nonexistent device returns 404."""
+    r = client.post("/api/devices/nonexistent/config", json={
+        "key": "value",
+    })
+    assert r.status_code == 404
+
+
+def test_get_config_no_data(client, sample_device):
+    """GET config when none set returns empty configs and synced state."""
+    r = client.get("/api/devices/test-node-001/config")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["device_id"] == "test-node-001"
+    assert data["desired_config"] == {}
+    assert data["reported_config"] == {}
+    assert data["is_synced"] is True
+    assert data["drift_count"] == 0
+    assert data["drifts"] == []
+
+
+def test_get_config_with_drift(client, sample_device, store):
+    """GET config detects drift between desired and reported."""
+    # Push desired config
+    r = client.post("/api/devices/test-node-001/config", json={
+        "scan_interval": 30,
+        "brightness": 80,
+        "server_url": "https://new.example.com",
+    })
+    assert r.status_code == 200
+
+    # Simulate device reporting different config via store
+    device = store.get_device("test-node-001")
+    device["reported_config"] = {
+        "scan_interval": 60,
+        "brightness": 80,
+        "volume": 50,
+    }
+    store.save_device(device)
+
+    # GET should show drift
+    r = client.get("/api/devices/test-node-001/config")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["is_synced"] is False
+    assert data["drift_count"] == 3  # scan_interval differs, server_url missing, volume extra
+
+    # Check drift details
+    drift_keys = {d["key"] for d in data["drifts"]}
+    assert "scan_interval" in drift_keys
+    assert "server_url" in drift_keys
+    assert "volume" in drift_keys
+
+    # Verify severity classification
+    drifts_by_key = {d["key"]: d for d in data["drifts"]}
+    assert drifts_by_key["server_url"]["severity"] == "critical"
+    assert drifts_by_key["server_url"]["missing"] is True
+    assert drifts_by_key["volume"]["extra"] is True
+
+
 def test_heartbeat_new_device(client):
     """Heartbeat auto-registers a new device."""
     r = client.post("/api/devices/new-node-99/status", json={

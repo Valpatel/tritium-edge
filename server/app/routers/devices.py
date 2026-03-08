@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 
+from tritium_lib.models.config import compute_config_drift
+
 from ..models import CommandRequest, DeviceUpdate
 from ..services.device_service import enrich_devices, process_heartbeat
 from .ws import broadcast
@@ -151,17 +153,49 @@ async def get_device_sensors(device_id: str, request: Request):
     }
 
 
-@router.get("/devices/{device_id}/config")
-async def get_device_config(device_id: str, request: Request):
-    """Get desired and reported config for a device."""
+@router.post("/devices/{device_id}/config")
+async def push_device_config(device_id: str, request: Request):
+    """Push desired config to a device. Replaces desired_config entirely."""
     store = _get_store(request)
     device = store.get_device(device_id)
     if not device:
         raise HTTPException(404, "Device not found")
+    body = await request.json()
+    device["desired_config"] = body
+    device["_config_drift_logged"] = False
+    store.save_device(device)
+    store.add_event("config_pushed", device_id, f"Keys: {', '.join(body.keys())}")
+    enrich_devices([device])
+    return device
+
+
+@router.get("/devices/{device_id}/config")
+async def get_device_config(device_id: str, request: Request):
+    """Get desired vs reported config with drift analysis."""
+    store = _get_store(request)
+    device = store.get_device(device_id)
+    if not device:
+        raise HTTPException(404, "Device not found")
+    desired = device.get("desired_config", {})
+    reported = device.get("reported_config", {})
+    drifts = compute_config_drift(desired, reported)
     return {
         "device_id": device_id,
-        "desired_config": device.get("desired_config", {}),
-        "reported_config": device.get("reported_config", {}),
+        "desired_config": desired,
+        "reported_config": reported,
+        "is_synced": len(drifts) == 0,
+        "drift_count": len(drifts),
+        "drifts": [
+            {
+                "key": d.key,
+                "desired": d.desired_value,
+                "reported": d.reported_value,
+                "severity": d.severity.value,
+                "missing": d.is_missing,
+                "extra": d.is_extra,
+            }
+            for d in drifts
+        ],
     }
 
 
