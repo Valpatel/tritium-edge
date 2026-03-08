@@ -19,3 +19,8 @@ fleet_data/
 
 # Generated key headers (public key .h is committed, private key is not)
 keys/ota_signing_key.pem
+
+# E2E test artifacts
+node_modules/
+playwright-report/
+test-results/
