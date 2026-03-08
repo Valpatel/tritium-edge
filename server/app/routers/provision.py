@@ -10,6 +10,13 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from tritium_lib.models.provision import (
+    ProvisionRecord,
+    ProvisionSource as LibProvisionSource,
+    ProvisionState,
+    compute_provision_status,
+)
+
 router = APIRouter(prefix="/api/provision", tags=["provisioning"])
 
 
@@ -208,3 +215,63 @@ async def decommission_node(device_id: str, request: Request):
 
     store.add_event("node_decommissioned", device_id)
     return {"status": "decommissioned", "device_id": device_id}
+
+
+def _device_to_provision_record(device: dict) -> ProvisionRecord:
+    """Convert a device dict to a tritium-lib ProvisionRecord."""
+    tags = device.get("tags", [])
+    provisioned = device.get("provisioned", False)
+
+    if "decommissioned" in tags:
+        state = ProvisionState.DECOMMISSIONED
+    elif provisioned:
+        state = ProvisionState.COMMISSIONED
+    elif "pending" in tags:
+        state = ProvisionState.PENDING
+    elif "auto-registered" in tags:
+        state = ProvisionState.DISCOVERED
+    else:
+        state = ProvisionState.DISCOVERED
+
+    return ProvisionRecord(
+        device_id=device.get("device_id", "?"),
+        source=LibProvisionSource.AUTO,
+        state=state,
+        mac_address=device.get("mac"),
+        board_type=device.get("board"),
+        firmware_version=device.get("version"),
+    )
+
+
+@router.get("/status")
+async def provision_status(request: Request):
+    """Fleet provisioning status using tritium-lib classification.
+
+    Returns counts by lifecycle state and per-device provisioning records.
+    """
+    store = _get_store(request)
+    devices = store.list_devices()
+
+    records = [_device_to_provision_record(d) for d in devices]
+    status = compute_provision_status(records)
+
+    return {
+        "total_devices": status.total_devices,
+        "commissioned": status.commissioned,
+        "pending": status.pending,
+        "discovered": status.discovered,
+        "suspended": status.suspended,
+        "decommissioned": status.decommissioned,
+        "active_ratio": round(status.active_ratio, 3),
+        "needs_attention": status.needs_attention,
+        "devices": [
+            {
+                "device_id": r.device_id,
+                "state": r.state.value,
+                "board": r.board_type,
+                "version": r.firmware_version,
+                "mac": r.mac_address,
+            }
+            for r in records
+        ],
+    }

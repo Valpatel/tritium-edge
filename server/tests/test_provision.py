@@ -123,3 +123,37 @@ def test_bulk_commission(client, store):
     assert statuses["bulk-node-0"] == "commissioned"
     assert statuses["bulk-node-1"] == "commissioned"
     assert statuses["nonexistent"] == "not_found"
+
+
+# --- Provision status ---
+
+
+def test_provision_status_empty(client):
+    """Empty fleet returns zero counts."""
+    r = client.get("/api/provision/status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total_devices"] == 0
+    assert data["active_ratio"] == 1.0
+    assert data["needs_attention"] == 0
+
+
+def test_provision_status_with_devices(client, sample_device, store):
+    """Provision status classifies devices correctly."""
+    # sample_device is provisioned=False, no special tags → discovered
+    # Add a commissioned device
+    store.save_device({
+        "device_id": "comm-node",
+        "board": "test",
+        "provisioned": True,
+        "tags": ["commissioned"],
+    })
+
+    r = client.get("/api/provision/status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total_devices"] == 2
+    assert data["commissioned"] == 1
+    assert data["discovered"] == 1
+    assert data["needs_attention"] == 1
+    assert len(data["devices"]) == 2
