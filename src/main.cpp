@@ -102,6 +102,9 @@ static CameraApp app_instance;
 #elif defined(APP_EFFECTS)
 #include "effects_app.h"
 static EffectsApp app_instance;
+#elif defined(APP_OTA)
+#include "ota_app.h"
+static OtaApp app_instance;
 #elif defined(APP_TEST)
 #include "test_app.h"
 static TestApp app_instance;

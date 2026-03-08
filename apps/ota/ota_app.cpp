@@ -1,7 +1,8 @@
 #include "ota_app.h"
-#include "debug_log.h"
 #include <cstring>
 #include <cstdio>
+#include <esp_heap_caps.h>
+#include <esp_lcd_panel_ops.h>
 
 #ifndef SIMULATOR
 #include <Update.h>
@@ -11,23 +12,263 @@
 #include <HTTPClient.h>
 #endif
 
-static constexpr const char* TAG = "ota_app";
+// ============================================================================
+// 5x7 Bitmap Font (space 0x20 through tilde 0x7E, 95 glyphs)
+// ============================================================================
+static const uint8_t font5x7[][5] PROGMEM = {
+    {0x00,0x00,0x00,0x00,0x00}, // space
+    {0x00,0x00,0x5F,0x00,0x00}, // !
+    {0x00,0x07,0x00,0x07,0x00}, // "
+    {0x14,0x7F,0x14,0x7F,0x14}, // #
+    {0x24,0x2A,0x7F,0x2A,0x12}, // $
+    {0x23,0x13,0x08,0x64,0x62}, // %
+    {0x36,0x49,0x55,0x22,0x50}, // &
+    {0x00,0x05,0x03,0x00,0x00}, // '
+    {0x00,0x1C,0x22,0x41,0x00}, // (
+    {0x00,0x41,0x22,0x1C,0x00}, // )
+    {0x08,0x2A,0x1C,0x2A,0x08}, // *
+    {0x08,0x08,0x3E,0x08,0x08}, // +
+    {0x00,0x50,0x30,0x00,0x00}, // ,
+    {0x08,0x08,0x08,0x08,0x08}, // -
+    {0x00,0x60,0x60,0x00,0x00}, // .
+    {0x20,0x10,0x08,0x04,0x02}, // /
+    {0x3E,0x51,0x49,0x45,0x3E}, // 0
+    {0x00,0x42,0x7F,0x40,0x00}, // 1
+    {0x42,0x61,0x51,0x49,0x46}, // 2
+    {0x21,0x41,0x45,0x4B,0x31}, // 3
+    {0x18,0x14,0x12,0x7F,0x10}, // 4
+    {0x27,0x45,0x45,0x45,0x39}, // 5
+    {0x3C,0x4A,0x49,0x49,0x30}, // 6
+    {0x01,0x71,0x09,0x05,0x03}, // 7
+    {0x36,0x49,0x49,0x49,0x36}, // 8
+    {0x06,0x49,0x49,0x29,0x1E}, // 9
+    {0x00,0x36,0x36,0x00,0x00}, // :
+    {0x00,0x56,0x36,0x00,0x00}, // ;
+    {0x00,0x08,0x14,0x22,0x41}, // <
+    {0x14,0x14,0x14,0x14,0x14}, // =
+    {0x41,0x22,0x14,0x08,0x00}, // >
+    {0x02,0x01,0x51,0x09,0x06}, // ?
+    {0x32,0x49,0x79,0x41,0x3E}, // @
+    {0x7E,0x11,0x11,0x11,0x7E}, // A
+    {0x7F,0x49,0x49,0x49,0x36}, // B
+    {0x3E,0x41,0x41,0x41,0x22}, // C
+    {0x7F,0x41,0x41,0x22,0x1C}, // D
+    {0x7F,0x49,0x49,0x49,0x41}, // E
+    {0x7F,0x09,0x09,0x01,0x01}, // F
+    {0x3E,0x41,0x41,0x51,0x32}, // G
+    {0x7F,0x08,0x08,0x08,0x7F}, // H
+    {0x00,0x41,0x7F,0x41,0x00}, // I
+    {0x20,0x40,0x41,0x3F,0x01}, // J
+    {0x7F,0x08,0x14,0x22,0x41}, // K
+    {0x7F,0x40,0x40,0x40,0x40}, // L
+    {0x7F,0x02,0x04,0x02,0x7F}, // M
+    {0x7F,0x04,0x08,0x10,0x7F}, // N
+    {0x3E,0x41,0x41,0x41,0x3E}, // O
+    {0x7F,0x09,0x09,0x09,0x06}, // P
+    {0x3E,0x41,0x51,0x21,0x5E}, // Q
+    {0x7F,0x09,0x19,0x29,0x46}, // R
+    {0x46,0x49,0x49,0x49,0x31}, // S
+    {0x01,0x01,0x7F,0x01,0x01}, // T
+    {0x3F,0x40,0x40,0x40,0x3F}, // U
+    {0x1F,0x20,0x40,0x20,0x1F}, // V
+    {0x3F,0x40,0x38,0x40,0x3F}, // W
+    {0x63,0x14,0x08,0x14,0x63}, // X
+    {0x07,0x08,0x70,0x08,0x07}, // Y
+    {0x61,0x51,0x49,0x45,0x43}, // Z
+    {0x00,0x7F,0x41,0x41,0x00}, // [
+    {0x02,0x04,0x08,0x10,0x20}, // backslash
+    {0x00,0x41,0x41,0x7F,0x00}, // ]
+    {0x04,0x02,0x01,0x02,0x04}, // ^
+    {0x40,0x40,0x40,0x40,0x40}, // _
+    {0x00,0x01,0x02,0x04,0x00}, // `
+    {0x20,0x54,0x54,0x54,0x78}, // a
+    {0x7F,0x48,0x44,0x44,0x38}, // b
+    {0x38,0x44,0x44,0x44,0x20}, // c
+    {0x38,0x44,0x44,0x48,0x7F}, // d
+    {0x38,0x54,0x54,0x54,0x18}, // e
+    {0x08,0x7E,0x09,0x01,0x02}, // f
+    {0x0C,0x52,0x52,0x52,0x3E}, // g
+    {0x7F,0x08,0x04,0x04,0x78}, // h
+    {0x00,0x44,0x7D,0x40,0x00}, // i
+    {0x20,0x40,0x44,0x3D,0x00}, // j
+    {0x7F,0x10,0x28,0x44,0x00}, // k
+    {0x00,0x41,0x7F,0x40,0x00}, // l
+    {0x7C,0x04,0x18,0x04,0x78}, // m
+    {0x7C,0x08,0x04,0x04,0x78}, // n
+    {0x38,0x44,0x44,0x44,0x38}, // o
+    {0x7C,0x14,0x14,0x14,0x08}, // p
+    {0x08,0x14,0x14,0x18,0x7C}, // q
+    {0x7C,0x08,0x04,0x04,0x08}, // r
+    {0x48,0x54,0x54,0x54,0x20}, // s
+    {0x04,0x3F,0x44,0x40,0x20}, // t
+    {0x3C,0x40,0x40,0x20,0x7C}, // u
+    {0x1C,0x20,0x40,0x20,0x1C}, // v
+    {0x3C,0x40,0x30,0x40,0x3C}, // w
+    {0x44,0x28,0x10,0x28,0x44}, // x
+    {0x0C,0x50,0x50,0x50,0x3C}, // y
+    {0x44,0x64,0x54,0x4C,0x44}, // z
+    {0x00,0x08,0x36,0x41,0x00}, // {
+    {0x00,0x00,0x7F,0x00,0x00}, // |
+    {0x00,0x41,0x36,0x08,0x00}, // }
+    {0x10,0x08,0x08,0x10,0x08}, // ~
+};
+
+// ============================================================================
+// Framebuffer Drawing Helpers
+// ============================================================================
+static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
+    uint16_t c = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+    return (c >> 8) | (c << 8);  // byte-swap for QSPI SPI transport
+}
+
+static void drawChar(uint16_t* fb, int fbw, int fbh, int x, int y,
+                     char c, uint16_t color) {
+    if (c < 0x20 || c > 0x7E) return;
+    const uint8_t* glyph = font5x7[c - 0x20];
+    for (int col = 0; col < 5; col++) {
+        uint8_t bits = pgm_read_byte(&glyph[col]);
+        for (int row = 0; row < 7; row++) {
+            if (bits & (1 << row)) {
+                int px = x + col;
+                int py = y + row;
+                if (px >= 0 && px < fbw && py >= 0 && py < fbh) {
+                    fb[py * fbw + px] = color;
+                }
+            }
+        }
+    }
+}
+
+static void drawString(uint16_t* fb, int fbw, int fbh, int x, int y,
+                       const char* str, uint16_t color) {
+    while (*str) {
+        drawChar(fb, fbw, fbh, x, y, *str, color);
+        x += 6;  // 5px glyph + 1px spacing
+        str++;
+    }
+}
+
+// Draw string centered horizontally at the given y coordinate
+static void drawStringCentered(uint16_t* fb, int fbw, int fbh, int y,
+                               const char* str, uint16_t color) {
+    int len = strlen(str);
+    int px_width = len * 6 - 1;  // 5px glyph + 1px spacing, minus trailing space
+    int x = (fbw - px_width) / 2;
+    drawString(fb, fbw, fbh, x, y, str, color);
+}
+
+// Draw string centered horizontally with scale multiplier
+static void drawStringCenteredScaled(uint16_t* fb, int fbw, int fbh, int y,
+                                     const char* str, uint16_t color, int scale) {
+    if (scale <= 1) {
+        drawStringCentered(fb, fbw, fbh, y, str, color);
+        return;
+    }
+    int len = strlen(str);
+    int px_width = len * 6 * scale - scale;
+    int sx = (fbw - px_width) / 2;
+    for (const char* p = str; *p; p++) {
+        char c = *p;
+        if (c < 0x20 || c > 0x7E) { sx += 6 * scale; continue; }
+        const uint8_t* glyph = font5x7[c - 0x20];
+        for (int col = 0; col < 5; col++) {
+            uint8_t bits = pgm_read_byte(&glyph[col]);
+            for (int row = 0; row < 7; row++) {
+                if (bits & (1 << row)) {
+                    for (int dy = 0; dy < scale; dy++) {
+                        for (int dx = 0; dx < scale; dx++) {
+                            int px = sx + col * scale + dx;
+                            int py = y + row * scale + dy;
+                            if (px >= 0 && px < fbw && py >= 0 && py < fbh) {
+                                fb[py * fbw + px] = color;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        sx += 6 * scale;
+    }
+}
+
+static void fillRect(uint16_t* fb, int fbw, int fbh,
+                     int rx, int ry, int rw, int rh, uint16_t color) {
+    for (int row = ry; row < ry + rh; row++) {
+        if (row < 0 || row >= fbh) continue;
+        for (int col = rx; col < rx + rw; col++) {
+            if (col >= 0 && col < fbw) {
+                fb[row * fbw + col] = color;
+            }
+        }
+    }
+}
+
+static void drawHLine(uint16_t* fb, int fbw, int fbh,
+                      int x, int y, int len, uint16_t color) {
+    if (y < 0 || y >= fbh) return;
+    for (int i = 0; i < len; i++) {
+        int px = x + i;
+        if (px >= 0 && px < fbw) {
+            fb[y * fbw + px] = color;
+        }
+    }
+}
+
+static void drawRect(uint16_t* fb, int fbw, int fbh,
+                     int rx, int ry, int rw, int rh, uint16_t color) {
+    drawHLine(fb, fbw, fbh, rx, ry, rw, color);           // top
+    drawHLine(fb, fbw, fbh, rx, ry + rh - 1, rw, color);  // bottom
+    for (int row = ry; row < ry + rh; row++) {
+        if (row < 0 || row >= fbh) continue;
+        if (rx >= 0 && rx < fbw) fb[row * fbw + rx] = color;
+        int right = rx + rw - 1;
+        if (right >= 0 && right < fbw) fb[row * fbw + right] = color;
+    }
+}
+
+// ============================================================================
+// Framebuffer Push (DMA chunked)
+// ============================================================================
+void OtaApp::pushFramebuffer() {
+    for (int y = 0; y < _h; y += CHUNK_ROWS) {
+        int rows = CHUNK_ROWS;
+        if (y + rows > _h) rows = _h - y;
+        int pixels = _w * rows;
+        memcpy(_dma_buf, &_framebuf[y * _w], pixels * 2);
+        esp_lcd_panel_draw_bitmap(_panel, 0, y, _w, y + rows, _dma_buf);
+    }
+}
 
 // ============================================================================
 // Setup
 // ============================================================================
-void OtaApp::setup(LGFX& display) {
-    // Create display canvas
-    _canvas = new LGFX_Sprite(&display);
-    _canvas->setPsram(true);
-    _canvas->createSprite(display.width(), display.height());
-    _canvas->setTextSize(2);
+void OtaApp::setup(esp_lcd_panel_handle_t panel, int width, int height) {
+    _panel = panel;
+    _w = width;
+    _h = height;
+
+    // Allocate PSRAM framebuffer
+    size_t fb_size = _w * _h * sizeof(uint16_t);
+    _framebuf = (uint16_t*)heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM);
+    if (!_framebuf) {
+        Serial.println("[ota] FATAL: framebuffer alloc failed");
+        while (1) delay(1000);
+    }
+    memset(_framebuf, 0, fb_size);
+
+    // Allocate DMA transfer buffer in internal SRAM
+    size_t dma_size = _w * CHUNK_ROWS * sizeof(uint16_t);
+    _dma_buf = (uint16_t*)heap_caps_malloc(dma_size, MALLOC_CAP_DMA);
+    if (!_dma_buf) {
+        Serial.println("[ota] FATAL: DMA buffer alloc failed");
+        while (1) delay(1000);
+    }
 
     // Init OTA HAL
     _ota_ok = _ota.init();
-    DBG_INFO(TAG, "OTA HAL: %s (v%s, partition: %s, max: %u bytes)",
-             _ota_ok ? "OK" : "FAIL", _ota.getCurrentVersion(),
-             _ota.getRunningPartition(), _ota.getMaxFirmwareSize());
+    Serial.printf("[ota] OTA HAL: %s (v%s, partition: %s, max: %u bytes)\n",
+                  _ota_ok ? "OK" : "FAIL", _ota.getCurrentVersion(),
+                  _ota.getRunningPartition(), _ota.getMaxFirmwareSize());
 
     // Delay app confirmation — gives the watchdog time to detect boot loops.
     // If the app crashes within the first 30s, ESP-IDF will auto-rollback
@@ -37,28 +278,28 @@ void OtaApp::setup(LGFX& display) {
 
     // Init provisioning
     _prov_ok = _provision.init();
-    DBG_INFO(TAG, "Provisioning: %s (%s)",
-             _prov_ok ? "OK" : "FAIL",
-             _provision.isProvisioned() ? "provisioned" : "unprovisioned");
+    Serial.printf("[ota] Provisioning: %s (%s)\n",
+                  _prov_ok ? "OK" : "FAIL",
+                  _provision.isProvisioned() ? "provisioned" : "unprovisioned");
 
     // Init WiFi (auto-connect using stored credentials from NVS)
     _wifi.init();
     _wifi.connect();  // Connects to best saved network
     _wifi_ok = true;
-    DBG_INFO(TAG, "WiFi: init, connecting to saved networks...");
+    Serial.printf("[ota] WiFi: init, connecting to saved networks...\n");
 
     // Init SD card
     _sd_ok = _sd.init();
     if (_sd_ok) {
-        DBG_INFO(TAG, "SD card: %s, %llu MB total",
-                 _sd.getFilesystemType(), _sd.totalBytes() / (1024 * 1024));
+        Serial.printf("[ota] SD card: %s, %llu MB total\n",
+                      _sd.getFilesystemType(), _sd.totalBytes() / (1024 * 1024));
         _have_firmware_file = _sd.exists("/firmware.bin") || _sd.exists("/firmware.ota");
         if (_have_firmware_file) {
-            DBG_INFO(TAG, "Found firmware on SD card (%s)",
-                     _sd.exists("/firmware.ota") ? ".ota" : ".bin");
+            Serial.printf("[ota] Found firmware on SD card (%s)\n",
+                          _sd.exists("/firmware.ota") ? ".ota" : ".bin");
         }
     } else {
-        DBG_WARN(TAG, "SD card not available");
+        Serial.printf("[ota] SD card not available\n");
     }
 
     // Init ESP-NOW
@@ -66,8 +307,8 @@ void OtaApp::setup(LGFX& display) {
     if (_espnow_ok) {
         uint8_t mac[6];
         _espnow.getMAC(mac);
-        DBG_INFO(TAG, "ESP-NOW: OK, MAC=%02X:%02X:%02X:%02X:%02X:%02X",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        Serial.printf("[ota] ESP-NOW: OK, MAC=%02X:%02X:%02X:%02X:%02X:%02X\n",
+                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
         // Register mesh callback for OTA messages
         _espnow.onMeshReceive([this](const uint8_t* src, const uint8_t* data,
@@ -75,16 +316,16 @@ void OtaApp::setup(LGFX& display) {
             handleEspNowOTA(src, data, len, hops);
         });
     } else {
-        DBG_WARN(TAG, "ESP-NOW init failed");
+        Serial.printf("[ota] ESP-NOW init failed\n");
     }
 
     // Check for SD card firmware on startup
     if (_sd_ok && _have_firmware_file) {
         snprintf(_status_line, sizeof(_status_line), "SD firmware found! Flashing...");
-        drawStatus(display);
+        drawStatus();
         if (checkSDUpdate()) {
             snprintf(_status_line, sizeof(_status_line), "SD OTA complete! Rebooting...");
-            drawStatus(display);
+            drawStatus();
             delay(1000);
             _ota.reboot();
         }
@@ -93,7 +334,7 @@ void OtaApp::setup(LGFX& display) {
     // Init BLE OTA
     _ble_ok = _ble_ota.init("ESP32-OTA");
     if (_ble_ok) {
-        DBG_INFO(TAG, "BLE OTA: advertising");
+        Serial.printf("[ota] BLE OTA: advertising\n");
         _ble_ota.onProgress([this](uint8_t pct, uint32_t received, uint32_t total) {
             _progress = pct;
             snprintf(_status_line, sizeof(_status_line), "BLE: %u%% (%u/%u)", pct, received, total);
@@ -110,7 +351,7 @@ void OtaApp::setup(LGFX& display) {
             _mesh_ota.onResult([this](bool success, const char* version) {
                 if (success) {
                     snprintf(_status_line, sizeof(_status_line), "Mesh OTA OK! v%s", version);
-                    DBG_INFO(TAG, "Mesh OTA success, rebooting in 2s...");
+                    Serial.printf("[ota] Mesh OTA success, rebooting in 2s...\n");
                     delay(2000);
                     _ota.reboot();
                 } else {
@@ -119,7 +360,7 @@ void OtaApp::setup(LGFX& display) {
             });
             // Auto-enable receiving by default
             _mesh_ota.enableReceive(true);
-            DBG_INFO(TAG, "Mesh OTA: initialized, receive enabled");
+            Serial.printf("[ota] Mesh OTA: initialized, receive enabled\n");
         }
     }
 
@@ -130,16 +371,16 @@ void OtaApp::setup(LGFX& display) {
 
     // Init OTA audit log
     _audit.init();
-    DBG_INFO(TAG, "OTA audit: %d entries logged", _audit.getEntryCount());
+    Serial.printf("[ota] OTA audit: %d entries logged\n", _audit.getEntryCount());
 
     snprintf(_status_line, sizeof(_status_line), "Ready. Waiting for OTA...");
-    DBG_INFO(TAG, "OTA app ready");
-    DBG_INFO(TAG, "  SD OTA: %s", _sd_ok ? "available" : "no SD");
-    DBG_INFO(TAG, "  Serial OTA: listening");
-    DBG_INFO(TAG, "  BLE OTA: %s", _ble_ok ? "advertising" : "unavailable");
-    DBG_INFO(TAG, "  ESP-NOW P2P: %s", _espnow_ok ? "active" : "unavailable");
-    DBG_INFO(TAG, "  Partition: %s (max %u bytes)",
-             _ota.getRunningPartition(), _ota.getMaxFirmwareSize());
+    Serial.printf("[ota] OTA app ready\n");
+    Serial.printf("[ota]   SD OTA: %s\n", _sd_ok ? "available" : "no SD");
+    Serial.printf("[ota]   Serial OTA: listening\n");
+    Serial.printf("[ota]   BLE OTA: %s\n", _ble_ok ? "advertising" : "unavailable");
+    Serial.printf("[ota]   ESP-NOW P2P: %s\n", _espnow_ok ? "active" : "unavailable");
+    Serial.printf("[ota]   Partition: %s (max %u bytes)\n",
+                  _ota.getRunningPartition(), _ota.getMaxFirmwareSize());
 
     Serial.println("OTA_READY");
 }
@@ -147,13 +388,13 @@ void OtaApp::setup(LGFX& display) {
 // ============================================================================
 // Loop
 // ============================================================================
-void OtaApp::loop(LGFX& display) {
+void OtaApp::loop() {
     // If USB provisioning is active, let the provision HAL own Serial
     if (_provision.isUSBProvisionActive()) {
         bool done = _provision.processUSBProvision();
         if (done) {
-            DBG_INFO(TAG, "USB provisioning completed, device_id: %s",
-                     _provision.getIdentity().device_id);
+            Serial.printf("[ota] USB provisioning completed, device_id: %s\n",
+                          _provision.getIdentity().device_id);
             snprintf(_status_line, sizeof(_status_line), "Provisioned: %s",
                      _provision.getIdentity().device_id);
         }
@@ -161,7 +402,7 @@ void OtaApp::loop(LGFX& display) {
         uint32_t now = millis();
         if (now - _status_timer >= 250) {
             _status_timer = now;
-            drawStatus(display);
+            drawStatus();
         }
         return;
     }
@@ -170,7 +411,7 @@ void OtaApp::loop(LGFX& display) {
     if (!_app_confirmed && _ota_ok && (millis() - _app_confirm_timer >= APP_CONFIRM_DELAY_MS)) {
         _ota.confirmApp();
         _app_confirmed = true;
-        DBG_INFO(TAG, "App confirmed stable after %u ms", APP_CONFIRM_DELAY_MS);
+        Serial.printf("[ota] App confirmed stable after %u ms\n", APP_CONFIRM_DELAY_MS);
     }
 
     handleSerialOTA();
@@ -199,7 +440,7 @@ void OtaApp::loop(LGFX& display) {
         // P2P timeout check
         if (_p2p_state == P2PState::RECEIVING || _p2p_state == P2PState::SENDING) {
             if (millis() - _p2p_last_activity > P2P_TIMEOUT_MS) {
-                DBG_WARN(TAG, "P2P transfer timed out");
+                Serial.printf("[ota] P2P transfer timed out\n");
                 snprintf(_status_line, sizeof(_status_line), "P2P timeout!");
                 _p2p_state = P2PState::ERROR;
                 _releaseOta();
@@ -223,138 +464,128 @@ void OtaApp::loop(LGFX& display) {
     uint32_t now = millis();
     if (now - _status_timer >= 250) {
         _status_timer = now;
-        drawStatus(display);
+        drawStatus();
     }
 }
 
 // ============================================================================
-// Display
+// Display — framebuffer rendering with 5x7 bitmap font
 // ============================================================================
-void OtaApp::drawStatus(LGFX& display) {
-    int w = display.width();
-    int h = display.height();
-    bool narrow = (w < 200);  // 3.49 is 172px wide
-    _canvas->fillSprite(TFT_BLACK);
-    _canvas->setTextDatum(textdatum_t::top_center);
+void OtaApp::drawStatus() {
+    bool narrow = (_w < 200);  // 3.49 is 172px wide
+    uint16_t colGreen  = rgb565(0, 255, 0);
+    uint16_t colRed    = rgb565(255, 0, 0);
+    uint16_t colWhite  = rgb565(255, 255, 255);
+    uint16_t colYellow = rgb565(255, 255, 0);
+    uint16_t colGray   = rgb565(123, 123, 123);
+
+    // Clear framebuffer
+    memset(_framebuf, 0, _w * _h * sizeof(uint16_t));
 
     // Scale text sizes based on display width
-    int titleSize = narrow ? 1 : 2;
-    int bodySize = 1;
+    int titleScale = narrow ? 1 : 2;
+    int bodyScale = 1;
     int lineH = narrow ? 10 : 14;
     int margin = narrow ? 2 : 8;
-    int cx = w / 2;
 
-    // Title
-    _canvas->setTextColor(0x07E0);
-    _canvas->setTextSize(titleSize);
-    int y = margin;
-    _canvas->drawString("OTA Update", cx, y);
-    y += titleSize * 8 + 4;
-
-    // Partition info
-    _canvas->setTextColor(TFT_WHITE);
-    _canvas->setTextSize(bodySize);
     char buf[80];
 
+    // Title
+    int y = margin;
+    drawStringCenteredScaled(_framebuf, _w, _h, y, "OTA Update", colGreen, titleScale);
+    y += titleScale * 8 + 4;
+
+    // Partition info
     if (narrow) {
         // Two shorter lines for narrow displays
         snprintf(buf, sizeof(buf), "%s", _ota.getRunningPartition());
-        _canvas->drawString(buf, cx, y); y += lineH;
+        drawStringCentered(_framebuf, _w, _h, y, buf, colWhite); y += lineH;
         snprintf(buf, sizeof(buf), "Max:%uKB", (unsigned)(_ota.getMaxFirmwareSize() / 1024));
-        _canvas->drawString(buf, cx, y); y += lineH + 2;
+        drawStringCentered(_framebuf, _w, _h, y, buf, colWhite); y += lineH + 2;
     } else {
-        _canvas->drawString(_ota.getCurrentVersion(), cx, y); y += lineH;
+        drawStringCentered(_framebuf, _w, _h, y, _ota.getCurrentVersion(), colWhite); y += lineH;
         snprintf(buf, sizeof(buf), "Part: %s  Max: %uKB",
                  _ota.getRunningPartition(),
                  (unsigned)(_ota.getMaxFirmwareSize() / 1024));
-        _canvas->drawString(buf, cx, y); y += lineH + 4;
+        drawStringCentered(_framebuf, _w, _h, y, buf, colWhite); y += lineH + 4;
     }
 
     // Capabilities
-    _canvas->setTextColor(_sd_ok ? 0x07E0 : 0xF800);
     snprintf(buf, sizeof(buf), "SD:%s", _sd_ok ? "OK" : "N/A");
-    _canvas->drawString(buf, cx, y); y += lineH;
+    drawStringCentered(_framebuf, _w, _h, y, buf, _sd_ok ? colGreen : colRed); y += lineH;
 
-    _canvas->setTextColor(_espnow_ok ? 0x07E0 : 0xF800);
     int peers = _espnow_ok ? _espnow.getPeerCount() : 0;
     snprintf(buf, sizeof(buf), narrow ? "NOW:%s P:%d" : "ESP-NOW:%s Peers:%d",
              _espnow_ok ? "OK" : "N/A", peers);
-    _canvas->drawString(buf, cx, y); y += lineH;
+    drawStringCentered(_framebuf, _w, _h, y, buf, _espnow_ok ? colGreen : colRed); y += lineH;
 
-    _canvas->setTextColor(_ble_ok ? 0x07E0 : 0xF800);
     snprintf(buf, sizeof(buf), narrow ? "BLE:%s" : "BLE:%s%s",
              _ble_ok ? "OK" : "N/A",
              (!narrow && _ble_ota.isConnected()) ? " Connected" : "");
-    _canvas->drawString(buf, cx, y); y += lineH;
+    drawStringCentered(_framebuf, _w, _h, y, buf, _ble_ok ? colGreen : colRed); y += lineH;
 
-    _canvas->setTextColor(WiFi.isConnected() ? 0x07E0 : 0xF800);
-    if (WiFi.isConnected()) {
+    bool wifiConn = WiFi.isConnected();
+    if (wifiConn) {
         snprintf(buf, sizeof(buf), narrow ? "WiFi:%s" : "WiFi:%s %s",
                  WiFi.SSID().c_str(),
                  narrow ? "" : WiFi.localIP().toString().c_str());
     } else {
         snprintf(buf, sizeof(buf), "WiFi:N/A");
     }
-    _canvas->drawString(buf, cx, y); y += lineH;
+    drawStringCentered(_framebuf, _w, _h, y, buf, wifiConn ? colGreen : colRed); y += lineH;
 
-    _canvas->setTextColor(0x07E0);
-    _canvas->drawString("Serial:listen", cx, y); y += lineH + 2;
+    drawStringCentered(_framebuf, _w, _h, y, "Serial:listen", colGreen); y += lineH + 2;
 
     // Firmware file on SD
     if (_have_firmware_file) {
-        _canvas->setTextColor(0xFFE0);
-        _canvas->drawString(narrow ? "FW on SD!" : "firmware.bin on SD!", cx, y);
+        drawStringCentered(_framebuf, _w, _h, y, narrow ? "FW on SD!" : "firmware.bin on SD!", colYellow);
         y += lineH;
     }
 
     // Status
     y += 4;
-    _canvas->setTextColor(TFT_WHITE);
-    _canvas->setTextSize(narrow ? 1 : 2);
+    int statusScale = narrow ? 1 : 2;
     // Truncate status for narrow displays
     if (narrow && strlen(_status_line) > 20) {
         char trunc[24];
         strncpy(trunc, _status_line, 20);
         trunc[20] = '\0';
-        _canvas->drawString(trunc, cx, y);
+        drawStringCenteredScaled(_framebuf, _w, _h, y, trunc, colWhite, statusScale);
     } else {
-        _canvas->drawString(_status_line, cx, y);
+        drawStringCenteredScaled(_framebuf, _w, _h, y, _status_line, colWhite, statusScale);
     }
-    y += (narrow ? 1 : 2) * 8 + 4;
+    y += statusScale * 8 + 4;
 
     // Progress bar
     if (_progress > 0) {
-        int barW = w - margin * 2;
+        int barW = _w - margin * 2;
         int barH = narrow ? 10 : 16;
         int barX = margin;
         int barY = y;
-        _canvas->drawRect(barX, barY, barW, barH, TFT_WHITE);
+        drawRect(_framebuf, _w, _h, barX, barY, barW, barH, colWhite);
         int fillW = (barW - 2) * _progress / 100;
-        _canvas->fillRect(barX + 1, barY + 1, fillW, barH - 2, 0x07E0);
+        fillRect(_framebuf, _w, _h, barX + 1, barY + 1, fillW, barH - 2, colGreen);
 
         snprintf(buf, sizeof(buf), "%d%%", _progress);
-        _canvas->setTextSize(1);
-        _canvas->drawString(buf, cx, barY + barH + 2);
+        drawStringCentered(_framebuf, _w, _h, barY + barH + 2, buf, colWhite);
         y += barH + lineH;
     }
 
     // Instructions at bottom (only if enough room)
-    if (h - y > 40) {
-        int bottomY = h - (narrow ? 36 : 48);
-        _canvas->setTextColor(0x7BEF);
-        _canvas->setTextSize(1);
+    if (_h - y > 40) {
+        int bottomY = _h - (narrow ? 36 : 48);
         if (narrow) {
-            _canvas->drawString("Ser/SD/BLE/P2P", cx, bottomY);
-            _canvas->drawString("OTA ready", cx, bottomY + 10);
+            drawStringCentered(_framebuf, _w, _h, bottomY, "Ser/SD/BLE/P2P", colGray);
+            drawStringCentered(_framebuf, _w, _h, bottomY + 10, "OTA ready", colGray);
         } else {
-            _canvas->drawString("Serial: OTA_BEGIN <sz> <crc>", cx, bottomY);
-            _canvas->drawString("SD: place firmware.bin", cx, bottomY + 12);
-            _canvas->drawString("BLE: connect to ESP32-OTA", cx, bottomY + 24);
-            _canvas->drawString("P2P: auto mesh offer", cx, bottomY + 36);
+            drawStringCentered(_framebuf, _w, _h, bottomY, "Serial: OTA_BEGIN <sz> <crc>", colGray);
+            drawStringCentered(_framebuf, _w, _h, bottomY + 12, "SD: place firmware.bin", colGray);
+            drawStringCentered(_framebuf, _w, _h, bottomY + 24, "BLE: connect to ESP32-OTA", colGray);
+            drawStringCentered(_framebuf, _w, _h, bottomY + 36, "P2P: auto mesh offer", colGray);
         }
     }
 
-    _canvas->pushSprite(0, 0);
+    pushFramebuffer();
 }
 
 // ============================================================================
@@ -362,8 +593,8 @@ void OtaApp::drawStatus(LGFX& display) {
 // ============================================================================
 bool OtaApp::_claimOta(OtaSource src) {
     if (_ota_source != OtaSource::NONE && _ota_source != src) {
-        DBG_WARN(TAG, "OTA busy (source=%u), rejecting new source=%u",
-                 (uint8_t)_ota_source, (uint8_t)src);
+        Serial.printf("[ota] OTA busy (source=%u), rejecting new source=%u\n",
+                      (uint8_t)_ota_source, (uint8_t)src);
         return false;
     }
     _ota_source = src;
@@ -379,7 +610,7 @@ bool OtaApp::_otaRateLimitOk() {
     uint32_t cooldown = (_ota_fail_count >= OTA_MAX_FAILS) ? OTA_FAIL_COOLDOWN_MS : OTA_COOLDOWN_MS;
     if (now - _last_ota_attempt_ms < cooldown) {
         uint32_t wait = cooldown - (now - _last_ota_attempt_ms);
-        DBG_WARN(TAG, "OTA rate limited, wait %u ms (%u failures)", wait, _ota_fail_count);
+        Serial.printf("[ota] OTA rate limited, wait %u ms (%u failures)\n", wait, _ota_fail_count);
         return false;
     }
     _last_ota_attempt_ms = now;
@@ -395,7 +626,7 @@ bool OtaApp::checkSDUpdate() {
         snprintf(_status_line, sizeof(_status_line), "OTA rate limited");
         return false;
     }
-    DBG_INFO(TAG, "Starting SD card OTA...");
+    Serial.printf("[ota] Starting SD card OTA...\n");
     snprintf(_status_line, sizeof(_status_line), "Reading SD firmware...");
 
     _ota.onProgress([this](size_t current, size_t total) {
@@ -411,12 +642,12 @@ bool OtaApp::checkSDUpdate() {
         _progress = 100;
         _ota_fail_count = 0;
         _audit.logAttempt("sd", _ota.getCurrentVersion(), DISPLAY_DRIVER, true);
-        DBG_INFO(TAG, "SD OTA successful!");
+        Serial.printf("[ota] SD OTA successful!\n");
         return true;
     } else {
         _ota_fail_count++;
         _audit.logAttempt("sd", "?", DISPLAY_DRIVER, false, _ota.getLastError());
-        DBG_ERROR(TAG, "SD OTA failed: %s", _ota.getLastError());
+        Serial.printf("[ota] SD OTA failed: %s\n", _ota.getLastError());
         snprintf(_status_line, sizeof(_status_line), "SD OTA failed: %s", _ota.getLastError());
         _progress = 0;
         return false;
@@ -497,6 +728,7 @@ void OtaApp::handleSerialOTA() {
                 Update.abort();
                 return;
             }
+
             _serial_received += written;
             _progress = (uint8_t)((_serial_received * 100) / _serial_fw_size);
 
@@ -509,8 +741,8 @@ void OtaApp::handleSerialOTA() {
         // Verify CRC32
         uint32_t actualCrc = OtaVerify::crc32Finalize();
         if (actualCrc != _serial_fw_crc) {
-            DBG_ERROR(TAG, "CRC32 mismatch: expected 0x%08X, got 0x%08X",
-                      _serial_fw_crc, actualCrc);
+            Serial.printf("[ota] CRC32 mismatch: expected 0x%08X, got 0x%08X\n",
+                          _serial_fw_crc, actualCrc);
             Serial.printf("OTA_FAIL CRC32 mismatch (expected 0x%08X, got 0x%08X)\n",
                           _serial_fw_crc, actualCrc);
             Serial.flush();
@@ -519,12 +751,12 @@ void OtaApp::handleSerialOTA() {
             Update.abort();
             return;
         }
-        DBG_INFO(TAG, "CRC32 verified: 0x%08X", actualCrc);
+        Serial.printf("[ota] CRC32 verified: 0x%08X\n", actualCrc);
 
         // Verify ECDSA signature
 #ifdef OTA_REQUIRE_SIGNATURE
         if (!_serial_signed) {
-            DBG_ERROR(TAG, "Unsigned firmware rejected (signature required)");
+            Serial.printf("[ota] Unsigned firmware rejected (signature required)\n");
             Serial.println("OTA_FAIL unsigned firmware rejected");
             Serial.flush();
             _serial_state = SerialOtaState::ERROR;
@@ -537,14 +769,14 @@ void OtaApp::handleSerialOTA() {
             bool sigOk = OtaVerify::finalizeVerify(_serial_signature.r,
                                                      _serial_signature.s);
             if (!sigOk) {
-                DBG_ERROR(TAG, "Signature verification FAILED — rejecting firmware");
+                Serial.printf("[ota] Signature verification FAILED -- rejecting firmware\n");
                 Serial.println("OTA_FAIL signature verification failed");
                 Serial.flush();
                 _serial_state = SerialOtaState::ERROR;
                 Update.abort();
                 return;
             }
-            DBG_INFO(TAG, "ECDSA signature verified OK");
+            Serial.printf("[ota] ECDSA signature verified OK\n");
         }
 
         // All bytes received and verified — finalize and reboot
@@ -590,7 +822,7 @@ void OtaApp::handleSerialOTA() {
                     // because OTA_SIG is sent before OTA_BEGIN
                     _progress = 0;
 
-                    DBG_INFO(TAG, "Serial OTA begin: %u bytes, crc=0x%08X", size, crc);
+                    Serial.printf("[ota] Serial OTA begin: %u bytes, crc=0x%08X\n", size, crc);
 
                     if (!Update.begin(size)) {
                         Serial.printf("OTA_FAIL begin: %s\n", Update.errorString());
@@ -626,7 +858,7 @@ void OtaApp::handleSerialOTA() {
                         break;
                     }
                     _serial_signed = true;
-                    DBG_INFO(TAG, "Received ECDSA signature for verification");
+                    Serial.printf("[ota] Received ECDSA signature for verification\n");
                     Serial.println("OTA_SIG_OK");
                 } else {
                     Serial.println("OTA_SIG_FAIL bad format (OTA_SIG <r_hex64> <s_hex64>)");
@@ -942,7 +1174,7 @@ void OtaApp::handleSerialOTA() {
 // ============================================================================
 bool OtaApp::_validateOtaHeader(const OtaFirmwareHeader& hdr) {
     if (!hdr.isValid()) {
-        DBG_WARN(TAG, "Invalid OTA header magic/version");
+        Serial.printf("[ota] Invalid OTA header magic/version\n");
         return false;
     }
 
@@ -951,13 +1183,13 @@ bool OtaApp::_validateOtaHeader(const OtaFirmwareHeader& hdr) {
         // Check if board name contains our display driver name (loose match)
         // e.g., "touch-lcd-349" should match a board with AXS15231B
         // We don't enforce strict board matching since display driver names vary
-        DBG_INFO(TAG, "OTA target board: %s", hdr.board);
+        Serial.printf("[ota] OTA target board: %s\n", hdr.board);
     }
 
     // Size validation
     size_t maxSize = _ota.getMaxFirmwareSize();
     if (hdr.firmware_size > maxSize) {
-        DBG_ERROR(TAG, "Firmware too large: %u > max %u", hdr.firmware_size, (unsigned)maxSize);
+        Serial.printf("[ota] Firmware too large: %u > max %u\n", hdr.firmware_size, (unsigned)maxSize);
         return false;
     }
 
@@ -966,7 +1198,7 @@ bool OtaApp::_validateOtaHeader(const OtaFirmwareHeader& hdr) {
     if (hdr.version[0] != '\0') {
         const char* currentVer = _ota.getCurrentVersion();
         if (currentVer && otaVersionCompare(hdr.version, currentVer) < 0) {
-            DBG_ERROR(TAG, "Anti-rollback: %s < %s (downgrade rejected)", hdr.version, currentVer);
+            Serial.printf("[ota] Anti-rollback: %s < %s (downgrade rejected)\n", hdr.version, currentVer);
             return false;
         }
     }
@@ -1018,14 +1250,14 @@ void OtaApp::sendHeartbeat() {
             int urlEnd = response.indexOf("\"", urlStart);
             if (urlStart > 6 && urlEnd > urlStart) {
                 String otaUrl = String(id.server_url) + response.substring(urlStart, urlEnd);
-                DBG_INFO(TAG, "Fleet server scheduled OTA: %s", otaUrl.c_str());
+                Serial.printf("[ota] Fleet server scheduled OTA: %s\n", otaUrl.c_str());
                 snprintf(_status_line, sizeof(_status_line), "Server OTA: downloading...");
                 // Use WiFi pull OTA
                 _ota.updateFromUrl(otaUrl.c_str());
             }
         }
     } else {
-        DBG_DEBUG(TAG, "Heartbeat: HTTP %d", code);
+        Serial.printf("[ota] Heartbeat: HTTP %d\n", code);
     }
     http.end();
 #endif
@@ -1096,8 +1328,8 @@ void OtaApp::offerFirmwareToMesh() {
     memcpy(offer.version, ver, offer.version_len);
 
     _espnow.meshBroadcast((const uint8_t*)&offer, sizeof(offer));
-    DBG_INFO(TAG, "Offered firmware: %u bytes, %u chunks, crc=0x%08X, signed=%d",
-             fwDataSize, chunkCount, offer.crc32, offer.is_signed);
+    Serial.printf("[ota] Offered firmware: %u bytes, %u chunks, crc=0x%08X, signed=%d\n",
+                  fwDataSize, chunkCount, offer.crc32, offer.is_signed);
 
     // If signed, also broadcast the signature so receiver can verify
     if (offer.is_signed) {
@@ -1106,7 +1338,7 @@ void OtaApp::offerFirmwareToMesh() {
         memcpy(sigMsg.r, sig.r, 32);
         memcpy(sigMsg.s, sig.s, 32);
         _espnow.meshBroadcast((const uint8_t*)&sigMsg, sizeof(sigMsg));
-        DBG_INFO(TAG, "Sent ECDSA signature for P2P transfer");
+        Serial.printf("[ota] Sent ECDSA signature for P2P transfer\n");
     }
 #endif
 }
@@ -1122,8 +1354,8 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
             if (len < sizeof(OtaOffer)) return;
             const OtaOffer* offer = (const OtaOffer*)data;
 
-            DBG_INFO(TAG, "P2P offer from %02X:%02X: %u bytes, %u chunks",
-                     src[0], src[1], offer->firmware_size, offer->chunk_count);
+            Serial.printf("[ota] P2P offer from %02X:%02X: %u bytes, %u chunks\n",
+                          src[0], src[1], offer->firmware_size, offer->chunk_count);
 
             // Accept if we're idle and it's a different version
             if (_p2p_state == P2PState::IDLE) {
@@ -1135,13 +1367,13 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
 
 #ifdef OTA_REQUIRE_SIGNATURE
                 if (!offer->is_signed) {
-                    DBG_WARN(TAG, "P2P offer rejected: unsigned (signature required)");
+                    Serial.printf("[ota] P2P offer rejected: unsigned (signature required)\n");
                     break;
                 }
 #endif
                 if (strcmp(offerVer, _ota.getCurrentVersion()) != 0) {
-                    DBG_INFO(TAG, "Accepting P2P offer (current: %s, offered: %s, signed: %d)",
-                             _ota.getCurrentVersion(), offerVer, offer->is_signed);
+                    Serial.printf("[ota] Accepting P2P offer (current: %s, offered: %s, signed: %d)\n",
+                                  _ota.getCurrentVersion(), offerVer, offer->is_signed);
                     _p2p_signed = offer->is_signed;
                     memset(&_p2p_signature, 0, sizeof(_p2p_signature));
                     if (startEspNowReceive(offer->firmware_size, offer->crc32, offer->chunk_count)) {
@@ -1152,7 +1384,7 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
                         }
                     }
                 } else {
-                    DBG_INFO(TAG, "P2P offer same version, ignoring");
+                    Serial.printf("[ota] P2P offer same version, ignoring\n");
                 }
             }
             break;
@@ -1162,14 +1394,12 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
             if (len < sizeof(OtaChunkRequest)) return;
             const OtaChunkRequest* req = (const OtaChunkRequest*)data;
 
-            DBG_DEBUG(TAG, "P2P chunk request: idx=%u", req->chunk_idx);
-
             // Send the requested chunk from SD card
             if (!_have_firmware_file || !_sd_ok) return;
 
             // Validate chunk index
             if (_p2p_chunk_count > 0 && req->chunk_idx >= _p2p_chunk_count) {
-                DBG_WARN(TAG, "P2P invalid chunk_idx %u >= %u", req->chunk_idx, _p2p_chunk_count);
+                Serial.printf("[ota] P2P invalid chunk_idx %u >= %u\n", req->chunk_idx, _p2p_chunk_count);
                 return;
             }
 
@@ -1213,16 +1443,16 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
             // Validate data_len against actual packet size and max chunk size
             uint8_t availableData = len - sizeof(OtaChunk);
             if (chunk->data_len > availableData || chunk->data_len > OTA_CHUNK_DATA_SIZE) {
-                DBG_WARN(TAG, "P2P chunk data_len %u exceeds available %u or max %u",
-                         chunk->data_len, availableData, OTA_CHUNK_DATA_SIZE);
+                Serial.printf("[ota] P2P chunk data_len %u exceeds available %u or max %u\n",
+                              chunk->data_len, availableData, OTA_CHUNK_DATA_SIZE);
                 return;
             }
             if (chunk->data_len == 0) return;
 
             if (_p2p_state != P2PState::RECEIVING) return;
             if (chunk->chunk_idx != _p2p_next_chunk) {
-                DBG_WARN(TAG, "P2P unexpected chunk %u (expected %u)",
-                         chunk->chunk_idx, _p2p_next_chunk);
+                Serial.printf("[ota] P2P unexpected chunk %u (expected %u)\n",
+                              chunk->chunk_idx, _p2p_next_chunk);
                 return;
             }
 
@@ -1234,7 +1464,7 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
 
             size_t written = Update.write((uint8_t*)chunkData, chunk->data_len);
             if (written != chunk->data_len) {
-                DBG_ERROR(TAG, "P2P write failed: %s", Update.errorString());
+                Serial.printf("[ota] P2P write failed: %s\n", Update.errorString());
                 _p2p_state = P2PState::ERROR;
                 _releaseOta();
                 snprintf(_status_line, sizeof(_status_line), "P2P write error");
@@ -1260,8 +1490,8 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
                 bool p2p_verified = true;  // Tracks verification pass/fail
 
                 if (actualCrc != _p2p_fw_crc) {
-                    DBG_ERROR(TAG, "P2P CRC32 mismatch: 0x%08X vs 0x%08X",
-                              _p2p_fw_crc, actualCrc);
+                    Serial.printf("[ota] P2P CRC32 mismatch: 0x%08X vs 0x%08X\n",
+                                  _p2p_fw_crc, actualCrc);
                     snprintf(_status_line, sizeof(_status_line), "P2P CRC error");
                     p2p_verified = false;
                 }
@@ -1270,17 +1500,17 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
                 if (p2p_verified && _p2p_signed) {
                     bool sigOk = OtaVerify::finalizeVerify(_p2p_signature.r, _p2p_signature.s);
                     if (!sigOk) {
-                        DBG_ERROR(TAG, "P2P ECDSA signature verification FAILED");
+                        Serial.printf("[ota] P2P ECDSA signature verification FAILED\n");
                         snprintf(_status_line, sizeof(_status_line), "P2P sig FAIL");
                         p2p_verified = false;
                     } else {
-                        DBG_INFO(TAG, "P2P ECDSA signature verified OK");
+                        Serial.printf("[ota] P2P ECDSA signature verified OK\n");
                     }
                 }
 
 #ifdef OTA_REQUIRE_SIGNATURE
                 if (p2p_verified && !_p2p_signed) {
-                    DBG_ERROR(TAG, "P2P unsigned firmware rejected (signature required)");
+                    Serial.printf("[ota] P2P unsigned firmware rejected (signature required)\n");
                     snprintf(_status_line, sizeof(_status_line), "P2P unsigned!");
                     p2p_verified = false;
                 }
@@ -1301,15 +1531,15 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
                     uint8_t done = (uint8_t)OtaMsgType::DONE;
                     _espnow.meshSend(src, &done, 1);
 
-                    DBG_INFO(TAG, "P2P OTA complete, %u bytes, CRC32 verified: 0x%08X",
-                             _p2p_received, actualCrc);
+                    Serial.printf("[ota] P2P OTA complete, %u bytes, CRC32 verified: 0x%08X\n",
+                                  _p2p_received, actualCrc);
                     delay(1000);
                     _ota.reboot();
                 } else {
                     _p2p_state = P2PState::ERROR;
                     _releaseOta();
                     snprintf(_status_line, sizeof(_status_line), "P2P verify failed");
-                    DBG_ERROR(TAG, "P2P verify failed: %s", Update.errorString());
+                    Serial.printf("[ota] P2P verify failed: %s\n", Update.errorString());
                 }
             } else {
                 requestNextChunk(src);
@@ -1318,7 +1548,7 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
         }
 
         case OtaMsgType::DONE:
-            DBG_INFO(TAG, "P2P peer reports transfer done");
+            Serial.printf("[ota] P2P peer reports transfer done\n");
             _p2p_state = P2PState::IDLE;
             _releaseOta();
             snprintf(_status_line, sizeof(_status_line), "P2P transfer done");
@@ -1329,13 +1559,13 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
             const OtaSigMsg* sigMsg = (const OtaSigMsg*)data;
 
             if (_p2p_state != P2PState::RECEIVING || !_p2p_signed) {
-                DBG_WARN(TAG, "P2P SIG received but not expecting one");
+                Serial.printf("[ota] P2P SIG received but not expecting one\n");
                 return;
             }
 
             memcpy(_p2p_signature.r, sigMsg->r, 32);
             memcpy(_p2p_signature.s, sigMsg->s, 32);
-            DBG_INFO(TAG, "P2P received ECDSA signature, starting chunk transfer");
+            Serial.printf("[ota] P2P received ECDSA signature, starting chunk transfer\n");
 
             // Start streaming SHA-256 for signature verification
             OtaVerify::beginVerify();
@@ -1346,7 +1576,7 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
         }
 
         case OtaMsgType::ABORT:
-            DBG_WARN(TAG, "P2P peer aborted transfer");
+            Serial.printf("[ota] P2P peer aborted transfer\n");
             _p2p_state = P2PState::IDLE;
             _releaseOta();
             snprintf(_status_line, sizeof(_status_line), "P2P aborted by peer");
@@ -1359,11 +1589,11 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
 bool OtaApp::startEspNowReceive(uint32_t size, uint32_t crc, uint16_t chunkCount) {
 #ifndef SIMULATOR
     if (!_claimOta(OtaSource::SRC_P2P)) {
-        DBG_WARN(TAG, "P2P: OTA busy, rejecting");
+        Serial.printf("[ota] P2P: OTA busy, rejecting\n");
         return false;
     }
     if (!Update.begin(size)) {
-        DBG_ERROR(TAG, "P2P: Update.begin failed: %s", Update.errorString());
+        Serial.printf("[ota] P2P: Update.begin failed: %s\n", Update.errorString());
         snprintf(_status_line, sizeof(_status_line), "P2P: not enough space");
         return false;
     }

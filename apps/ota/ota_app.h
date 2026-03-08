@@ -61,13 +61,18 @@ static constexpr uint16_t OTA_CHUNK_DATA_SIZE = 220;  // fits in 240-byte ESP-NO
 class OtaApp : public App {
 public:
     const char* name() override { return "OTA"; }
-    void setup(LGFX& display) override;
-    void loop(LGFX& display) override;
+    void setup(esp_lcd_panel_handle_t panel, int width, int height) override;
+    void loop() override;
 
 private:
-    // Display
-    LGFX_Sprite* _canvas = nullptr;
-    void drawStatus(LGFX& display);
+    // Display (esp_lcd framebuffer rendering)
+    esp_lcd_panel_handle_t _panel = nullptr;
+    int _w = 0, _h = 0;
+    uint16_t* _framebuf = nullptr;
+    uint16_t* _dma_buf = nullptr;
+    static constexpr int CHUNK_ROWS = 40;
+    void drawStatus();
+    void pushFramebuffer();
 
     // OTA core
     OtaHAL _ota;

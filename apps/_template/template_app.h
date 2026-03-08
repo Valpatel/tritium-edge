@@ -8,23 +8,30 @@
 //   4. Add an #elif for your app in src/main.cpp's app selection block
 //   5. Add your app's source path to src_filter in platformio.ini
 //
-// Your app receives a fully initialized LGFX display reference.
-// Use DISPLAY_WIDTH / DISPLAY_HEIGHT macros for resolution-aware logic.
+// Your app receives a fully initialized esp_lcd panel handle.
+// Use the width/height passed to setup() for resolution-aware logic.
 //
-// Two patterns are supported:
-//   Raw GFX: Draw directly to LGFX in loop(). (e.g. starfield)
-//   LVGL UI: Init LVGL on LGFX in setup(), call lv_timer_handler() in loop(),
-//            and override usesLVGL() to return true.
+// Rendering pattern:
+//   Draw into the PSRAM framebuffer (_framebuf), then call pushFramebuffer()
+//   to DMA-transfer it to the panel in chunks.
 
 #include "app.h"
 
 class TemplateApp : public App {
 public:
     const char* name() override { return "Template"; }
-    void setup(LGFX& display) override;
-    void loop(LGFX& display) override;
+    void setup(esp_lcd_panel_handle_t panel, int width, int height) override;
+    void loop() override;
 
 private:
+    esp_lcd_panel_handle_t _panel = nullptr;
+    int _w = 0, _h = 0;
+    uint16_t* _framebuf = nullptr;
+    uint16_t* _dma_buf = nullptr;
+    static constexpr int CHUNK_ROWS = 40;
+
+    void pushFramebuffer();
+
     // Add your state here
     uint32_t _frame = 0;
 };
