@@ -383,18 +383,10 @@ bool SDCardHAL::format() {
         DBG_INFO(TAG, "SD card formatted and mounted successfully");
         return true;
     }
-    // Already mounted — try SD_MMC.format() if available
-    #if defined(ESP_ARDUINO_VERSION) && ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-    DBG_INFO(TAG, "Formatting SD card (this may take a while)...");
-    bool ok = SD_MMC.format();
-    if (ok) {
-        DBG_INFO(TAG, "SD card formatted successfully");
-    } else {
-        DBG_ERROR(TAG, "SD card format failed");
-    }
-    return ok;
-    #else
-    // Older framework: unmount, remount with format flag
+    // Unmount, remount with format_if_mount_failed=true.
+    // Note: SDMMCFS has no format() method in pioarduino/Arduino ESP32 v3.x.
+    // This relies on the VFS layer's format-on-mount-failure path, which
+    // may not reformat an already-mountable card. Best-effort operation.
     SD_MMC.end();
     _mounted = false;
     if (!SD_MMC.begin("/sdcard", true, true)) {
@@ -404,7 +396,6 @@ bool SDCardHAL::format() {
     _mounted = true;
     DBG_INFO(TAG, "SD card formatted and mounted successfully");
     return true;
-    #endif
 #else
     return false;
 #endif

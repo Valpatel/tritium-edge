@@ -547,7 +547,7 @@ bool OtaHAL::updateFromUrl(const char* url) {
 
     DBG_INFO(TAG, "Download size: %d bytes", contentLength);
 
-    WiFiClient* stream = http.getStreamPtr();
+    NetworkClient* stream = http.getStreamPtr();
 
     // Read first 128 bytes to check for OTA header
     uint8_t headerBuf[128];
