@@ -93,6 +93,7 @@ WatchdogHAL::TestResult WatchdogHAL::runTest() {
 #include <esp_task_wdt.h>
 #include <esp_system.h>
 #include <esp_heap_caps.h>
+#include <esp_idf_version.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -104,13 +105,27 @@ bool WatchdogHAL::init(uint32_t timeout_s) {
 
     _timeout = timeout_s;
 
-    // Arduino ESP32 uses the ESP-IDF 4.x watchdog API
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    // ESP-IDF 5.x: config struct API
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = timeout_s * 1000,
+        .idle_core_mask = 0,       // Don't watch idle tasks
+        .trigger_panic = true,
+    };
+    esp_err_t err = esp_task_wdt_init(&wdt_cfg);
+    if (err == ESP_ERR_INVALID_STATE) {
+        // Already initialized — reconfigure with new timeout
+        esp_task_wdt_deinit();
+        err = esp_task_wdt_init(&wdt_cfg);
+    }
+#else
+    // ESP-IDF 4.x: direct parameter API
     esp_err_t err = esp_task_wdt_init(timeout_s, true);
     if (err == ESP_ERR_INVALID_STATE) {
-        // Already initialized — deinit and reinit with new timeout
         esp_task_wdt_deinit();
         err = esp_task_wdt_init(timeout_s, true);
     }
+#endif
     if (err != ESP_OK) {
         DBG_ERROR("wdt", "WDT init failed: %d", err);
         return false;
