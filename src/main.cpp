@@ -103,7 +103,8 @@ static CameraApp app_instance;
 #include "effects_app.h"
 static EffectsApp app_instance;
 #elif defined(APP_TEST)
-#error "test app not yet ported to esp_lcd"
+#include "test_app.h"
+static TestApp app_instance;
 #else
 // Default app: starfield
 #include "starfield_app.h"
