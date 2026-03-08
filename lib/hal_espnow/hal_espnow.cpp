@@ -236,13 +236,19 @@ bool EspNowHAL::meshSend(const uint8_t dst_mac[6], const uint8_t* data, uint8_t 
 
     uint8_t totalLen = sizeof(MeshHeader) + len;
 
+    // Try route table first for next-hop selection
+    int routeIdx = findRoute(dst_mac);
+    if (routeIdx >= 0) {
+        return send(_routes[routeIdx].next_hop, buf, totalLen);
+    }
+
     // If destination is a direct peer, send directly
     int idx = findPeer(dst_mac);
     if (idx >= 0 && _peers[idx].is_direct) {
         return send(dst_mac, buf, totalLen);
     }
 
-    // Otherwise flood to all direct peers (mesh routing)
+    // Fallback: flood to all direct peers
     return broadcast(buf, totalLen);
 }
 
@@ -349,6 +355,213 @@ void EspNowHAL::expirePeers() {
     }
 }
 
+// ---- Route table ----
+
+void EspNowHAL::updateRoute(const uint8_t dest[6], const uint8_t next_hop[6],
+                             uint8_t hops, int8_t rssi) {
+    // Don't route to ourselves
+    if (memcmp(dest, _mac, 6) == 0) return;
+
+    int idx = findRoute(dest);
+    if (idx >= 0) {
+        // Update existing route if new path is shorter or fresher
+        RouteEntry& r = _routes[idx];
+        if (hops < r.hop_count || (millis() - r.last_updated_ms) > 10000) {
+            memcpy(r.next_hop, next_hop, 6);
+            r.hop_count = hops;
+            r.rssi = rssi;
+            r.last_updated_ms = millis();
+        }
+    } else if (_routeCount < MAX_ROUTES) {
+        RouteEntry& r = _routes[_routeCount];
+        memcpy(r.dest, dest, 6);
+        memcpy(r.next_hop, next_hop, 6);
+        r.hop_count = hops;
+        r.rssi = rssi;
+        r.last_updated_ms = millis();
+        r.valid = true;
+        _routeCount++;
+    }
+}
+
+int EspNowHAL::findRoute(const uint8_t dest[6]) const {
+    for (int i = 0; i < _routeCount; i++) {
+        if (_routes[i].valid && memcmp(_routes[i].dest, dest, 6) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void EspNowHAL::expireRoutes() {
+    uint32_t now = millis();
+    for (int i = _routeCount - 1; i >= 0; i--) {
+        if (!_routes[i].valid || (now - _routes[i].last_updated_ms) > ROUTE_EXPIRY_MS) {
+            if (i < _routeCount - 1) {
+                memmove(&_routes[i], &_routes[i + 1],
+                        (_routeCount - i - 1) * sizeof(RouteEntry));
+            }
+            _routeCount--;
+        }
+    }
+}
+
+void EspNowHAL::advertiseRoutes() {
+    if (!_ready || _peerCount == 0) return;
+
+    // Build ROUTE payload: list of (MAC[6] + hop_count[1]) for each known peer
+    uint8_t buf[250];
+    MeshHeader& hdr = *(MeshHeader*)buf;
+
+    // Each route entry in payload is 7 bytes (6 MAC + 1 hop_count)
+    int maxEntries = (ESPNOW_MAX_DATA - sizeof(MeshHeader)) / 7;
+    int entries = (_peerCount < maxEntries) ? _peerCount : maxEntries;
+
+    buildMeshHeader(hdr, MeshMsgType::ROUTE, ESPNOW_BROADCAST, entries * 7);
+
+    uint8_t* payload = buf + sizeof(MeshHeader);
+    for (int i = 0; i < entries; i++) {
+        memcpy(payload + i * 7, _peers[i].mac, 6);
+        payload[i * 7 + 6] = _peers[i].hop_count;
+    }
+
+    recordMsgId(hdr.msg_id);
+    broadcast(buf, sizeof(MeshHeader) + entries * 7);
+
+    DBG_DEBUG(TAG, "Route advertisement sent (%d entries)", entries);
+}
+
+int EspNowHAL::getRouteCount() const { return _routeCount; }
+
+// ---- ACK handling ----
+
+void EspNowHAL::sendAck(const uint8_t dest_mac[6], uint16_t ack_msg_id) {
+    uint8_t buf[250];
+    MeshHeader& hdr = *(MeshHeader*)buf;
+    buildMeshHeader(hdr, MeshMsgType::ACK, dest_mac, 2);
+
+    // Payload: the msg_id we're acknowledging
+    uint8_t* payload = buf + sizeof(MeshHeader);
+    payload[0] = (uint8_t)(ack_msg_id >> 8);
+    payload[1] = (uint8_t)(ack_msg_id & 0xFF);
+
+    recordMsgId(hdr.msg_id);
+
+    // Send directly to next hop if we have a route, otherwise to sender
+    int routeIdx = findRoute(dest_mac);
+    if (routeIdx >= 0) {
+        send(_routes[routeIdx].next_hop, buf, sizeof(MeshHeader) + 2);
+    } else {
+        int peerIdx = findPeer(dest_mac);
+        if (peerIdx >= 0 && _peers[peerIdx].is_direct) {
+            send(dest_mac, buf, sizeof(MeshHeader) + 2);
+        } else {
+            broadcast(buf, sizeof(MeshHeader) + 2);
+        }
+    }
+}
+
+void EspNowHAL::handleAck(uint16_t msg_id) {
+    for (int i = 0; i < MAX_PENDING_ACKS; i++) {
+        if (_pendingAcks[i].active && _pendingAcks[i].msg_id == msg_id) {
+            _pendingAcks[i].active = false;
+            _stats.ack_received++;
+            DBG_DEBUG(TAG, "ACK received for msg_id=%u", msg_id);
+            return;
+        }
+    }
+}
+
+void EspNowHAL::processAcks() {
+    uint32_t now = millis();
+    for (int i = 0; i < MAX_PENDING_ACKS; i++) {
+        if (!_pendingAcks[i].active) continue;
+        if ((now - _pendingAcks[i].sent_ms) < ACK_TIMEOUT_MS) continue;
+
+        if (_pendingAcks[i].retries < MAX_RETRIES) {
+            // Retry
+            _pendingAcks[i].retries++;
+            _pendingAcks[i].sent_ms = now;
+
+            int routeIdx = findRoute(_pendingAcks[i].dest);
+            if (routeIdx >= 0) {
+                send(_routes[routeIdx].next_hop,
+                     _pendingAcks[i].data, _pendingAcks[i].data_len);
+            } else {
+                broadcast(_pendingAcks[i].data, _pendingAcks[i].data_len);
+            }
+            _stats.tx_count++;
+
+            DBG_DEBUG(TAG, "Retry %d for msg_id=%u",
+                      _pendingAcks[i].retries, _pendingAcks[i].msg_id);
+        } else {
+            // Give up
+            _pendingAcks[i].active = false;
+            _stats.ack_timeout++;
+            DBG_DEBUG(TAG, "ACK timeout for msg_id=%u after %d retries",
+                      _pendingAcks[i].msg_id, MAX_RETRIES);
+            logDiagEvent("Mesh delivery failed: msg_id=%u to %02X:%02X:%02X:%02X:%02X:%02X",
+                         _pendingAcks[i].msg_id,
+                         _pendingAcks[i].dest[0], _pendingAcks[i].dest[1],
+                         _pendingAcks[i].dest[2], _pendingAcks[i].dest[3],
+                         _pendingAcks[i].dest[4], _pendingAcks[i].dest[5]);
+        }
+    }
+}
+
+bool EspNowHAL::meshSendReliable(const uint8_t dst_mac[6],
+                                   const uint8_t* data, uint8_t len) {
+    // Can't do reliable delivery to broadcast
+    if (memcmp(dst_mac, ESPNOW_BROADCAST, 6) == 0) {
+        return meshSend(dst_mac, data, len);
+    }
+
+    if (!_ready || !data || len == 0) return false;
+    if (len > ESPNOW_MAX_DATA - sizeof(MeshHeader)) return false;
+
+    // Build the packet
+    uint8_t buf[250];
+    MeshHeader& hdr = *(MeshHeader*)buf;
+    buildMeshHeader(hdr, MeshMsgType::DATA, dst_mac, len);
+    memcpy(buf + sizeof(MeshHeader), data, len);
+
+    recordMsgId(hdr.msg_id);
+    uint8_t totalLen = sizeof(MeshHeader) + len;
+
+    // Find a free pending ACK slot
+    int slot = -1;
+    for (int i = 0; i < MAX_PENDING_ACKS; i++) {
+        if (!_pendingAcks[i].active) { slot = i; break; }
+    }
+    if (slot < 0) {
+        // All slots full, fall back to unreliable
+        return meshSend(dst_mac, data, len);
+    }
+
+    // Store for retry
+    PendingAck& pa = _pendingAcks[slot];
+    pa.msg_id = hdr.msg_id;
+    memcpy(pa.dest, dst_mac, 6);
+    memcpy(pa.data, buf, totalLen);
+    pa.data_len = totalLen;
+    pa.retries = 0;
+    pa.sent_ms = millis();
+    pa.active = true;
+
+    // Send using best route
+    int routeIdx = findRoute(dst_mac);
+    if (routeIdx >= 0) {
+        return send(_routes[routeIdx].next_hop, buf, totalLen);
+    }
+
+    int peerIdx = findPeer(dst_mac);
+    if (peerIdx >= 0 && _peers[peerIdx].is_direct) {
+        return send(dst_mac, buf, totalLen);
+    }
+
+    return broadcast(buf, totalLen);
+}
+
 // ---- Dedup ----
 
 bool EspNowHAL::isDuplicate(uint16_t msgId) {
@@ -386,6 +599,8 @@ void EspNowHAL::handleMeshPacket(const uint8_t* senderMac,
     // Update peer table with the original source (via mesh)
     if (memcmp(senderMac, hdr->src, 6) != 0) {
         updatePeer(hdr->src, rssi, hdr->hop_count, false);
+        // Learn route: to reach src, go through senderMac
+        updateRoute(hdr->src, senderMac, hdr->hop_count, rssi);
     }
 
     bool forUs = (memcmp(hdr->dst, _mac, 6) == 0);
@@ -403,6 +618,10 @@ void EspNowHAL::handleMeshPacket(const uint8_t* senderMac,
                              hdr->hop_count, payloadLen);
                 if (_meshCb) {
                     _meshCb(hdr->src, payload, payloadLen, hdr->hop_count);
+                }
+                // Send ACK back to source for unicast messages
+                if (forUs && !isBroadcast) {
+                    sendAck(hdr->src, hdr->msg_id);
                 }
             }
             // Relay if not a leaf and TTL permits
@@ -453,6 +672,10 @@ void EspNowHAL::handleMeshPacket(const uint8_t* senderMac,
 
         case MeshMsgType::ACK:
             if (forUs || isBroadcast) {
+                if (payloadLen >= 2) {
+                    uint16_t ackedId = ((uint16_t)payload[0] << 8) | payload[1];
+                    handleAck(ackedId);
+                }
                 DBG_DEBUG(TAG, "ACK from %02X:%02X:%02X:%02X:%02X:%02X",
                           hdr->src[0], hdr->src[1], hdr->src[2],
                           hdr->src[3], hdr->src[4], hdr->src[5]);
@@ -463,11 +686,23 @@ void EspNowHAL::handleMeshPacket(const uint8_t* senderMac,
             break;
 
         case MeshMsgType::ROUTE:
-            // Route advertisements: update peer table with advertised nodes
+            // Route advertisements: learn routes through sender
             if (forUs || isBroadcast) {
-                DBG_DEBUG(TAG, "ROUTE from %02X:%02X:%02X:%02X:%02X:%02X",
+                // Payload: N entries of (MAC[6] + hop_count[1])
+                int numEntries = payloadLen / 7;
+                for (int i = 0; i < numEntries; i++) {
+                    const uint8_t* advMac = payload + i * 7;
+                    uint8_t advHops = payload[i * 7 + 6];
+                    // Route to advMac goes through senderMac, total hops = advHops + 1
+                    updateRoute(advMac, senderMac, advHops + 1, rssi);
+                    // Also update peer table for indirect peers
+                    if (findPeer(advMac) < 0) {
+                        updatePeer(advMac, rssi, advHops + 1, false);
+                    }
+                }
+                DBG_DEBUG(TAG, "ROUTE from %02X:%02X:%02X:%02X:%02X:%02X (%d entries)",
                           hdr->src[0], hdr->src[1], hdr->src[2],
-                          hdr->src[3], hdr->src[4], hdr->src[5]);
+                          hdr->src[3], hdr->src[4], hdr->src[5], numEntries);
             }
             if (_role != EspNowRole::LEAF) {
                 relayPacket(data, len);
@@ -524,8 +759,21 @@ void EspNowHAL::process() {
         meshDiscovery();
     }
 
-    // Expire stale peers
+    // Periodic route advertisements
+    if ((now - _lastRouteAdvMs) >= ROUTE_ADV_INTERVAL_MS) {
+        _lastRouteAdvMs = now;
+        advertiseRoutes();
+    }
+
+    // Process pending ACK retries
+    processAcks();
+
+    // Expire stale peers and routes
     expirePeers();
+    expireRoutes();
+
+    // Update route count stat
+    _stats.route_count = _routeCount;
 
     // Check for peer count changes and log to diagnostics
     checkPeerChanges();
@@ -798,7 +1046,9 @@ bool EspNowHAL::broadcast(const uint8_t*, uint8_t) { return false; }
 
 bool EspNowHAL::meshSend(const uint8_t[6], const uint8_t*, uint8_t) { return false; }
 bool EspNowHAL::meshBroadcast(const uint8_t*, uint8_t) { return false; }
+bool EspNowHAL::meshSendReliable(const uint8_t[6], const uint8_t*, uint8_t) { return false; }
 void EspNowHAL::meshDiscovery() {}
+int EspNowHAL::getRouteCount() const { return 0; }
 
 int EspNowHAL::getPeerCount() const { return 0; }
 int EspNowHAL::getPeers(EspNowPeer*, int) const { return 0; }
@@ -834,6 +1084,17 @@ void EspNowHAL::expirePeers() {}
 void EspNowHAL::buildMeshHeader(MeshHeader&, MeshMsgType, const uint8_t[6], uint8_t) {}
 bool EspNowHAL::relayPacket(const uint8_t*, uint8_t) { return false; }
 void EspNowHAL::handleMeshPacket(const uint8_t*, const uint8_t*, int, int8_t) {}
+
+// Route table stubs
+void EspNowHAL::updateRoute(const uint8_t[6], const uint8_t[6], uint8_t, int8_t) {}
+int EspNowHAL::findRoute(const uint8_t[6]) const { return -1; }
+void EspNowHAL::expireRoutes() {}
+void EspNowHAL::advertiseRoutes() {}
+
+// ACK stubs
+void EspNowHAL::sendAck(const uint8_t[6], uint16_t) {}
+void EspNowHAL::processAcks() {}
+void EspNowHAL::handleAck(uint16_t) {}
 
 // Diagnostics stubs
 void EspNowHAL::logDiagEvent(const char*, ...) {}

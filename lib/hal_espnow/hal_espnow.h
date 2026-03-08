@@ -68,6 +68,12 @@ public:
     bool meshBroadcast(const uint8_t* data, uint8_t len);
     void meshDiscovery();  // Send ping to discover neighbors
 
+    // Reliable mesh send (with ACK + retry)
+    bool meshSendReliable(const uint8_t dst_mac[6], const uint8_t* data, uint8_t len);
+
+    // Route table access
+    int getRouteCount() const;
+
     // Peer table
     int getPeerCount() const;
     int getPeers(EspNowPeer* peers, int maxPeers) const;
@@ -89,6 +95,9 @@ public:
         uint32_t dup_dropped;       // Duplicate messages dropped
         uint32_t ttl_expired;       // Messages that ran out of TTL
         uint32_t discovery_count;   // Discovery rounds completed
+        uint32_t ack_received;      // ACKs received for our messages
+        uint32_t ack_timeout;       // Messages that timed out without ACK
+        uint32_t route_count;       // Current route table entries
     };
     Stats getStats() const;
     void resetStats();
@@ -166,10 +175,50 @@ private:
     // Mesh message ID counter
     uint16_t _nextMsgId = 0;
 
-    // Periodic discovery timer
+    // Route table: destination MAC -> next-hop MAC + metrics
+    struct RouteEntry {
+        uint8_t dest[6];        // Destination MAC
+        uint8_t next_hop[6];    // Best next-hop MAC (direct neighbor)
+        uint8_t hop_count;      // Total hops to destination
+        int8_t  rssi;           // RSSI of next-hop link
+        uint32_t last_updated_ms;
+        bool    valid;
+    };
+    static constexpr int MAX_ROUTES = 32;
+    RouteEntry _routes[MAX_ROUTES] = {};
+    int _routeCount = 0;
+
+    void updateRoute(const uint8_t dest[6], const uint8_t next_hop[6],
+                     uint8_t hops, int8_t rssi);
+    int findRoute(const uint8_t dest[6]) const;
+    void expireRoutes();
+    void advertiseRoutes();  // Broadcast ROUTE messages with our known peers
+
+    // Reliable delivery: pending ACK tracking
+    struct PendingAck {
+        uint16_t msg_id;
+        uint8_t  dest[6];
+        uint8_t  data[250];
+        uint8_t  data_len;
+        uint8_t  retries;
+        uint32_t sent_ms;
+        bool     active;
+    };
+    static constexpr int MAX_PENDING_ACKS = 4;
+    static constexpr int MAX_RETRIES = 3;
+    static constexpr uint32_t ACK_TIMEOUT_MS = 500;
+    PendingAck _pendingAcks[MAX_PENDING_ACKS] = {};
+    void sendAck(const uint8_t dest_mac[6], uint16_t msg_id);
+    void processAcks();
+    void handleAck(uint16_t msg_id);
+
+    // Periodic timers
     uint32_t _lastDiscoveryMs = 0;
+    uint32_t _lastRouteAdvMs = 0;
     static constexpr uint32_t DISCOVERY_INTERVAL_MS = 10000;
+    static constexpr uint32_t ROUTE_ADV_INTERVAL_MS = 15000;
     static constexpr uint32_t PEER_EXPIRY_MS = 30000;
+    static constexpr uint32_t ROUTE_EXPIRY_MS = 45000;
 
     // Diagnostics integration
     bool _diagEnabled = false;
