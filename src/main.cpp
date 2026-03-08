@@ -2,10 +2,13 @@
 #include "display.h"
 #include "app.h"
 
-// SD card support (for SD_FORMAT command)
-#if defined(HAS_SDCARD) && HAS_SDCARD && defined(SD_MMC_D0)
+// SD card support (for SD_FORMAT command) — only when networking libs are available
+#if defined(HAS_SDCARD) && HAS_SDCARD && defined(SD_MMC_D0) && defined(ENABLE_WIFI)
 #include <SD_MMC.h>
 #include <FS.h>
+#define SD_FORMAT_AVAILABLE 1
+#else
+#define SD_FORMAT_AVAILABLE 0
 #endif
 
 // --- Optional background services (enabled via build flags) ---
@@ -73,7 +76,7 @@ static void handleSerialCommands() {
                               display_get_width(), display_get_height(),
                               app->name());
             }
-#if defined(HAS_SDCARD) && HAS_SDCARD && defined(SD_MMC_D0)
+#if SD_FORMAT_AVAILABLE
             else if (strcmp(_cmd_buf, "SD_FORMAT") == 0) {
                 Serial.printf("[sd] Formatting SD card...\n");
                 SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
