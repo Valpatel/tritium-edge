@@ -33,6 +33,12 @@ bool AudioHAL::getSpectrum(float* bins, size_t numBins, const int16_t* samples, 
 #else
 #define HAS_LGFX_I2C 0
 #endif
+#if __has_include("hal_diag.h")
+#include "hal_diag.h"
+#define HAS_HAL_DIAG 1
+#else
+#define HAS_HAL_DIAG 0
+#endif
 #include <math.h>
 
 #ifndef HAS_AUDIO_CODEC
@@ -385,35 +391,49 @@ bool AudioHAL::getSpectrum(float* bins, size_t numBins, const int16_t* samples, 
 }
 
 void AudioHAL::writeReg(uint8_t reg, uint8_t val) {
+    bool ok = false;
+    uint32_t t0 = micros();
 #if HAS_LGFX_I2C
     if (_use_lgfx) {
         uint8_t buf[2] = { reg, val };
-        lgfx::i2c::transactionWrite(_lgfx_port, _codec_addr, buf, 2, 400000);
+        ok = lgfx::i2c::transactionWrite(_lgfx_port, _codec_addr, buf, 2, 400000).has_value();
     } else
 #endif
     {
         _wire->beginTransmission(_codec_addr);
         _wire->write(reg);
         _wire->write(val);
-        _wire->endTransmission();
+        ok = (_wire->endTransmission() == 0);
     }
+    int16_t latency = (int16_t)(micros() - t0);
+#if HAS_HAL_DIAG
+    hal_diag::report_i2c_result(_codec_addr, ok, false, latency);
+#endif
 }
 
 uint8_t AudioHAL::readReg(uint8_t reg) {
     uint8_t val = 0;
+    bool ok = false;
+    uint32_t t0 = micros();
 #if HAS_LGFX_I2C
     if (_use_lgfx) {
-        lgfx::i2c::transactionWriteRead(_lgfx_port, _codec_addr,
-            &reg, 1, &val, 1, 400000);
+        ok = lgfx::i2c::transactionWriteRead(_lgfx_port, _codec_addr,
+            &reg, 1, &val, 1, 400000).has_value();
     } else
 #endif
     {
         _wire->beginTransmission(_codec_addr);
         _wire->write(reg);
-        _wire->endTransmission(false);
-        _wire->requestFrom(_codec_addr, (uint8_t)1);
-        if (_wire->available()) val = _wire->read();
+        uint8_t err = _wire->endTransmission(false);
+        if (err == 0) {
+            ok = (_wire->requestFrom(_codec_addr, (uint8_t)1) == 1);
+            if (_wire->available()) val = _wire->read();
+        }
     }
+    int16_t latency = (int16_t)(micros() - t0);
+#if HAS_HAL_DIAG
+    hal_diag::report_i2c_result(_codec_addr, ok, false, latency);
+#endif
     return val;
 }
 

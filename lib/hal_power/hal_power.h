@@ -71,6 +71,8 @@ private:
     bool initAXP2101();
     float axp_getBatteryVoltage();
     bool axp_isCharging();
+    float axp_getPMICTemp();
+    float axp_getChargeCurrent();
     void writeReg(uint8_t reg, uint8_t val);
     uint8_t readReg(uint8_t reg);
     float adc_getBatteryVoltage();

@@ -1,6 +1,13 @@
 #include "hal_power.h"
 #include "debug_log.h"
 
+#if __has_include("hal_diag.h")
+#include "hal_diag.h"
+#define HAS_HAL_DIAG 1
+#else
+#define HAS_HAL_DIAG 0
+#endif
+
 #ifdef SIMULATOR
 
 // --- Simulator stub (fake 75% battery on USB) ---
@@ -42,10 +49,14 @@ void PowerHAL::poll() {}
 #define AXP2101_STATUS1        0x00
 #define AXP2101_STATUS2        0x01
 #define AXP2101_CHIP_ID        0x03
+#define AXP2101_ADC_CTRL       0x30
 #define AXP2101_VBAT_H         0x34
 #define AXP2101_VBAT_L         0x35
+#define AXP2101_TS_H           0x36
+#define AXP2101_TS_L           0x37
+#define AXP2101_ICC_H          0x38
+#define AXP2101_ICC_L          0x39
 #define AXP2101_ICC_SET        0x62
-#define AXP2101_ADC_CTRL       0x30
 
 // Board can override voltage divider ratio (e.g. 3.49 board uses 3x divider)
 #ifndef BAT_ADC_DIVIDER
@@ -221,15 +232,101 @@ bool PowerHAL::setChargeCurrent(uint16_t mA) {
 }
 
 void PowerHAL::poll() {
-    if (!_low_cb) return;
-    int level = getBatteryLevel();
-    if (level < 0) return;
-    if (level <= _low_threshold && !_low_warned) {
-        _low_warned = true;
-        _low_cb(level);
-    } else if (level > _low_threshold + 5) {
-        _low_warned = false;
+    PowerInfo info = getInfo();
+    int level = info.percentage;
+
+    // Low-battery callback (existing behavior)
+    if (_low_cb && level >= 0) {
+        if (level <= _low_threshold && !_low_warned) {
+            _low_warned = true;
+            _low_cb(level);
+        } else if (level > _low_threshold + 5) {
+            _low_warned = false;
+        }
     }
+
+#if HAS_HAL_DIAG
+    // ── Static trackers to avoid spamming logs every tick ───────────────
+    static PowerSource s_prev_source = PowerSource::UNKNOWN;
+    static bool s_warned_bat_low = false;
+    static bool s_warned_bat_critical = false;
+    static bool s_warned_pmic_temp_high = false;
+    static bool s_warned_pmic_temp_critical = false;
+    static bool s_warned_charge_anomaly = false;
+    static bool s_first_poll = true;
+
+    // ── 1. Power source change (USB <-> battery) ────────────────────────
+    if (info.source != PowerSource::UNKNOWN) {
+        if (!s_first_poll && info.source != s_prev_source) {
+            const char* src_str = (info.source == PowerSource::USB) ? "USB" : "battery";
+            hal_diag::log(hal_diag::Severity::INFO, "power",
+                          "Power source changed to %s (%.2fV, %d%%)",
+                          src_str, info.voltage, level);
+        }
+        s_prev_source = info.source;
+    }
+
+    // ── 2. Battery level warnings ───────────────────────────────────────
+    if (level >= 0) {
+        // Critical (< 5%)
+        if (level < 5 && !s_warned_bat_critical) {
+            s_warned_bat_critical = true;
+            hal_diag::log(hal_diag::Severity::ERROR, "power",
+                          "Battery CRITICAL: %d%% (%.2fV)", level, info.voltage);
+        } else if (level >= 5) {
+            s_warned_bat_critical = false;
+        }
+
+        // Low (< 20%)
+        if (level < 20 && !s_warned_bat_low) {
+            s_warned_bat_low = true;
+            hal_diag::log(hal_diag::Severity::WARN, "power",
+                          "Battery low: %d%% (%.2fV)", level, info.voltage);
+        } else if (level >= 22) {
+            // 2% hysteresis to avoid toggling at threshold
+            s_warned_bat_low = false;
+        }
+    }
+
+    // ── 3. PMIC temperature warnings ──────────────────────────────────
+    if (_has_pmic) {
+        float pmic_temp = axp_getPMICTemp();
+        if (pmic_temp > -200.0f) {  // Valid reading
+            // Critical (> 80°C)
+            if (pmic_temp > 80.0f && !s_warned_pmic_temp_critical) {
+                s_warned_pmic_temp_critical = true;
+                hal_diag::log(hal_diag::Severity::ERROR, "power",
+                              "PMIC temperature CRITICAL: %.1f C", pmic_temp);
+            } else if (pmic_temp <= 78.0f) {
+                s_warned_pmic_temp_critical = false;
+            }
+
+            // High (> 60°C)
+            if (pmic_temp > 60.0f && !s_warned_pmic_temp_high) {
+                s_warned_pmic_temp_high = true;
+                hal_diag::log(hal_diag::Severity::WARN, "power",
+                              "PMIC temperature high: %.1f C", pmic_temp);
+            } else if (pmic_temp <= 58.0f) {
+                s_warned_pmic_temp_high = false;
+            }
+        }
+
+        // ── 4. Charge current anomaly (negative current on USB) ─────────
+        if (info.source == PowerSource::USB) {
+            float charge_ma = axp_getChargeCurrent();
+            if (charge_ma < 0.0f && !s_warned_charge_anomaly) {
+                s_warned_charge_anomaly = true;
+                hal_diag::log(hal_diag::Severity::WARN, "power",
+                              "Charge current anomaly: %.0f mA while on USB",
+                              charge_ma);
+            } else if (charge_ma >= 0.0f) {
+                s_warned_charge_anomaly = false;
+            }
+        }
+    }
+
+    s_first_poll = false;
+#endif // HAS_HAL_DIAG
 }
 
 float PowerHAL::axp_getBatteryVoltage() {
@@ -244,36 +341,66 @@ bool PowerHAL::axp_isCharging() {
     return ((status >> 5) & 0x03) == 0x01;
 }
 
+float PowerHAL::axp_getPMICTemp() {
+    uint8_t h = readReg(AXP2101_TS_H);
+    uint8_t l = readReg(AXP2101_TS_L);
+    // AXP2101 TS ADC: 14-bit value, 0.1°C per LSB, offset -273.15
+    uint16_t raw = ((uint16_t)(h << 8) | l) & 0x3FFF;
+    if (raw == 0 || raw == 0x3FFF) return -999.0f;  // No sensor / invalid
+    return raw * 0.1f - 273.15f;
+}
+
+float PowerHAL::axp_getChargeCurrent() {
+    uint8_t h = readReg(AXP2101_ICC_H);
+    uint8_t l = readReg(AXP2101_ICC_L);
+    // AXP2101 charge current: H8L8, milliamps
+    return (float)((int16_t)((h << 8) | l));
+}
+
 void PowerHAL::writeReg(uint8_t reg, uint8_t val) {
+    bool ok = false;
+    uint32_t t0 = micros();
 #if HAS_LGFX_I2C
     if (_use_lgfx) {
         uint8_t buf[2] = { reg, val };
-        lgfx::i2c::transactionWrite(_lgfx_port, _addr, buf, 2, 400000);
+        ok = lgfx::i2c::transactionWrite(_lgfx_port, _addr, buf, 2, 400000).has_value();
     } else
 #endif
     {
         _wire->beginTransmission(_addr);
         _wire->write(reg);
         _wire->write(val);
-        _wire->endTransmission();
+        ok = (_wire->endTransmission() == 0);
     }
+    int16_t latency = (int16_t)(micros() - t0);
+#if HAS_HAL_DIAG
+    hal_diag::report_i2c_result(_addr, ok, false, latency);
+#endif
 }
 
 uint8_t PowerHAL::readReg(uint8_t reg) {
     uint8_t val = 0;
+    bool ok = false;
+    uint32_t t0 = micros();
 #if HAS_LGFX_I2C
     if (_use_lgfx) {
-        lgfx::i2c::transactionWriteRead(_lgfx_port, _addr,
-            &reg, 1, &val, 1, 400000);
+        ok = lgfx::i2c::transactionWriteRead(_lgfx_port, _addr,
+            &reg, 1, &val, 1, 400000).has_value();
     } else
 #endif
     {
         _wire->beginTransmission(_addr);
         _wire->write(reg);
-        _wire->endTransmission(false);
-        _wire->requestFrom(_addr, (uint8_t)1);
-        if (_wire->available()) val = _wire->read();
+        uint8_t err = _wire->endTransmission(false);
+        if (err == 0) {
+            ok = (_wire->requestFrom(_addr, (uint8_t)1) == 1);
+            if (_wire->available()) val = _wire->read();
+        }
     }
+    int16_t latency = (int16_t)(micros() - t0);
+#if HAS_HAL_DIAG
+    hal_diag::report_i2c_result(_addr, ok, false, latency);
+#endif
     return val;
 }
 
