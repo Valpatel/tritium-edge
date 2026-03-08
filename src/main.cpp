@@ -97,7 +97,8 @@ static DiagApp app_instance;
 #elif defined(APP_UI_DEMO)
 #error "ui_demo app not yet ported to esp_lcd"
 #elif defined(APP_CAMERA)
-#error "camera app not yet ported to esp_lcd"
+#include "camera_app.h"
+static CameraApp app_instance;
 #elif defined(APP_EFFECTS)
 #error "effects app not yet ported to esp_lcd"
 #elif defined(APP_TEST)
