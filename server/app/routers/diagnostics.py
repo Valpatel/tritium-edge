@@ -43,6 +43,8 @@ def _store_diag(device_id: str, report: dict) -> dict:
 @router.post("/devices/{device_id}/diag")
 async def submit_diagnostics(device_id: str, request: Request):
     """Device submits its diagnostic report."""
+    from .ws import broadcast
+
     body = await request.json()
     entry = _store_diag(device_id, body)
 
@@ -55,6 +57,19 @@ async def submit_diagnostics(device_id: str, request: Request):
             for a in anomalies[:5]
         )
         store.add_event("node_anomaly", device_id, detail)
+
+    # Broadcast to WebSocket clients for real-time dashboard updates
+    await broadcast("node_diag", {
+        "device_id": device_id,
+        "anomaly_count": entry["anomaly_count"],
+        "health": body.get("health", {}),
+    })
+    if anomalies:
+        await broadcast("node_anomaly", {
+            "device_id": device_id,
+            "anomalies": anomalies[:10],
+            "count": len(anomalies),
+        })
 
     return {
         "status": "ok",

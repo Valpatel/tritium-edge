@@ -47,6 +47,8 @@ async def websocket_endpoint(websocket: WebSocket):
       - ota_result: OTA completed (success/fail)
       - firmware_uploaded: New firmware uploaded
       - command_sent: Command dispatched to device
+      - node_diag: Node diagnostic report received
+      - node_anomaly: Node anomalies detected
     """
     await websocket.accept()
     _clients.add(websocket)
