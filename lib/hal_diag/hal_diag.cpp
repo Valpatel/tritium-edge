@@ -778,14 +778,9 @@ bool init(const DiagConfig& cfg) {
                 (unsigned long)crash.uptime_ms);
 #if DIAG_HAS_DIAGLOG
             // Also write to persistent log for fleet server collection
-            hal_diaglog::DiagEvent evt = {};
-            evt.epoch = crash.epoch_time;
-            evt.uptime_ms = crash.uptime_ms;
-            evt.severity = 5;  // FATAL
-            strncpy(evt.subsystem, "crash", sizeof(evt.subsystem));
-            strncpy(evt.message, crash.message, sizeof(evt.message));
-            evt.value = (float)crash.free_heap;
-            hal_diaglog::diaglog_write(evt);
+            diaglog_write(
+                DiagSeverity::CRITICAL, "crash", 999,
+                crash.message, (float)crash.free_heap);
 #endif
             clear_crash_info();
         }
