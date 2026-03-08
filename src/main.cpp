@@ -2,15 +2,31 @@
 #include "display.h"
 #include "app.h"
 
+// --- Optional background services (enabled via build flags) ---
+#if defined(ENABLE_WIFI) && __has_include("wifi_manager.h")
+#include "wifi_manager.h"
+static WifiManager wifi;
+static bool _wifi_enabled = true;
+#else
+static bool _wifi_enabled = false;
+#endif
+
+#if defined(ENABLE_HEARTBEAT) && __has_include("hal_heartbeat.h")
+#include "hal_heartbeat.h"
+static bool _heartbeat_enabled = true;
+#else
+static bool _heartbeat_enabled = false;
+#endif
+
 // --- App selection via build flag ---
 #if defined(APP_STARFIELD)
 #include "starfield_app.h"
 static StarfieldApp app_instance;
 
-#elif !defined(APP_STARFIELD)
-// All other apps need porting to esp_lcd
-#if defined(APP_SYSTEM)
-#error "system app not yet ported to esp_lcd"
+#elif defined(APP_SYSTEM)
+#include "system_app.h"
+static SystemApp app_instance;
+
 #elif defined(APP_WIFI_SETUP)
 #error "wifi_setup app not yet ported to esp_lcd"
 #elif defined(APP_UI_DEMO)
@@ -25,7 +41,6 @@ static StarfieldApp app_instance;
 // Default app: starfield
 #include "starfield_app.h"
 static StarfieldApp app_instance;
-#endif
 #endif
 
 static App* app = &app_instance;
@@ -52,9 +67,64 @@ static void handleSerialCommands() {
     }
 }
 
+// --- Optional WiFi + Heartbeat background services ---
+static void services_init() {
+#if defined(ENABLE_WIFI)
+    Serial.printf("[tritium] WiFi: connecting...\n");
+    wifi.init();
+
+    // Add default network if provided via build flags
+#if defined(DEFAULT_WIFI_SSID) && defined(DEFAULT_WIFI_PASS)
+    if (wifi.getSavedCount() == 0) {
+        wifi.addNetwork(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS);
+    }
+#endif
+
+    wifi.connect();
+
+    // Wait up to 10s for connection
+    uint32_t start = millis();
+    while (!wifi.isConnected() && (millis() - start) < 10000) {
+        delay(100);
+    }
+
+    if (wifi.isConnected()) {
+        Serial.printf("[tritium] WiFi: %s (%s)\n", wifi.getSSID(), wifi.getIP());
+    } else {
+        Serial.printf("[tritium] WiFi: not connected (will retry in background)\n");
+    }
+#endif
+
+#if defined(ENABLE_HEARTBEAT)
+    if (_wifi_enabled) {
+        hal_heartbeat::HeartbeatConfig hb_cfg;
+#if defined(DEFAULT_SERVER_URL)
+        hb_cfg.server_url = DEFAULT_SERVER_URL;
+#endif
+#if defined(DEFAULT_DEVICE_ID)
+        hb_cfg.device_id = DEFAULT_DEVICE_ID;
+#endif
+        hb_cfg.interval_ms = 30000;  // 30s heartbeats
+        if (hal_heartbeat::init(hb_cfg)) {
+            Serial.printf("[tritium] Heartbeat: active\n");
+        } else {
+            Serial.printf("[tritium] Heartbeat: not configured\n");
+        }
+    }
+#endif
+}
+
+static void services_tick() {
+#if defined(ENABLE_HEARTBEAT)
+    hal_heartbeat::tick();
+#endif
+}
+
 void setup() {
     Serial.begin(115200);
     delay(500);
+
+    Serial.printf("[tritium] Tritium-Edge booting...\n");
 
     esp_err_t ret = display_init();
     if (ret != ESP_OK) {
@@ -70,11 +140,18 @@ void setup() {
 
     Serial.printf("[tritium] Board: %s %dx%d\n", DISPLAY_DRIVER, w, h);
 
+    // Start the app first (display something while WiFi connects)
     app->setup(panel, w, h);
     Serial.printf("[tritium] App '%s' started\n", app->name());
+
+    // Then bring up background services
+    services_init();
+
+    Serial.printf("[tritium] Ready.\n");
 }
 
 void loop() {
     handleSerialCommands();
     app->loop();
+    services_tick();
 }

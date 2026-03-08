@@ -27,7 +27,12 @@ bool AudioHAL::getSpectrum(float* bins, size_t numBins, const int16_t* samples, 
 #include <Arduino.h>
 #include <Wire.h>
 #include <driver/i2s.h>
+#if __has_include(<lgfx/v1/platforms/common.hpp>)
 #include <lgfx/v1/platforms/common.hpp>
+#define HAS_LGFX_I2C 1
+#else
+#define HAS_LGFX_I2C 0
+#endif
 #include <math.h>
 
 #ifndef HAS_AUDIO_CODEC
@@ -95,7 +100,7 @@ bool AudioHAL::init(TwoWire &wire) {
 }
 
 bool AudioHAL::initLgfx(uint8_t i2c_port, uint8_t addr) {
-#if !HAS_AUDIO_CODEC
+#if !HAS_AUDIO_CODEC || !HAS_LGFX_I2C
     return false;
 #else
     _use_lgfx = true;
@@ -380,10 +385,13 @@ bool AudioHAL::getSpectrum(float* bins, size_t numBins, const int16_t* samples, 
 }
 
 void AudioHAL::writeReg(uint8_t reg, uint8_t val) {
+#if HAS_LGFX_I2C
     if (_use_lgfx) {
         uint8_t buf[2] = { reg, val };
         lgfx::i2c::transactionWrite(_lgfx_port, _codec_addr, buf, 2, 400000);
-    } else {
+    } else
+#endif
+    {
         _wire->beginTransmission(_codec_addr);
         _wire->write(reg);
         _wire->write(val);
@@ -393,10 +401,13 @@ void AudioHAL::writeReg(uint8_t reg, uint8_t val) {
 
 uint8_t AudioHAL::readReg(uint8_t reg) {
     uint8_t val = 0;
+#if HAS_LGFX_I2C
     if (_use_lgfx) {
         lgfx::i2c::transactionWriteRead(_lgfx_port, _codec_addr,
             &reg, 1, &val, 1, 400000);
-    } else {
+    } else
+#endif
+    {
         _wire->beginTransmission(_codec_addr);
         _wire->write(reg);
         _wire->endTransmission(false);

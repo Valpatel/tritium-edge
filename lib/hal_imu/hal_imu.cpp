@@ -39,7 +39,12 @@ bool IMUHAL::detectMotion(float threshold) {
 
 #include <Arduino.h>
 #include <Wire.h>
+#if __has_include(<lgfx/v1/platforms/common.hpp>)
 #include <lgfx/v1/platforms/common.hpp>
+#define HAS_LGFX_I2C 1
+#else
+#define HAS_LGFX_I2C 0
+#endif
 
 #ifndef HAS_IMU
 #define HAS_IMU 0
@@ -73,7 +78,7 @@ bool IMUHAL::init(TwoWire &wire) {
 }
 
 bool IMUHAL::initLgfx(uint8_t i2c_port, uint8_t addr) {
-#if !HAS_IMU
+#if !HAS_IMU || !HAS_LGFX_I2C
     return false;
 #else
     _use_lgfx = true;
@@ -160,10 +165,13 @@ bool IMUHAL::detectMotion(float threshold) {
 }
 
 void IMUHAL::writeReg(uint8_t reg, uint8_t val) {
+#if HAS_LGFX_I2C
     if (_use_lgfx) {
         uint8_t buf[2] = { reg, val };
         lgfx::i2c::transactionWrite(_lgfx_port, _addr, buf, 2, 400000);
-    } else {
+    } else
+#endif
+    {
         _wire->beginTransmission(_addr);
         _wire->write(reg);
         _wire->write(val);
@@ -173,10 +181,13 @@ void IMUHAL::writeReg(uint8_t reg, uint8_t val) {
 
 uint8_t IMUHAL::readReg(uint8_t reg) {
     uint8_t val = 0;
+#if HAS_LGFX_I2C
     if (_use_lgfx) {
         lgfx::i2c::transactionWriteRead(_lgfx_port, _addr,
             &reg, 1, &val, 1, 400000);
-    } else {
+    } else
+#endif
+    {
         _wire->beginTransmission(_addr);
         _wire->write(reg);
         _wire->endTransmission(false);
@@ -187,10 +198,13 @@ uint8_t IMUHAL::readReg(uint8_t reg) {
 }
 
 void IMUHAL::readRegs(uint8_t reg, uint8_t *buf, uint8_t len) {
+#if HAS_LGFX_I2C
     if (_use_lgfx) {
         lgfx::i2c::transactionWriteRead(_lgfx_port, _addr,
             &reg, 1, buf, len, 400000);
-    } else {
+    } else
+#endif
+    {
         _wire->beginTransmission(_addr);
         _wire->write(reg);
         _wire->endTransmission(false);

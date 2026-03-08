@@ -1,6 +1,7 @@
 """PlatformIO pre-build script.
 
-Removes ARM-specific assembly files from LVGL that fail on Xtensa (ESP32).
+- Removes ARM assembly files from LVGL (fail on Xtensa/ESP32)
+- Adds Arduino framework library include paths for networking HALs
 """
 import os
 Import("env")
@@ -19,3 +20,40 @@ if os.path.isdir(lvgl_dir):
                     print(f"Removed ARM assembly: {path}")
                 except OSError:
                     pass
+
+# Add Arduino framework library include paths when ENABLE_WIFI is defined.
+# With lib_ldf_mode=off, PlatformIO won't auto-discover WiFi, Network, etc.
+build_flags = env.get("BUILD_FLAGS", [])
+cppdefines = env.get("CPPDEFINES", [])
+
+# Check if ENABLE_WIFI is in build flags
+needs_networking = False
+for flag in build_flags:
+    if isinstance(flag, str) and "ENABLE_WIFI" in flag:
+        needs_networking = True
+        break
+for d in cppdefines:
+    if isinstance(d, str) and d == "ENABLE_WIFI":
+        needs_networking = True
+    elif isinstance(d, tuple) and d[0] == "ENABLE_WIFI":
+        needs_networking = True
+
+if needs_networking:
+    fw_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32")
+    if fw_dir:
+        libs_dir = os.path.join(fw_dir, "libraries")
+        needed_libs = [
+            "WiFi", "Network", "NetworkClientSecure",
+            "HTTPClient", "LittleFS", "FS", "Preferences",
+            "SD_MMC", "SD", "SPI",
+        ]
+        for lib in needed_libs:
+            src_dir = os.path.join(libs_dir, lib, "src")
+            if os.path.isdir(src_dir):
+                env.Append(CPPPATH=[src_dir])
+                # Also compile source files from these framework libraries
+                env.BuildSources(
+                    os.path.join("$BUILD_DIR", "fwlib_" + lib),
+                    src_dir
+                )
+                print(f"  + Framework lib: {lib}")

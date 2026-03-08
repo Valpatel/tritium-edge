@@ -42,6 +42,7 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <esp_ota_ops.h>
+#include <esp_app_format.h>
 #include <esp_partition.h>
 #include <mbedtls/sha256.h>
 #include "hal_provision.h"
@@ -133,7 +134,7 @@ static void computeFirmwareHash() {
 
 static void cacheFirmwareInfo() {
     // Version from app description
-    const esp_app_desc_t* desc = esp_ota_get_app_description();
+    const esp_app_desc_t* desc = esp_app_get_description();
     if (desc) {
         strncpy(_fw_version, desc->version, sizeof(_fw_version) - 1);
         _fw_version[sizeof(_fw_version) - 1] = '\0';
