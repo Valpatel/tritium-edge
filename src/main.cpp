@@ -88,6 +88,14 @@ static SeedHAL _seed;
 static bool _seed_ok = false;
 #endif
 
+// CoT/TAK integration — generates Cursor-on-Target XML for ATAK/WinTAK
+#if defined(ENABLE_COT) && __has_include("hal_cot.h")
+#include "hal_cot.h"
+static bool _cot_enabled = true;
+#else
+static bool _cot_enabled = false;
+#endif
+
 // Acoustic modem over audio codec (speaker/mic FSK)
 #if defined(HAS_AUDIO_CODEC) && HAS_AUDIO_CODEC && __has_include("hal_acoustic_modem.h")
 #include "hal_audio.h"
@@ -378,6 +386,37 @@ static void handleSerialCommands() {
                 }
             }
 #endif
+#if defined(ENABLE_COT)
+            else if (strcmp(_cmd_buf, "COT_SEND") == 0) {
+                if (!_cot_enabled || !hal_cot::is_active()) {
+                    Serial.printf("[cot] Not active\n");
+                } else {
+                    char xml[1024];
+                    int len = hal_cot::build_position_event(xml, sizeof(xml));
+                    if (len > 0) {
+                        bool ok = hal_cot::send_multicast(xml, len);
+                        Serial.printf("[cot] Sent SA event (%d bytes): %s\n", len, ok ? "OK" : "FAIL");
+                    } else {
+                        Serial.printf("[cot] Failed to build CoT XML\n");
+                    }
+                }
+            }
+            else if (strncmp(_cmd_buf, "COT_POS ", 8) == 0) {
+                // COT_POS <lat> <lon> [hae]
+                double lat = 0, lon = 0;
+                float hae = 0;
+                int n = sscanf(_cmd_buf + 8, "%lf %lf %f", &lat, &lon, &hae);
+                if (n >= 2) {
+                    hal_cot::set_position(lat, lon, hae);
+                    Serial.printf("[cot] Position set: %.6f, %.6f, %.1fm\n", lat, lon, hae);
+                } else {
+                    Serial.printf("[cot] Usage: COT_POS <lat> <lon> [hae]\n");
+                }
+            }
+            else if (strcmp(_cmd_buf, "COT_STATUS") == 0) {
+                Serial.printf("[cot] Active: %s\n", hal_cot::is_active() ? "yes" : "no");
+            }
+#endif
             _cmd_idx = 0;
         } else if (_cmd_idx < sizeof(_cmd_buf) - 1) {
             _cmd_buf[_cmd_idx++] = c;
@@ -450,6 +489,26 @@ static void services_init() {
             Serial.printf("[tritium] Heartbeat: active\n");
         } else {
             Serial.printf("[tritium] Heartbeat: not configured\n");
+        }
+    }
+#endif
+
+#if defined(ENABLE_COT)
+    if (_wifi_enabled && wifi.isConnected()) {
+        hal_cot::CotConfig cot_cfg;
+#if defined(DEFAULT_DEVICE_ID)
+        cot_cfg.device_id = DEFAULT_DEVICE_ID;
+#endif
+        cot_cfg.interval_ms = 60000;  // CoT SA every 60s
+#if HAS_CAMERA
+        cot_cfg.cot_type = hal_cot::COT_TYPE_CAMERA;
+#endif
+        if (hal_cot::init(cot_cfg)) {
+            Serial.printf("[tritium] CoT/TAK: active (uid=%s callsign=%s)\n",
+                          cot_cfg.device_id ? cot_cfg.device_id : "auto",
+                          cot_cfg.callsign ? cot_cfg.callsign : "auto");
+        } else {
+            Serial.printf("[tritium] CoT/TAK: init failed\n");
         }
     }
 #endif
@@ -729,6 +788,9 @@ static void services_tick() {
 #endif
 #if defined(ENABLE_WEBSERVER)
     _webserver.process();
+#endif
+#if defined(ENABLE_COT)
+    hal_cot::tick();
 #endif
 }
 
