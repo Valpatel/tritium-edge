@@ -115,6 +115,11 @@ struct HealthSnapshot {
     uint32_t camera_last_us;        // Last capture latency
     uint32_t camera_max_us;         // Worst capture latency
     float    camera_avg_fps;        // Average FPS since init
+    // Touch
+    bool     touch_available;       // Touch controller detected
+    // NTP
+    bool     ntp_synced;            // NTP time has been synchronized
+    uint32_t ntp_last_sync_age_s;   // Seconds since last NTP sync
     // Task stats
     uint32_t loop_time_us;      // Last loop() duration
     uint32_t max_loop_time_us;  // Worst case since boot
@@ -177,6 +182,26 @@ using CameraProvider = bool (*)(CameraInfo& out);
 
 /// Register a camera data provider so take_snapshot() includes camera metrics.
 void set_camera_provider(CameraProvider provider);
+
+// ── Touch data provider (optional) ──────────────────────────────────────────
+
+/// Callback: return true and set available flag, or false if touch HAL not used.
+using TouchProvider = bool (*)(bool& available);
+
+/// Register a touch data provider.
+void set_touch_provider(TouchProvider provider);
+
+// ── NTP data provider (optional) ────────────────────────────────────────────
+
+struct NtpInfo {
+    bool     synced;
+    uint32_t last_sync_age_s;   // Seconds since last successful sync
+};
+
+using NtpProvider = bool (*)(NtpInfo& out);
+
+/// Register an NTP data provider.
+void set_ntp_provider(NtpProvider provider);
 
 // ── Loop timing provider (optional — wired from watchdog or main loop) ──────
 

@@ -44,6 +44,8 @@ void tick() {}
 
 void set_power_provider(PowerProvider) {}
 void set_camera_provider(CameraProvider) {}
+void set_touch_provider(TouchProvider) {}
+void set_ntp_provider(NtpProvider) {}
 void report_loop_time(uint32_t) {}
 void report_i2c_result(uint8_t, bool, bool, int16_t) {}
 void report_display_frame(uint32_t) {}
@@ -203,6 +205,8 @@ static uint32_t         _loop_start_us = 0;
 // External providers
 static PowerProvider    _power_provider = nullptr;
 static CameraProvider   _camera_provider = nullptr;
+static TouchProvider    _touch_provider = nullptr;
+static NtpProvider      _ntp_provider = nullptr;
 
 // NVS keys
 static constexpr const char* NVS_NAMESPACE = "hal_diag";
@@ -633,6 +637,14 @@ void set_camera_provider(CameraProvider provider) {
     _camera_provider = provider;
 }
 
+void set_touch_provider(TouchProvider provider) {
+    _touch_provider = provider;
+}
+
+void set_ntp_provider(NtpProvider provider) {
+    _ntp_provider = provider;
+}
+
 void report_loop_time(uint32_t loop_us) {
     _loop_time_us = loop_us;
     if (loop_us > _max_loop_time_us) _max_loop_time_us = loop_us;
@@ -1001,6 +1013,23 @@ HealthSnapshot take_snapshot() {
         snap.pmic_temp_c = 0.0f;
     }
 
+    // Touch — pull from provider if registered
+    if (_touch_provider) {
+        bool avail = false;
+        if (_touch_provider(avail)) {
+            snap.touch_available = avail;
+        }
+    }
+
+    // NTP — pull from provider if registered
+    if (_ntp_provider) {
+        NtpInfo ntp = {};
+        if (_ntp_provider(ntp)) {
+            snap.ntp_synced = ntp.synced;
+            snap.ntp_last_sync_age_s = ntp.last_sync_age_s;
+        }
+    }
+
     // Camera — pull from provider if registered
     if (_camera_provider) {
         CameraInfo cam = {};
@@ -1100,6 +1129,8 @@ int health_to_json(char* buf, size_t size) {
             "\"loop_us\":%lu,"
             "\"max_loop_us\":%lu"
         "},"
+        "\"touch\":{\"available\":%s},"
+        "\"ntp\":{\"synced\":%s,\"age_s\":%lu},"
         "\"system\":{"
             "\"uptime_s\":%lu,"
             "\"reboot_count\":%lu,"
@@ -1123,6 +1154,9 @@ int health_to_json(char* buf, size_t size) {
         (int)snap.wifi_rssi,
         (unsigned long)snap.wifi_disconnects,
         snap.i2c_devices_found, (unsigned)snap.i2c_errors, snap.i2c_slave_count,
+        snap.touch_available ? "true" : "false",
+        snap.ntp_synced ? "true" : "false",
+        (unsigned long)snap.ntp_last_sync_age_s,
         (unsigned long)snap.loop_time_us,
         (unsigned long)snap.max_loop_time_us,
         (unsigned long)snap.uptime_s,
