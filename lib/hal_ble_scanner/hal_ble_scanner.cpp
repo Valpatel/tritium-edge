@@ -26,6 +26,13 @@ bool is_active() { return false; }
 #include <cstring>
 #include <cstdio>
 
+#if __has_include("hal_diag.h")
+#include "hal_diag.h"
+#define BLE_DIAG_LOG(sev, fmt, ...) hal_diag::log(sev, "ble", fmt, ##__VA_ARGS__)
+#else
+#define BLE_DIAG_LOG(sev, fmt, ...) ((void)0)
+#endif
+
 namespace hal_ble_scanner {
 
 // --- Internal state ---
@@ -66,6 +73,10 @@ static void prune_stale() {
         if ((now - _devices[i].last_seen) < BLE_DEVICE_TIMEOUT_MS) {
             if (write != i) _devices[write] = _devices[i];
             write++;
+        } else if (_devices[i].is_known) {
+            BLE_DIAG_LOG(hal_diag::Severity::INFO,
+                "Known BLE device departed: %s (seen %u times)",
+                _devices[i].name, _devices[i].seen_count);
         }
     }
     _device_count = write;
@@ -113,6 +124,8 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             if (d.is_known) {
                 Serial.printf("[ble_scan] Known device: %s (%02X:%02X:%02X:%02X:%02X:%02X) RSSI=%d\n",
                     d.name, raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], d.rssi);
+                BLE_DIAG_LOG(hal_diag::Severity::INFO,
+                    "Known BLE device arrived: %s RSSI=%d", d.name, d.rssi);
             }
         }
 
