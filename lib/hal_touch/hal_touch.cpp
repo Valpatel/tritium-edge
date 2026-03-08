@@ -26,6 +26,13 @@ uint8_t TouchHAL::getPoints(TouchPoint *points, uint8_t maxPoints) {
 #include <Arduino.h>
 #include <Wire.h>
 
+#if __has_include("hal_diag.h")
+#include "hal_diag.h"
+#define TOUCH_HAS_DIAG 1
+#else
+#define TOUCH_HAS_DIAG 0
+#endif
+
 bool TouchHAL::init(TwoWire &wire) {
     _wire = &wire;
 
@@ -43,6 +50,9 @@ bool TouchHAL::init(TwoWire &wire) {
         if (_wire->endTransmission() != 0) return false;
     }
     _driver = GT911;
+#if TOUCH_HAS_DIAG
+    hal_diag::log(hal_diag::Severity::INFO, "touch", "GT911 at 0x%02X", _addr);
+#endif
     return true;
 
 #elif defined(BOARD_TOUCH_LCD_35BC) || defined(BOARD_TOUCH_LCD_349)
@@ -54,6 +64,9 @@ bool TouchHAL::init(TwoWire &wire) {
     _wire->beginTransmission(_addr);
     if (_wire->endTransmission() != 0) return false;
     _driver = AXS15231B_TOUCH;
+#if TOUCH_HAS_DIAG
+    hal_diag::log(hal_diag::Severity::INFO, "touch", "AXS15231B at 0x%02X", _addr);
+#endif
     return true;
 
 #elif defined(BOARD_TOUCH_AMOLED_241B)
@@ -65,6 +78,9 @@ bool TouchHAL::init(TwoWire &wire) {
     _wire->beginTransmission(_addr);
     if (_wire->endTransmission() != 0) return false;
     _driver = FT6336;
+#if TOUCH_HAS_DIAG
+    hal_diag::log(hal_diag::Severity::INFO, "touch", "FT6336 at 0x%02X", _addr);
+#endif
     return true;
 
 #elif defined(BOARD_AMOLED_191M) || defined(BOARD_TOUCH_AMOLED_18)
@@ -76,9 +92,15 @@ bool TouchHAL::init(TwoWire &wire) {
     _wire->beginTransmission(_addr);
     if (_wire->endTransmission() != 0) return false;
     _driver = FT3168;
+#if TOUCH_HAS_DIAG
+    hal_diag::log(hal_diag::Severity::INFO, "touch", "FT3168 at 0x%02X", _addr);
+#endif
     return true;
 
 #else
+#if TOUCH_HAS_DIAG
+    hal_diag::log(hal_diag::Severity::WARN, "touch", "No touch driver for this board");
+#endif
     return false;
 #endif
 }

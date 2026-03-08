@@ -17,6 +17,13 @@ WifiManager* WifiManager::_instance = nullptr;
 #include <WiFi.h>
 #include <Preferences.h>
 
+#if __has_include("hal_diag.h")
+#include "hal_diag.h"
+#define WIFI_HAS_DIAG 1
+#else
+#define WIFI_HAS_DIAG 0
+#endif
+
 static constexpr const char* NVS_NAMESPACE = "wifi_mgr";
 static constexpr const char* NVS_KEY_COUNT = "count";
 static constexpr uint32_t MONITOR_STACK_SIZE = 4096;
@@ -33,16 +40,27 @@ static WifiAuth mapAuthMode(wifi_auth_mode_t m) {
     }
 }
 
+static uint32_t _wifi_disconnect_count = 0;
+
 static void wifiEventHandler(WiFiEvent_t event) {
     WifiManager* mgr = WifiManager::_instance;
     if (!mgr) return;
     switch (event) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
             mgr->setState(WifiState::CONNECTED);
+#if WIFI_HAS_DIAG
+            hal_diag::log(hal_diag::Severity::INFO, "wifi", "Connected IP: %s",
+                          WiFi.localIP().toString().c_str());
+#endif
             break;
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
             if (mgr->getState() == WifiState::CONNECTED) {
+                _wifi_disconnect_count++;
                 mgr->setState(WifiState::DISCONNECTED);
+#if WIFI_HAS_DIAG
+                hal_diag::log(hal_diag::Severity::WARN, "wifi",
+                              "Disconnected (#%lu)", (unsigned long)_wifi_disconnect_count);
+#endif
             }
             break;
         default:
@@ -120,6 +138,9 @@ bool WifiManager::connectToNetwork(const SavedNetwork& net) {
     WiFi.disconnect(true);
     setState(WifiState::FAILED);
     Serial.printf("[WiFi] Failed to connect to %s\n", net.ssid);
+#if WIFI_HAS_DIAG
+    hal_diag::log(hal_diag::Severity::WARN, "wifi", "Connect failed: %s", net.ssid);
+#endif
     return false;
 }
 
@@ -290,6 +311,9 @@ void WifiManager::monitorTask(void* param) {
 
         if (mgr->_state == WifiState::CONNECTED && WiFi.status() != WL_CONNECTED) {
             Serial.println("[WiFi] Connection lost, attempting reconnect...");
+#if WIFI_HAS_DIAG
+            hal_diag::log(hal_diag::Severity::WARN, "wifi", "Monitor: connection lost, reconnecting");
+#endif
             mgr->setState(WifiState::DISCONNECTED);
             mgr->autoConnect();
         }
