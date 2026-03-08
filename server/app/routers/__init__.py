@@ -16,6 +16,7 @@ from .map import router as map_router
 from .fleet_ota import router as fleet_ota_router
 from .provision import router as provision_router
 from .diagnostics import router as diagnostics_router
+from .alerts import router as alerts_router
 
 __all__ = [
     "devices_router",
@@ -31,4 +32,5 @@ __all__ = [
     "fleet_ota_router",
     "provision_router",
     "diagnostics_router",
+    "alerts_router",
 ]

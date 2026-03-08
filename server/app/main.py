@@ -21,6 +21,7 @@ from .config import settings
 from .store import FleetStore
 from .auth.middleware import AuthMiddleware
 from .plugins import plugin_registry
+from .services.alert_service import init_alert_service
 from .routers import (
     devices_router,
     firmware_router,
@@ -35,6 +36,7 @@ from .routers import (
     fleet_ota_router,
     provision_router,
     diagnostics_router,
+    alerts_router,
 )
 
 
@@ -45,6 +47,10 @@ async def lifespan(app: FastAPI):
     store = FleetStore(settings.data_dir)
     app.state.store = store
     app.state.start_time = time.time()
+
+    # Initialize alert service
+    alert_svc = init_alert_service(settings.data_dir)
+    app.state.alert_service = alert_svc
 
     # API key setup (backward compat)
     if settings.api_key:
@@ -103,6 +109,7 @@ app.include_router(map_router)
 app.include_router(fleet_ota_router)
 app.include_router(provision_router)
 app.include_router(diagnostics_router)
+app.include_router(alerts_router)
 
 # Templates (reuse existing admin.html)
 _server_dir = Path(__file__).parent.parent

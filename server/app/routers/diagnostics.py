@@ -61,6 +61,20 @@ async def submit_diagnostics(device_id: str, request: Request):
         )
         store.add_event("node_anomaly", device_id, detail)
 
+        # Fire alerts for critical anomalies (severity >= 0.7)
+        from ..services.alert_service import get_alert_service
+        alert_svc = get_alert_service()
+        if alert_svc:
+            for a in anomalies:
+                sev = a.get("severity", a.get("score", 0.5))
+                if sev >= 0.7:
+                    alert_svc.fire_alert(
+                        event_type="node_anomaly",
+                        device_id=device_id,
+                        detail=f"{a.get('subsystem', '?')}: {a.get('description', '?')}",
+                        severity=sev,
+                    )
+
     # Broadcast to WebSocket clients for real-time dashboard updates
     await broadcast("node_diag", {
         "device_id": device_id,

@@ -28,12 +28,15 @@ def store(tmp_data_dir):
 
 
 @pytest.fixture
-def app(store):
+def app(store, tmp_data_dir):
     """FastAPI app with a temp store, no auth."""
     from app.main import app as _app
     _app.state.store = store
     import time
     _app.state.start_time = time.time()
+    # Initialize alert service with temp dir
+    from app.services.alert_service import init_alert_service
+    _app.state.alert_service = init_alert_service(str(tmp_data_dir))
     return _app
 
 
