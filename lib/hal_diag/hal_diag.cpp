@@ -44,6 +44,8 @@ void tick() {}
 
 void set_power_provider(PowerProvider) {}
 void report_loop_time(uint32_t) {}
+void report_i2c_result(uint8_t, bool, bool, int16_t) {}
+void report_display_frame(uint32_t) {}
 
 void log(Severity sev, const char* subsystem, const char* fmt, ...) {
     if (!_initialized) return;
@@ -626,6 +628,47 @@ void report_loop_time(uint32_t loop_us) {
     if (loop_us > _max_loop_time_us) _max_loop_time_us = loop_us;
 }
 
+// Per-slave I2C error tracking
+static HealthSnapshot::I2cSlaveHealth _i2c_slave_table[HealthSnapshot::MAX_I2C_SLAVES] = {};
+static uint8_t _i2c_slave_used = 0;
+
+void report_i2c_result(uint8_t addr, bool success, bool is_timeout, int16_t latency_us) {
+    // Find or allocate a slot for this address
+    int slot = -1;
+    for (int i = 0; i < _i2c_slave_used; i++) {
+        if (_i2c_slave_table[i].addr == addr) { slot = i; break; }
+    }
+    if (slot < 0 && _i2c_slave_used < HealthSnapshot::MAX_I2C_SLAVES) {
+        slot = _i2c_slave_used++;
+        _i2c_slave_table[slot].addr = addr;
+        _i2c_slave_table[slot].nack_count = 0;
+        _i2c_slave_table[slot].timeout_count = 0;
+        _i2c_slave_table[slot].success_count = 0;
+    }
+    if (slot < 0) return;  // Table full
+
+    auto& s = _i2c_slave_table[slot];
+    if (success) {
+        s.success_count++;
+    } else if (is_timeout) {
+        s.timeout_count++;
+        _i2c_errors++;
+    } else {
+        s.nack_count++;
+        _i2c_errors++;
+    }
+    s.last_latency_us = latency_us;
+}
+
+// Display frame timing tracking
+static uint32_t _display_frame_us = 0;
+static uint32_t _display_max_frame_us = 0;
+
+void report_display_frame(uint32_t frame_us) {
+    _display_frame_us = frame_us;
+    if (frame_us > _display_max_frame_us) _display_max_frame_us = frame_us;
+}
+
 bool init(const DiagConfig& cfg) {
     if (_initialized) {
         DBG_WARN("diag", "Already initialized");
@@ -887,6 +930,15 @@ HealthSnapshot take_snapshot() {
     // I2C health
     snap.i2c_errors = _i2c_errors;
     snap.i2c_devices_found = 0;  // Updated on demand via scan_i2c_bus()
+    // Copy per-slave I2C error data
+    snap.i2c_slave_count = _i2c_slave_used;
+    for (int i = 0; i < _i2c_slave_used && i < HealthSnapshot::MAX_I2C_SLAVES; i++) {
+        snap.i2c_slaves[i] = _i2c_slave_table[i];
+    }
+
+    // Display timing
+    snap.display_frame_time_us = _display_frame_us;
+    snap.display_max_frame_us = _display_max_frame_us;
 
     // Task timing
     snap.loop_time_us = _loop_time_us;
@@ -983,7 +1035,9 @@ int health_to_json(char* buf, size_t size) {
         "\"display\":{"
             "\"initialized\":%s,"
             "\"fps\":%lu,"
-            "\"brightness\":%u"
+            "\"brightness\":%u,"
+            "\"frame_us\":%lu,"
+            "\"max_frame_us\":%lu"
         "},"
         "\"wifi\":{"
             "\"connected\":%s,"
@@ -992,7 +1046,8 @@ int health_to_json(char* buf, size_t size) {
         "},"
         "\"i2c\":{"
             "\"devices\":%u,"
-            "\"errors\":%u"
+            "\"errors\":%u,"
+            "\"slave_count\":%u"
         "},"
         "\"perf\":{"
             "\"loop_us\":%lu,"
@@ -1015,15 +1070,34 @@ int health_to_json(char* buf, size_t size) {
         snap.cpu_temp_c, snap.pmic_temp_c,
         snap.display_initialized ? "true" : "false",
         (unsigned long)snap.display_fps, snap.display_brightness,
+        (unsigned long)snap.display_frame_time_us,
+        (unsigned long)snap.display_max_frame_us,
         snap.wifi_connected ? "true" : "false",
         (int)snap.wifi_rssi,
         (unsigned long)snap.wifi_disconnects,
-        snap.i2c_devices_found, snap.i2c_errors,
+        snap.i2c_devices_found, (unsigned)snap.i2c_errors, snap.i2c_slave_count,
         (unsigned long)snap.loop_time_us,
         (unsigned long)snap.max_loop_time_us,
         (unsigned long)snap.uptime_s,
         (unsigned long)snap.reboot_count,
         reset_reason_str(snap.last_reset_reason));
+
+    // Append per-slave I2C details if any are tracked
+    if (snap.i2c_slave_count > 0 && pos > 0 && pos < (int)size - 2) {
+        // Replace trailing '}' with ',i2c_slaves:[...]}'
+        pos--;  // back up over final '}'
+        pos += snprintf(buf + pos, size - pos, ",\"i2c_slaves\":[");
+        for (int i = 0; i < snap.i2c_slave_count && pos < (int)size - 80; i++) {
+            if (i > 0) buf[pos++] = ',';
+            auto& s = snap.i2c_slaves[i];
+            pos += snprintf(buf + pos, size - pos,
+                "{\"addr\":\"0x%02X\",\"nack\":%u,\"timeout\":%u,"
+                "\"ok\":%u,\"lat_us\":%d}",
+                s.addr, s.nack_count, s.timeout_count,
+                s.success_count, (int)s.last_latency_us);
+        }
+        pos += snprintf(buf + pos, size - pos, "]}");
+    }
 
     return pos;
 }

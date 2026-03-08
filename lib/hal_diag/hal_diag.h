@@ -93,7 +93,21 @@ struct HealthSnapshot {
     uint32_t mqtt_disconnects;
     // I2C bus health
     uint8_t  i2c_devices_found;
-    uint8_t  i2c_errors;        // NACK/timeout counter
+    uint16_t i2c_errors;        // Total NACK/timeout counter (wider than uint8_t)
+    // Per-slave I2C error tracking (up to 8 monitored slaves)
+    static constexpr int MAX_I2C_SLAVES = 8;
+    struct I2cSlaveHealth {
+        uint8_t  addr;           // I2C address (0 = unused slot)
+        uint16_t nack_count;     // NACK errors
+        uint16_t timeout_count;  // Timeout errors
+        uint16_t success_count;  // Successful transactions
+        int16_t  last_latency_us; // Last transaction latency
+    };
+    I2cSlaveHealth i2c_slaves[MAX_I2C_SLAVES] = {};
+    uint8_t  i2c_slave_count;    // Number of monitored slaves
+    // Display timing
+    uint32_t display_frame_time_us; // Last frame push latency
+    uint32_t display_max_frame_us;  // Worst frame push latency since boot
     // Task stats
     uint32_t loop_time_us;      // Last loop() duration
     uint32_t max_loop_time_us;  // Worst case since boot
@@ -231,5 +245,23 @@ uint8_t get_last_reset_reason();
 
 /// Convert a reset reason code to a human-readable string.
 const char* reset_reason_str(uint8_t reason);
+
+// ── I2C per-slave error reporting ────────────────────────────────────────
+
+/// Report an I2C transaction result for a specific slave address.
+/// Call from any HAL that uses I2C (power, imu, rtc, touch, etc.)
+/// @param addr I2C 7-bit slave address.
+/// @param success True if transaction succeeded, false on NACK/timeout.
+/// @param is_timeout True if failure was a timeout (vs NACK).
+/// @param latency_us Transaction duration in microseconds.
+void report_i2c_result(uint8_t addr, bool success, bool is_timeout = false,
+                       int16_t latency_us = 0);
+
+// ── Display timing reporting ─────────────────────────────────────────────
+
+/// Report a display frame push duration.
+/// Call after pushSprite() or pushImage() completes.
+/// @param frame_us Duration of the display write in microseconds.
+void report_display_frame(uint32_t frame_us);
 
 }  // namespace hal_diag
