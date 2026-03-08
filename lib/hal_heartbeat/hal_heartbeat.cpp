@@ -55,11 +55,20 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #define HAS_BLE_SCANNER 0
 #endif
 
+// Optional CoT integration — piggyback position updates on heartbeat ticks
+#if __has_include("hal_cot.h")
+#include "hal_cot.h"
+#define HAS_COT 1
+#else
+#define HAS_COT 0
+#endif
+
 namespace hal_heartbeat {
 
 // Internal state
 static bool _initialized = false;
 static bool _active = false;
+static bool _cot_enabled = false;
 static uint32_t _interval_ms = 60000;
 static uint32_t _last_send_ms = 0;
 static char _server_url[256] = {};
@@ -205,6 +214,27 @@ bool init(const HeartbeatConfig& config) {
     // Cache firmware info (version, hash, board)
     cacheFirmwareInfo();
 
+    // Initialize CoT if requested
+    _cot_enabled = config.cot_enabled;
+#if HAS_COT
+    if (_cot_enabled) {
+        hal_cot::CotConfig cot_cfg;
+        cot_cfg.device_id = _device_id;
+        cot_cfg.interval_ms = _interval_ms;
+        if (hal_cot::init(cot_cfg)) {
+            DBG_INFO(TAG, "CoT enabled — will send position on heartbeat ticks");
+        } else {
+            DBG_WARN(TAG, "CoT init failed, continuing without CoT");
+            _cot_enabled = false;
+        }
+    }
+#else
+    if (_cot_enabled) {
+        DBG_WARN(TAG, "CoT requested but hal_cot not available");
+        _cot_enabled = false;
+    }
+#endif
+
     _active = true;
     _last_send_ms = 0;  // Send first heartbeat on next tick()
     DBG_INFO(TAG, "Initialized: server=%s device=%s interval=%lums",
@@ -338,6 +368,14 @@ bool send_now() {
     }
 
     http.end();
+
+    // Piggyback CoT position update on heartbeat tick
+#if HAS_COT
+    if (_cot_enabled && hal_cot::is_active()) {
+        hal_cot::tick();
+    }
+#endif
+
     return (code == 200);
 }
 

@@ -826,6 +826,97 @@ the next heartbeat.
 
 ---
 
+## 6b. Remote Diagnostics and Fleet Health
+
+Every Tritium node runs a diagnostics subsystem (`hal_diag`) that continuously
+monitors hardware health and reports anomalies. This enables remote debugging of
+field-deployed devices — understanding LCD failures, chip failures, memory leaks,
+power issues, and performance degradation across the entire fleet.
+
+### Health Snapshots
+
+Taken every 30 seconds by default, each snapshot captures:
+
+| Category | Metrics |
+|----------|---------|
+| **Memory** | Free heap, min heap watermark, free PSRAM, largest free block |
+| **Power** | Battery voltage/percent, charge current, power source |
+| **Temperature** | CPU internal temp, PMIC temp (AXP2101) |
+| **Display** | Init status, FPS, brightness |
+| **Connectivity** | WiFi RSSI, connection status, disconnect counter |
+| **I2C Bus** | Devices found, error counter (NACK/timeout) |
+| **Performance** | Loop time (current/max), uptime, reboot count, reset reason |
+
+### Anomaly Detection
+
+The diagnostics system tracks trends across snapshots and auto-detects:
+
+| Anomaly | Detection | Severity |
+|---------|-----------|----------|
+| **Memory Leak** | Heap declining steadily over 10+ snapshots | High |
+| **Battery Drain** | Voltage dropping faster than expected discharge curve | Medium |
+| **WiFi Degradation** | RSSI declining, increasing disconnects | Medium |
+| **Performance Drop** | Loop time increasing, FPS declining | Medium |
+| **I2C Failure** | Error counter increasing (chip/bus failure) | High |
+| **Display Failure** | FPS drops to 0 or init fails on reboot | Critical |
+| **Temperature** | CPU > 80°C or PMIC > 60°C | High |
+| **Reboot Loop** | Multiple reboots in short period (tracked via NVS) | Critical |
+
+### Data Flow
+
+```
+Node (hal_diag)                Fleet Server                    tritium-sc
+  │                               │                               │
+  ├─ Health snapshots ──────────► │ Aggregate across fleet        │
+  ├─ Diagnostic events ────────► │ Store time-series             │
+  ├─ Anomaly alerts ───────────► │ Cross-node correlation        │
+  │                               │                               │
+  │  /api/diag (pull) ◄──────── │ ───────► Fleet health view    │
+  │  /api/diag (push via HB) ──► │ ───────► Anomaly dashboard   │
+```
+
+### Serial Commands
+
+| Command | Response |
+|---------|----------|
+| `DIAG` | Full JSON diagnostic report |
+| `HEALTH` | Current health snapshot as JSON |
+| `ANOMALIES` | Active anomalies as JSON |
+
+### Web API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/diag` | Full diagnostic report (health + events + anomalies) |
+| `GET /api/logs` | Recent log entries from ring buffer |
+| `GET /api/status` | Quick status (uptime, heap, RSSI) |
+
+### Fleet-Level Diagnostics
+
+The fleet server aggregates diagnostic reports from all nodes to detect
+cross-fleet patterns:
+
+- **Infrastructure issues**: Multiple nodes in same area losing WiFi = router
+  problem, not node problem
+- **Batch defects**: All boards of same type showing I2C errors = hardware
+  revision issue
+- **Environmental**: Temperature spikes across nearby nodes = ambient issue
+- **Firmware bugs**: Memory leak appearing after OTA on specific firmware version
+
+### SD Card Logging
+
+When an SD card is present, diagnostics are persisted as newline-delimited JSON:
+
+```
+/tritium/diag/20260307.jsonl    ← One file per day
+/tritium/diag/20260306.jsonl
+```
+
+Each line is a timestamped event, health snapshot, or anomaly. This enables
+post-mortem analysis of failures that occurred while the node was offline.
+
+---
+
 ## 7. Remote Configuration
 
 ### Profile Cascade

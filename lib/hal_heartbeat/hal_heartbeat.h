@@ -11,6 +11,7 @@ struct HeartbeatConfig {
     const char* server_url = nullptr;  // e.g., "http://192.168.1.100:8080"
     const char* device_id = nullptr;   // e.g., "esp32-aabbccddeeff"
     uint32_t interval_ms = 60000;      // Default 60s
+    bool cot_enabled = false;          // Also send CoT position on each heartbeat tick
 };
 
 // Initialize heartbeat system. Call once after WiFi is connected.

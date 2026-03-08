@@ -51,6 +51,13 @@ static bool _webserver_enabled = true;
 static bool _webserver_enabled = false;
 #endif
 
+#if defined(ENABLE_DIAG) && __has_include("hal_diag.h")
+#include "hal_diag.h"
+static bool _diag_enabled = true;
+#else
+static bool _diag_enabled = false;
+#endif
+
 // --- App selection via build flag ---
 #if defined(APP_STARFIELD)
 #include "starfield_app.h"
@@ -118,6 +125,23 @@ static void handleSerialCommands() {
                 } else {
                     Serial.printf("[sd] Could not mount SD card\n");
                 }
+            }
+#endif
+#if defined(ENABLE_DIAG)
+            else if (strcmp(_cmd_buf, "DIAG") == 0) {
+                static char dbuf[2048];
+                int len = hal_diag::full_report_json(dbuf, sizeof(dbuf));
+                if (len > 0) Serial.println(dbuf);
+            }
+            else if (strcmp(_cmd_buf, "HEALTH") == 0) {
+                static char hbuf[1024];
+                int len = hal_diag::health_to_json(hbuf, sizeof(hbuf));
+                if (len > 0) Serial.println(hbuf);
+            }
+            else if (strcmp(_cmd_buf, "ANOMALIES") == 0) {
+                static char abuf[1024];
+                int len = hal_diag::anomalies_to_json(abuf, sizeof(abuf));
+                if (len > 0) Serial.println(abuf);
             }
 #endif
 #if defined(ENABLE_BLE_SCANNER)
@@ -251,6 +275,21 @@ static void services_init() {
     }
 #endif
 
+#if defined(ENABLE_DIAG)
+    {
+        hal_diag::DiagConfig diag_cfg;
+        diag_cfg.health_interval_ms = 30000;
+        diag_cfg.log_to_serial = true;
+        diag_cfg.anomaly_detection = true;
+        if (hal_diag::init(diag_cfg)) {
+            Serial.printf("[tritium] Diagnostics: active\n");
+            hal_diag::log(hal_diag::Severity::INFO, "system", "Tritium-Edge boot complete");
+        } else {
+            Serial.printf("[tritium] Diagnostics: init failed\n");
+        }
+    }
+#endif
+
 #if defined(ENABLE_WEBSERVER)
     if (_wifi_enabled && (wifi.isConnected() || wifi.isAPMode())) {
         LittleFS.begin(true);  // Format on first mount
@@ -287,6 +326,13 @@ static void services_init() {
             });
 #endif
 
+            // Wire diagnostics data into web server
+#if defined(ENABLE_DIAG)
+            _webserver.setDiagProvider([](char* buf, size_t size) -> int {
+                return hal_diag::full_report_json(buf, size);
+            });
+#endif
+
             // In AP mode, start captive portal for auto-redirect
             if (wifi.isAPMode()) {
                 _webserver.startCaptivePortal();
@@ -312,6 +358,9 @@ static void services_init() {
 static void services_tick() {
 #if defined(ENABLE_HEARTBEAT)
     hal_heartbeat::tick();
+#endif
+#if defined(ENABLE_DIAG)
+    hal_diag::tick();
 #endif
 #if defined(ENABLE_WEBSERVER)
     _webserver.process();
