@@ -32,13 +32,13 @@ static const char* auth_icon(WifiAuth auth) {
 
 // --- Setup and Loop ---
 
-void WifiSetupApp::setup(LGFX& display) {
+void WifiSetupApp::setup(esp_lcd_panel_handle_t panel, int width, int height) {
     _instance = this;
 
-    lv_display_t* disp = ui_init(display);
+    lv_display_t* disp = ui_init(panel, width, height);
     ui_apply_dark_theme(disp);
 
-    _scale = ui_compute_scale(display.width(), display.height());
+    _scale = ui_compute_scale(width, height);
 
     _wifi.init();
     _wifi.onStateChange(onWifiStateChange);
@@ -52,7 +52,7 @@ void WifiSetupApp::setup(LGFX& display) {
     _status_timer = millis();
 }
 
-void WifiSetupApp::loop(LGFX& display) {
+void WifiSetupApp::loop() {
     ui_tick();
 
     uint32_t now = millis();

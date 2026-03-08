@@ -1,3 +1,6 @@
+// Created by Matthew Valancy
+// Copyright 2026 Valpatel Software LLC
+// Licensed under AGPL-3.0 — see LICENSE for details.
 #pragma once
 #include "app.h"
 #include <lvgl.h>
@@ -7,8 +10,8 @@ class UiDemoApp : public App {
 public:
     const char* name() override { return "UI Demo"; }
     bool usesLVGL() override { return true; }
-    void setup(LGFX& display) override;
-    void loop(LGFX& display) override;
+    void setup(esp_lcd_panel_handle_t panel, int width, int height) override;
+    void loop() override;
 
 private:
     lv_obj_t* _status_bar = nullptr;

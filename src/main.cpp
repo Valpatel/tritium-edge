@@ -125,9 +125,11 @@ static SystemApp app_instance;
 static DiagApp app_instance;
 
 #elif defined(APP_WIFI_SETUP)
-#error "wifi_setup app not yet ported to esp_lcd"
+#include "wifi_setup_app.h"
+static WifiSetupApp app_instance;
 #elif defined(APP_UI_DEMO)
-#error "ui_demo app not yet ported to esp_lcd"
+#include "ui_demo_app.h"
+static UiDemoApp app_instance;
 #elif defined(APP_CAMERA)
 #include "camera_app.h"
 static CameraApp app_instance;

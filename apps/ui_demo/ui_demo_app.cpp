@@ -1,3 +1,6 @@
+// Created by Matthew Valancy
+// Copyright 2026 Valpatel Software LLC
+// Licensed under AGPL-3.0 — see LICENSE for details.
 #include "ui_demo_app.h"
 #include "ui_init.h"
 #include "ui_theme.h"
@@ -25,13 +28,11 @@ static void on_settings_item_click(lv_event_t* e) {
     ui_show_notification("Settings", msg, 2000);
 }
 
-void UiDemoApp::setup(LGFX& display) {
-    lv_display_t* disp = ui_init(display);
+void UiDemoApp::setup(esp_lcd_panel_handle_t panel, int width, int height) {
+    lv_display_t* disp = ui_init(panel, width, height);
     ui_apply_dark_theme(disp);
 
-    int w = display.width();
-    int h = display.height();
-    _scale = ui_compute_scale(w, h);
+    _scale = ui_compute_scale(width, height);
 
     lv_obj_t* scr = lv_screen_active();
 
@@ -54,7 +55,7 @@ void UiDemoApp::setup(LGFX& display) {
     lv_list_add_text(_list, "Display");
 
     char res_buf[32];
-    snprintf(res_buf, sizeof(res_buf), "Resolution: %dx%d", w, h);
+    snprintf(res_buf, sizeof(res_buf), "Resolution: %dx%d", width, height);
     lv_obj_t* btn;
 
     btn = lv_list_add_btn(_list, LV_SYMBOL_IMAGE, res_buf);
@@ -94,7 +95,7 @@ void UiDemoApp::setup(LGFX& display) {
     _uptime_timer = millis();
 }
 
-void UiDemoApp::loop(LGFX& display) {
+void UiDemoApp::loop() {
     ui_tick();
 
     // Update status bar uptime every 5 seconds
