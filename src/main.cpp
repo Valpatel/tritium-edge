@@ -335,6 +335,17 @@ static void services_init() {
             Serial.printf("[tritium] ESP-NOW Mesh: active\n");
 #if defined(ENABLE_DIAG)
             _espnow.enableDiagLogging(true);
+            // Wire mesh stats into diagnostics
+            hal_diag::set_mesh_provider([](hal_diag::MeshInfo& out) -> bool {
+                auto stats = _espnow.getStats();
+                out.peer_count = _espnow.getPeerCount();
+                out.route_count = (uint8_t)stats.route_count;
+                out.tx_count = stats.tx_count;
+                out.rx_count = stats.rx_count;
+                out.tx_fail = stats.tx_fail;
+                out.relay_count = stats.relay_count;
+                return true;
+            });
 #endif
             // Run initial discovery to find neighbors immediately
             _espnow.meshDiscovery();

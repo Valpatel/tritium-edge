@@ -46,6 +46,7 @@ void set_power_provider(PowerProvider) {}
 void set_camera_provider(CameraProvider) {}
 void set_touch_provider(TouchProvider) {}
 void set_ntp_provider(NtpProvider) {}
+void set_mesh_provider(MeshProvider) {}
 void report_loop_time(uint32_t) {}
 void report_i2c_result(uint8_t, bool, bool, int16_t) {}
 void report_display_frame(uint32_t) {}
@@ -207,6 +208,7 @@ static PowerProvider    _power_provider = nullptr;
 static CameraProvider   _camera_provider = nullptr;
 static TouchProvider    _touch_provider = nullptr;
 static NtpProvider      _ntp_provider = nullptr;
+static MeshProvider     _mesh_provider = nullptr;
 
 // NVS keys
 static constexpr const char* NVS_NAMESPACE = "hal_diag";
@@ -645,6 +647,10 @@ void set_ntp_provider(NtpProvider provider) {
     _ntp_provider = provider;
 }
 
+void set_mesh_provider(MeshProvider provider) {
+    _mesh_provider = provider;
+}
+
 void report_loop_time(uint32_t loop_us) {
     _loop_time_us = loop_us;
     if (loop_us > _max_loop_time_us) _max_loop_time_us = loop_us;
@@ -1030,6 +1036,19 @@ HealthSnapshot take_snapshot() {
         }
     }
 
+    // Mesh — pull from provider if registered
+    if (_mesh_provider) {
+        MeshInfo mesh = {};
+        if (_mesh_provider(mesh)) {
+            snap.mesh_peers = mesh.peer_count;
+            snap.mesh_routes = mesh.route_count;
+            snap.mesh_tx = mesh.tx_count;
+            snap.mesh_rx = mesh.rx_count;
+            snap.mesh_tx_fail = mesh.tx_fail;
+            snap.mesh_relayed = mesh.relay_count;
+        }
+    }
+
     // Camera — pull from provider if registered
     if (_camera_provider) {
         CameraInfo cam = {};
@@ -1131,6 +1150,7 @@ int health_to_json(char* buf, size_t size) {
         "},"
         "\"touch\":{\"available\":%s},"
         "\"ntp\":{\"synced\":%s,\"age_s\":%lu},"
+        "\"mesh\":{\"peers\":%u,\"routes\":%u,\"tx\":%lu,\"rx\":%lu,\"tx_fail\":%lu,\"relayed\":%lu},"
         "\"system\":{"
             "\"uptime_s\":%lu,"
             "\"reboot_count\":%lu,"
@@ -1157,6 +1177,9 @@ int health_to_json(char* buf, size_t size) {
         snap.touch_available ? "true" : "false",
         snap.ntp_synced ? "true" : "false",
         (unsigned long)snap.ntp_last_sync_age_s,
+        snap.mesh_peers, snap.mesh_routes,
+        (unsigned long)snap.mesh_tx, (unsigned long)snap.mesh_rx,
+        (unsigned long)snap.mesh_tx_fail, (unsigned long)snap.mesh_relayed,
         (unsigned long)snap.loop_time_us,
         (unsigned long)snap.max_loop_time_us,
         (unsigned long)snap.uptime_s,

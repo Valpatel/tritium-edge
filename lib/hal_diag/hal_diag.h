@@ -120,6 +120,13 @@ struct HealthSnapshot {
     // NTP
     bool     ntp_synced;            // NTP time has been synchronized
     uint32_t ntp_last_sync_age_s;   // Seconds since last NTP sync
+    // Mesh networking
+    uint8_t  mesh_peers;            // Number of known peers
+    uint8_t  mesh_routes;           // Route table entries
+    uint32_t mesh_tx;               // Total transmissions
+    uint32_t mesh_rx;               // Total receptions
+    uint32_t mesh_tx_fail;          // Failed transmissions
+    uint32_t mesh_relayed;          // Messages relayed for others
     // Task stats
     uint32_t loop_time_us;      // Last loop() duration
     uint32_t max_loop_time_us;  // Worst case since boot
@@ -202,6 +209,22 @@ using NtpProvider = bool (*)(NtpInfo& out);
 
 /// Register an NTP data provider.
 void set_ntp_provider(NtpProvider provider);
+
+// ── Mesh data provider (optional) ───────────────────────────────────────────
+
+struct MeshInfo {
+    uint8_t  peer_count;
+    uint8_t  route_count;
+    uint32_t tx_count;
+    uint32_t rx_count;
+    uint32_t tx_fail;
+    uint32_t relay_count;
+};
+
+using MeshProvider = bool (*)(MeshInfo& out);
+
+/// Register a mesh data provider.
+void set_mesh_provider(MeshProvider provider);
 
 // ── Loop timing provider (optional — wired from watchdog or main loop) ──────
 

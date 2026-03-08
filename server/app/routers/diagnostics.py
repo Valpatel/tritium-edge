@@ -259,6 +259,12 @@ def _cache_entry_to_report(device_id: str, entry: dict) -> NodeDiagReport:
         touch_available=health_data.get("touch", {}).get("available", False),
         ntp_synced=health_data.get("ntp", {}).get("synced", False),
         ntp_last_sync_age_s=health_data.get("ntp", {}).get("age_s", 0),
+        mesh_peers=health_data.get("mesh", {}).get("peers", 0),
+        mesh_routes=health_data.get("mesh", {}).get("routes", 0),
+        mesh_tx=health_data.get("mesh", {}).get("tx", 0),
+        mesh_rx=health_data.get("mesh", {}).get("rx", 0),
+        mesh_tx_fail=health_data.get("mesh", {}).get("tx_fail", 0),
+        mesh_relayed=health_data.get("mesh", {}).get("relayed", 0),
         loop_time_us=health_data.get("loop_us", 0),
         max_loop_time_us=health_data.get("max_loop_us", 0),
         uptime_s=health_data.get("uptime_s", 0),
@@ -351,6 +357,16 @@ async def fleet_health_report():
                 "frames": h.camera_frames,
                 "fails": h.camera_fails,
                 "avg_fps": round(h.camera_avg_fps, 1),
+            }
+        # Include mesh data if node has peers
+        if h.mesh_peers > 0 or h.mesh_tx > 0:
+            node_info["mesh"] = {
+                "peers": h.mesh_peers,
+                "routes": h.mesh_routes,
+                "tx": h.mesh_tx,
+                "rx": h.mesh_rx,
+                "tx_fail": h.mesh_tx_fail,
+                "relayed": h.mesh_relayed,
             }
         node_statuses.append(node_info)
 
