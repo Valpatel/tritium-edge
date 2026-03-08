@@ -497,20 +497,24 @@ def test_fleet_topology_empty(client):
     assert data["total_nodes"] == 0
     assert data["nodes"] == []
     assert data["links"] == []
+    assert data["total_links"] == 0
 
 
 def test_fleet_topology_with_devices(client, sample_device):
-    """Topology includes registered devices."""
+    """Topology includes registered devices as node objects with MAC."""
     resp = client.get("/api/fleet/topology")
     assert resp.status_code == 200
     data = resp.json()
     assert data["total_nodes"] >= 1
-    assert "test-node-001" in data["nodes"]
+    node_ids = [n["device_id"] for n in data["nodes"]]
+    assert "test-node-001" in node_ids
+    # Node should include MAC address
+    node = next(n for n in data["nodes"] if n["device_id"] == "test-node-001")
+    assert node["mac"] == "20:6E:F1:9A:12:00"
 
 
-def test_fleet_topology_with_mesh_data(client, sample_device):
-    """Topology includes mesh link data from diag cache."""
-    # Submit diag with mesh info
+def test_fleet_topology_with_mesh_stats(client, sample_device):
+    """Topology nodes include mesh stats from diag cache."""
     client.post("/api/devices/test-node-001/diag", json={
         "health": {
             "free_heap": 120000,
@@ -529,8 +533,119 @@ def test_fleet_topology_with_mesh_data(client, sample_device):
     resp = client.get("/api/fleet/topology")
     assert resp.status_code == 200
     data = resp.json()
-    # Should have at least one link for the device with mesh peers
-    mesh_links = [l for l in data["links"] if l["source"] == "test-node-001"]
-    assert len(mesh_links) == 1
-    assert mesh_links[0]["peers"] == 2
-    assert mesh_links[0]["tx"] == 150
+    node = next(n for n in data["nodes"] if n["device_id"] == "test-node-001")
+    assert "mesh" in node
+    assert node["mesh"]["peers"] == 2
+    assert node["mesh"]["tx"] == 150
+    assert node["mesh"]["relayed"] == 20
+
+
+def test_fleet_topology_mesh_peers_adjacency(client, sample_device):
+    """Topology builds adjacency links from mesh_peers with RSSI and hops."""
+    client.post("/api/devices/test-node-001/diag", json={
+        "health": {
+            "free_heap": 120000,
+            "mesh_peers": [
+                {"mac": "AA:BB:CC:DD:EE:01", "rssi": -45, "hops": 0},
+                {"mac": "AA:BB:CC:DD:EE:02", "rssi": -68, "hops": 1},
+            ],
+        },
+        "anomalies": [],
+    })
+
+    resp = client.get("/api/fleet/topology")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_links"] == 2
+    links = data["links"]
+    assert len(links) == 2
+
+    # Verify link details
+    link_macs = {l["target_mac"] for l in links}
+    assert "AA:BB:CC:DD:EE:01" in link_macs
+    assert "AA:BB:CC:DD:EE:02" in link_macs
+
+    link1 = next(l for l in links if l["target_mac"] == "AA:BB:CC:DD:EE:01")
+    assert link1["source"] == "test-node-001"
+    assert link1["rssi"] == -45
+    assert link1["hops"] == 0
+
+    link2 = next(l for l in links if l["target_mac"] == "AA:BB:CC:DD:EE:02")
+    assert link2["rssi"] == -68
+    assert link2["hops"] == 1
+
+
+def test_fleet_topology_resolves_peer_device_id(client, store):
+    """Links resolve peer MAC to device_id when the peer is a registered device."""
+    # Register two devices
+    store.save_device({
+        "device_id": "node-alpha",
+        "mac": "AA:BB:CC:DD:EE:01",
+        "registered_at": "2026-01-01T00:00:00+00:00",
+    })
+    store.save_device({
+        "device_id": "node-beta",
+        "mac": "AA:BB:CC:DD:EE:02",
+        "registered_at": "2026-01-01T00:00:00+00:00",
+    })
+
+    # node-alpha sees node-beta as a mesh peer
+    client.post("/api/devices/node-alpha/diag", json={
+        "health": {
+            "free_heap": 120000,
+            "mesh_peers": [
+                {"mac": "AA:BB:CC:DD:EE:02", "rssi": -50, "hops": 0},
+            ],
+        },
+        "anomalies": [],
+    })
+
+    resp = client.get("/api/fleet/topology")
+    data = resp.json()
+    assert data["total_links"] == 1
+    link = data["links"][0]
+    assert link["source"] == "node-alpha"
+    assert link["target_mac"] == "AA:BB:CC:DD:EE:02"
+    assert link["target_device_id"] == "node-beta"
+    assert link["rssi"] == -50
+    assert link["hops"] == 0
+
+
+def test_fleet_topology_deduplicates_bidirectional_links(client, store):
+    """Bidirectional mesh peer reports are deduplicated into a single link."""
+    store.save_device({
+        "device_id": "node-a",
+        "mac": "11:22:33:44:55:AA",
+        "registered_at": "2026-01-01T00:00:00+00:00",
+    })
+    store.save_device({
+        "device_id": "node-b",
+        "mac": "11:22:33:44:55:BB",
+        "registered_at": "2026-01-01T00:00:00+00:00",
+    })
+
+    # Both nodes report each other as mesh peers
+    client.post("/api/devices/node-a/diag", json={
+        "health": {
+            "free_heap": 120000,
+            "mesh_peers": [
+                {"mac": "11:22:33:44:55:BB", "rssi": -42, "hops": 0},
+            ],
+        },
+        "anomalies": [],
+    })
+    client.post("/api/devices/node-b/diag", json={
+        "health": {
+            "free_heap": 120000,
+            "mesh_peers": [
+                {"mac": "11:22:33:44:55:AA", "rssi": -44, "hops": 0},
+            ],
+        },
+        "anomalies": [],
+    })
+
+    resp = client.get("/api/fleet/topology")
+    data = resp.json()
+    # Should be deduplicated to 1 link, not 2
+    assert data["total_links"] == 1
+    assert len(data["links"]) == 1

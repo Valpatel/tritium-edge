@@ -547,37 +547,81 @@ async def fleet_correlations():
 async def fleet_topology(request: Request):
     """Fleet mesh topology — nodes and links from ESP-NOW mesh data.
 
-    Builds a topology graph from device diagnostic data including
-    mesh peer information.
+    Builds an adjacency graph from mesh_peers arrays in device health data.
+    Each node includes its device_id, MAC address, and mesh stats.
+    Each link represents a direct peer connection with RSSI and hop count.
     """
     store = request.app.state.store
     devices = store.list_devices()
 
-    nodes = []
-    links = []
+    # Build MAC-to-device_id and device_id-to-MAC lookups
+    mac_to_device: dict[str, str] = {}
+    device_to_mac: dict[str, str] = {}
     for d in devices:
         did = d.get("device_id", d.get("id", ""))
-        nodes.append(did)
+        mac = d.get("mac", "")
+        if mac:
+            mac_to_device[mac.upper()] = did
+            device_to_mac[did] = mac.upper()
 
-        # Extract mesh peer data from diagnostic cache if available
+    nodes = []
+    links = []
+    seen_links: set[tuple[str, str]] = set()  # Deduplicate bidirectional links (by MAC pair)
+
+    for d in devices:
+        did = d.get("device_id", d.get("id", ""))
+        mac = d.get("mac", "")
         entry = _diag_cache.get(did)
+
+        node_info: dict = {
+            "device_id": did,
+            "mac": mac,
+        }
+
         if entry:
             health = entry["report"].get("health", {})
             mesh = health.get("mesh", {})
-            peers = mesh.get("peers", 0)
-            # We don't have peer MACs in the health JSON yet,
-            # but we can represent the mesh stats
-            if peers > 0:
-                links.append({
-                    "source": did,
-                    "peers": peers,
+            if mesh:
+                node_info["mesh"] = {
+                    "peers": mesh.get("peers", 0),
                     "routes": mesh.get("routes", 0),
                     "tx": mesh.get("tx", 0),
                     "rx": mesh.get("rx", 0),
-                })
+                    "tx_fail": mesh.get("tx_fail", 0),
+                    "relayed": mesh.get("relayed", 0),
+                }
+
+            # Parse mesh_peers array for adjacency data
+            mesh_peers = health.get("mesh_peers", [])
+            for peer in mesh_peers:
+                peer_mac = peer.get("mac", "").upper()
+                if not peer_mac:
+                    continue
+                rssi = peer.get("rssi", 0)
+                hops = peer.get("hops", 0)
+                peer_device_id = mac_to_device.get(peer_mac)
+
+                # Deduplicate using MAC pairs so bidirectional reports
+                # (A sees B and B sees A) produce only one link
+                source_mac = device_to_mac.get(did, did)
+                link_pair = tuple(sorted([source_mac, peer_mac]))
+                if link_pair not in seen_links:
+                    seen_links.add(link_pair)
+                    link: dict = {
+                        "source": did,
+                        "target_mac": peer_mac,
+                        "rssi": rssi,
+                        "hops": hops,
+                    }
+                    if peer_device_id:
+                        link["target_device_id"] = peer_device_id
+                    links.append(link)
+
+        nodes.append(node_info)
 
     return {
         "total_nodes": len(nodes),
+        "total_links": len(links),
         "nodes": nodes,
         "links": links,
     }
