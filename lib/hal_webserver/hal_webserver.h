@@ -36,6 +36,13 @@ public:
     void addConfigEditor();     // JSON config editor at /config
     void addFileManager();      // LittleFS file browser at /files
     void addApiEndpoints();     // REST API at /api/*
+    void addWiFiSetup();        // WiFi network configuration at /wifi
+    void addBleViewer();        // Live BLE device list at /ble
+    void addAllPages();         // Register all built-in pages
+
+    // Data provider callbacks (set from main.cpp to inject sensor data)
+    using BleJsonProvider = std::function<int(char* buf, size_t size)>;
+    void setBleProvider(BleJsonProvider provider);
 
     // Helpers for handlers
     void sendResponse(int code, const char* contentType, const char* body);
@@ -66,4 +73,5 @@ private:
     uint16_t _port = 80;
     uint32_t _requestCount = 0;
     char _ip[16] = {0};
+    BleJsonProvider _bleProvider = nullptr;
 };

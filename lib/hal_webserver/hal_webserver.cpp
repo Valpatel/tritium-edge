@@ -14,6 +14,10 @@ void WebServerHAL::addOtaPage() {}
 void WebServerHAL::addConfigEditor() {}
 void WebServerHAL::addFileManager() {}
 void WebServerHAL::addApiEndpoints() {}
+void WebServerHAL::addWiFiSetup() {}
+void WebServerHAL::addBleViewer() {}
+void WebServerHAL::addAllPages() {}
+void WebServerHAL::setBleProvider(BleJsonProvider) {}
 void WebServerHAL::sendResponse(int, const char*, const char*) {}
 void WebServerHAL::sendJson(int, const char*) {}
 bool WebServerHAL::startMDNS(const char*) { return false; }
@@ -85,10 +89,12 @@ button.danger:hover{background:#ff6690}
 static const char NAV_HTML[] PROGMEM = R"rawliteral(
 <div class="nav">
   <a href="/">Dashboard</a>
+  <a href="/wifi">WiFi</a>
+  <a href="/ble">BLE Scan</a>
   <a href="/update">OTA Update</a>
   <a href="/config">Config</a>
   <a href="/files">Files</a>
-  <a href="/api/status">API Status</a>
+  <a href="/api/status">API</a>
 </div>
 )rawliteral";
 
@@ -311,6 +317,10 @@ void WebServerHAL::on(const char* uri, const char* method, WebRequestHandler han
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+void WebServerHAL::setBleProvider(BleJsonProvider provider) {
+    _bleProvider = provider;
+}
 
 void WebServerHAL::sendResponse(int code, const char* contentType, const char* body) {
     if (_server) _server->send(code, contentType, body);
@@ -641,6 +651,275 @@ void WebServerHAL::addApiEndpoints() {
     });
 
     DBG_INFO("web", "API endpoints added at /api/*");
+}
+
+// ── WiFi Setup page (/wifi) ──────────────────────────────────────────────
+
+static const char WIFI_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WiFi Setup</title>
+%THEME%
+</head><body>
+%NAV%
+<h1>// WiFi Configuration</h1>
+<div class="card">
+<h2>Current Connection</h2>
+<table>
+<tr><td>SSID</td><td id="cur_ssid">%CUR_SSID%</td></tr>
+<tr><td>IP</td><td>%CUR_IP%</td></tr>
+<tr><td>RSSI</td><td>%CUR_RSSI% dBm</td></tr>
+<tr><td>Channel</td><td>%CUR_CH%</td></tr>
+</table>
+</div>
+<div class="card">
+<h2>Available Networks</h2>
+<p class="label">Click scan to discover nearby networks</p>
+<button onclick="scanNetworks()">Scan Networks</button>
+<table id="scan_table">
+<tr><th>SSID</th><th>RSSI</th><th>Ch</th><th>Security</th><th></th></tr>
+</table>
+</div>
+<div class="card">
+<h2>Connect to Network</h2>
+<form method="POST" action="/wifi/connect">
+  <table>
+  <tr><td class="label">SSID</td><td><input type="text" name="ssid" id="ssid_input"
+    style="background:#0a0a0a;color:#00ffd0;border:1px solid #00ffd044;padding:6px;width:200px;font-family:inherit"></td></tr>
+  <tr><td class="label">Password</td><td><input type="password" name="pass"
+    style="background:#0a0a0a;color:#00ffd0;border:1px solid #00ffd044;padding:6px;width:200px;font-family:inherit"></td></tr>
+  </table>
+  <br>
+  <button type="submit">Connect</button>
+</form>
+</div>
+<div class="card">
+<h2>Saved Networks</h2>
+<div id="saved_nets">%SAVED_NETS%</div>
+</div>
+<script>
+function scanNetworks(){
+  var t=document.getElementById('scan_table');
+  t.innerHTML='<tr><th>SSID</th><th>RSSI</th><th>Ch</th><th>Security</th><th></th></tr><tr><td colspan="5" style="color:#666">Scanning...</td></tr>';
+  fetch('/api/scan').then(r=>r.json()).then(d=>{
+    var rows='<tr><th>SSID</th><th>RSSI</th><th>Ch</th><th>Security</th><th></th></tr>';
+    d.networks.forEach(n=>{
+      var sec=n.encryption==0?'Open':'Encrypted';
+      rows+='<tr><td>'+n.ssid+'</td><td>'+n.rssi+' dBm</td><td>'+n.channel+'</td><td>'+sec+'</td>';
+      rows+='<td><button onclick="document.getElementById(\'ssid_input\').value=\''+n.ssid+'\'">Select</button></td></tr>';
+    });
+    if(d.count==0) rows+='<tr><td colspan="5" style="color:#666">No networks found</td></tr>';
+    t.innerHTML=rows;
+  });
+}
+</script>
+</body></html>
+)rawliteral";
+
+void WebServerHAL::addWiFiSetup() {
+    if (!_server) return;
+
+    WebServerHAL* self = this;
+
+    // GET /wifi — show WiFi config page
+    _server->on("/wifi", HTTP_GET, [self]() {
+        self->_requestCount++;
+
+        String html(FPSTR(WIFI_HTML));
+        html.replace("%THEME%", FPSTR(THEME_CSS));
+        html.replace("%NAV%",   FPSTR(NAV_HTML));
+
+        html.replace("%CUR_SSID%", WiFi.isConnected() ? WiFi.SSID() : "Not connected");
+        html.replace("%CUR_IP%",   WiFi.localIP().toString());
+        html.replace("%CUR_RSSI%", String(WiFi.RSSI()));
+        html.replace("%CUR_CH%",   String(WiFi.channel()));
+
+        // List saved networks from NVS (simple: read /wifi_nets.txt from LittleFS)
+        String saved = "<p style='color:#666'>No saved networks</p>";
+        File f = LittleFS.open("/wifi_nets.txt", "r");
+        if (f) {
+            String content = f.readString();
+            f.close();
+            if (content.length() > 0) {
+                saved = "<table><tr><th>SSID</th><th></th></tr>";
+                int start = 0;
+                while (start < (int)content.length()) {
+                    int nl = content.indexOf('\n', start);
+                    if (nl < 0) nl = content.length();
+                    String line = content.substring(start, nl);
+                    line.trim();
+                    if (line.length() > 0) {
+                        // Format: ssid\tpassword
+                        int tab = line.indexOf('\t');
+                        String ssid = (tab > 0) ? line.substring(0, tab) : line;
+                        saved += "<tr><td>" + ssid + "</td><td>";
+                        saved += "<form method='POST' action='/wifi/forget' style='display:inline'>";
+                        saved += "<input type='hidden' name='ssid' value='" + ssid + "'>";
+                        saved += "<button class='danger' type='submit'>Forget</button></form></td></tr>";
+                    }
+                    start = nl + 1;
+                }
+                saved += "</table>";
+            }
+        }
+        html.replace("%SAVED_NETS%", saved);
+
+        _server->send(200, "text/html", html);
+    });
+
+    // POST /wifi/connect — connect to a network and save it
+    _server->on("/wifi/connect", HTTP_POST, [self]() {
+        self->_requestCount++;
+
+        if (_server->hasArg("ssid")) {
+            String ssid = _server->arg("ssid");
+            String pass = _server->hasArg("pass") ? _server->arg("pass") : "";
+
+            // Save to file
+            File f = LittleFS.open("/wifi_nets.txt", "a");
+            if (f) {
+                f.print(ssid + "\t" + pass + "\n");
+                f.close();
+            }
+
+            // Attempt connection
+            WiFi.begin(ssid.c_str(), pass.c_str());
+            DBG_INFO("web", "WiFi connecting to: %s", ssid.c_str());
+
+            _server->sendHeader("Location", "/wifi", true);
+            _server->send(302, "text/plain", "Connecting...");
+        } else {
+            _server->send(400, "text/plain", "Missing SSID");
+        }
+    });
+
+    // POST /wifi/forget — remove a saved network
+    _server->on("/wifi/forget", HTTP_POST, [self]() {
+        self->_requestCount++;
+
+        if (_server->hasArg("ssid")) {
+            String target = _server->arg("ssid");
+            File f = LittleFS.open("/wifi_nets.txt", "r");
+            String kept;
+            if (f) {
+                while (f.available()) {
+                    String line = f.readStringUntil('\n');
+                    line.trim();
+                    int tab = line.indexOf('\t');
+                    String ssid = (tab > 0) ? line.substring(0, tab) : line;
+                    if (ssid != target && line.length() > 0) {
+                        kept += line + "\n";
+                    }
+                }
+                f.close();
+            }
+            File w = LittleFS.open("/wifi_nets.txt", "w");
+            if (w) { w.print(kept); w.close(); }
+            DBG_INFO("web", "WiFi network forgotten: %s", target.c_str());
+        }
+        _server->sendHeader("Location", "/wifi", true);
+        _server->send(302, "text/plain", "Removed");
+    });
+
+    DBG_INFO("web", "WiFi setup added at /wifi");
+}
+
+// ── BLE Viewer page (/ble) ──────────────────────────────────────────────
+
+static const char BLE_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BLE Scanner</title>
+%THEME%
+<script>
+var refreshTimer;
+function startRefresh(){
+  loadDevices();
+  refreshTimer=setInterval(loadDevices,3000);
+}
+function loadDevices(){
+  fetch('/api/ble').then(r=>r.json()).then(d=>{
+    var t=document.getElementById('ble_table');
+    var rows='<tr><th>MAC</th><th>RSSI</th><th>Name</th><th>Seen</th><th>Known</th></tr>';
+    d.devices.forEach(dev=>{
+      var cls=dev.known?'color:#00ffd0':'';
+      rows+='<tr style="'+cls+'"><td>'+dev.mac+'</td><td>'+dev.rssi+' dBm</td>';
+      rows+='<td>'+(dev.name||'—')+'</td><td>'+dev.seen+'</td>';
+      rows+='<td>'+(dev.known?'YES':'')+'</td></tr>';
+    });
+    if(d.devices.length==0) rows+='<tr><td colspan="5" style="color:#666">No devices detected</td></tr>';
+    t.innerHTML=rows;
+    document.getElementById('ble_count').textContent=d.total+' devices ('+d.known+' known)';
+    document.getElementById('ble_active').textContent=d.active?'Active':'Inactive';
+  }).catch(()=>{
+    document.getElementById('ble_active').textContent='Not available';
+  });
+}
+</script>
+</head><body onload="startRefresh()">
+%NAV%
+<h1>// BLE Scanner</h1>
+<div class="card">
+<table>
+<tr><td>Scanner Status</td><td id="ble_active">Loading...</td></tr>
+<tr><td>Visible Devices</td><td id="ble_count">—</td></tr>
+</table>
+</div>
+<div class="card">
+<h2>Detected Devices</h2>
+<p class="label">Auto-refreshes every 3 seconds</p>
+<table id="ble_table">
+<tr><td colspan="5" style="color:#666">Loading...</td></tr>
+</table>
+</div>
+</body></html>
+)rawliteral";
+
+void WebServerHAL::addBleViewer() {
+    if (!_server) return;
+
+    WebServerHAL* self = this;
+
+    // GET /ble — BLE scanner page
+    _server->on("/ble", HTTP_GET, [self]() {
+        self->_requestCount++;
+
+        String html(FPSTR(BLE_HTML));
+        html.replace("%THEME%", FPSTR(THEME_CSS));
+        html.replace("%NAV%",   FPSTR(NAV_HTML));
+        _server->send(200, "text/html", html);
+    });
+
+    // GET /api/ble — JSON BLE device list (uses provider callback)
+    _server->on("/api/ble", HTTP_GET, [self]() {
+        self->_requestCount++;
+
+        if (self->_bleProvider) {
+            static char buf[2048];
+            int len = self->_bleProvider(buf, sizeof(buf));
+            if (len > 0) {
+                _server->send(200, "application/json", buf);
+                return;
+            }
+        }
+        _server->send(200, "application/json",
+            "{\"active\":false,\"total\":0,\"known\":0,\"devices\":[]}");
+    });
+
+    DBG_INFO("web", "BLE viewer added at /ble");
+}
+
+// ── addAllPages() ────────────────────────────────────────────────────────
+
+void WebServerHAL::addAllPages() {
+    addDashboard();
+    addOtaPage();
+    addConfigEditor();
+    addFileManager();
+    addApiEndpoints();
+    addWiFiSetup();
+    addBleViewer();
+    DBG_INFO("web", "All pages registered");
 }
 
 // ── runTest() ───────────────────────────────────────────────────────────────

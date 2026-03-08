@@ -34,6 +34,16 @@ static bool _ble_scanner_enabled = true;
 static bool _ble_scanner_enabled = false;
 #endif
 
+#if defined(ENABLE_WEBSERVER) && __has_include("hal_webserver.h")
+#include "hal_webserver.h"
+#include <WiFi.h>
+#include <LittleFS.h>
+static WebServerHAL _webserver;
+static bool _webserver_enabled = true;
+#else
+static bool _webserver_enabled = false;
+#endif
+
 // --- App selection via build flag ---
 #if defined(APP_STARFIELD)
 #include "starfield_app.h"
@@ -199,11 +209,63 @@ static void services_init() {
         }
     }
 #endif
+
+#if defined(ENABLE_WEBSERVER)
+    if (_wifi_enabled && wifi.isConnected()) {
+        LittleFS.begin(true);  // Format on first mount
+
+        uint16_t web_port = 80;
+        if (_webserver.init(web_port)) {
+            _webserver.addAllPages();
+
+            // Wire BLE data into web server if BLE scanner is active
+#if defined(ENABLE_BLE_SCANNER)
+            _webserver.setBleProvider([](char* buf, size_t size) -> int {
+                if (!hal_ble_scanner::is_active()) return 0;
+
+                BleDevice devs[16];
+                int n = hal_ble_scanner::get_devices(devs, 16);
+                int known = 0;
+                for (int i = 0; i < n; i++) if (devs[i].is_known) known++;
+
+                int pos = snprintf(buf, size,
+                    "{\"active\":true,\"total\":%d,\"known\":%d,\"devices\":[", n, known);
+                for (int i = 0; i < n && pos < (int)size - 100; i++) {
+                    if (i > 0) buf[pos++] = ',';
+                    pos += snprintf(buf + pos, size - pos,
+                        "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+                        "\"rssi\":%d,\"name\":\"%s\",\"seen\":%lu,\"known\":%s}",
+                        devs[i].addr[0], devs[i].addr[1], devs[i].addr[2],
+                        devs[i].addr[3], devs[i].addr[4], devs[i].addr[5],
+                        devs[i].rssi, devs[i].name,
+                        (unsigned long)devs[i].seen_count,
+                        devs[i].is_known ? "true" : "false");
+                }
+                pos += snprintf(buf + pos, size - pos, "]}");
+                return pos;
+            });
+#endif
+
+            // Start mDNS for easy phone discovery
+            uint8_t mac[6];
+            WiFi.macAddress(mac);
+            char hostname[32];
+            snprintf(hostname, sizeof(hostname), "tritium-%02x%02x", mac[4], mac[5]);
+            _webserver.startMDNS(hostname);
+
+            Serial.printf("[tritium] Web server: http://%s:%u/ (mDNS: %s.local)\n",
+                          wifi.getIP(), web_port, hostname);
+        }
+    }
+#endif
 }
 
 static void services_tick() {
 #if defined(ENABLE_HEARTBEAT)
     hal_heartbeat::tick();
+#endif
+#if defined(ENABLE_WEBSERVER)
+    _webserver.process();
 #endif
 }
 

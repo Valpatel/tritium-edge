@@ -35,6 +35,7 @@ combined = all_flags_str + " " + all_defs_str
 
 needs_networking = "ENABLE_WIFI" in combined
 needs_ble = "ENABLE_BLE_SCANNER" in combined
+needs_webserver = "ENABLE_WEBSERVER" in combined
 
 if needs_networking:
     fw_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32")
@@ -45,6 +46,8 @@ if needs_networking:
             "HTTPClient", "LittleFS", "FS", "Preferences",
             "SD_MMC", "SD", "SPI",
         ]
+        if needs_webserver:
+            needed_libs += ["WebServer", "ESPmDNS", "Update", "Hash"]
         for lib in needed_libs:
             src_dir = os.path.join(libs_dir, lib, "src")
             if os.path.isdir(src_dir):
