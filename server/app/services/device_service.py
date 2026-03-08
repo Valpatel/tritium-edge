@@ -61,6 +61,7 @@ def process_heartbeat(store: FleetStore, device_id: str, body: dict) -> dict:
         "family": body.get("family", device.get("family", "esp32")),
         "ip": body.get("ip_address", body.get("ip", device.get("ip"))),
         "mac": body.get("mac", device.get("mac")),
+        "partition": body.get("partition", device.get("partition")),
         "uptime_s": body.get("uptime_s"),
         "free_heap": body.get("free_heap"),
         "rssi": body.get("wifi_rssi", body.get("rssi")),

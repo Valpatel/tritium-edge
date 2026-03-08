@@ -718,6 +718,11 @@ function showDevice(id) {
                 <div class="detail-row"><span class="key">Free Memory</span><span class="val">${d.free_heap?Math.round(d.free_heap/1024)+' KB':'--'}</span></div>
                 <div class="detail-row"><span class="key">MAC Address</span><span class="val">${d.mac||'--'}</span></div>
             </div>
+            ${d.sensors ? `<div class="detail-block"><h4>Sensors</h4>
+                <div class="detail-row"><span class="key">BLE Devices</span><span class="val">${d.sensors.ble_devices!=null?d.sensors.ble_devices:'--'}</span></div>
+                <div class="detail-row"><span class="key">Known Devices</span><span class="val">${d.sensors.ble_known!=null?d.sensors.ble_known:'--'}</span></div>
+                <div class="detail-row"><span class="key">Total Seen</span><span class="val">${d.sensors.ble_total_seen!=null?d.sensors.ble_total_seen:'--'}</span></div>
+            </div>` : ''}
         </div>
         ${d.notes?'<div style="margin-top:12px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:2px;font-size:0.8em;color:var(--text2)"><strong>Notes:</strong> '+esc(d.notes)+'</div>':''}
         <div style="margin-top:14px">
