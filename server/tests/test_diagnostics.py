@@ -417,3 +417,29 @@ def test_fleet_health_report_node_details(client):
     assert node["reboot_count"] == 1
     assert node["board"] == "touch-lcd-35bc"
     assert node["version"] == "1.2.0"
+
+
+def test_fleet_heap_trends_empty(client):
+    """Empty fleet returns no trends."""
+    resp = client.get("/api/fleet/heap-trends")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_devices"] == 0
+    assert data["leak_suspects"] == 0
+
+
+def test_fleet_heap_trends_with_devices(client):
+    """Heap trends computed from diag cache."""
+    client.post("/api/devices/t1/diag", json={
+        "health": {"free_heap": 100000, "uptime_s": 3600},
+        "anomalies": [],
+    })
+    client.post("/api/devices/t2/diag", json={
+        "health": {"free_heap": 50000, "uptime_s": 7200},
+        "anomalies": [],
+    })
+    resp = client.get("/api/fleet/heap-trends")
+    assert resp.status_code == 200
+    data = resp.json()
+    # Single sample per device, so no trends computed
+    assert data["total_devices"] == 0
