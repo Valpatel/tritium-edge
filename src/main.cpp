@@ -79,6 +79,15 @@ static bool _espnow_enabled = true;
 static bool _espnow_enabled = false;
 #endif
 
+// Self-seeding firmware distribution via SD card
+#if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("hal_seed.h")
+#include "hal_seed.h"
+#include "hal_sdcard.h"
+static SDCardHAL _seed_sd;
+static SeedHAL _seed;
+static bool _seed_ok = false;
+#endif
+
 // Acoustic modem over audio codec (speaker/mic FSK)
 #if defined(HAS_AUDIO_CODEC) && HAS_AUDIO_CODEC && __has_include("hal_acoustic_modem.h")
 #include "hal_audio.h"
@@ -212,6 +221,60 @@ static void handleSerialCommands() {
                         devs[i].rssi, (unsigned long)devs[i].seen_count,
                         devs[i].is_known ? "[KNOWN] " : "",
                         devs[i].name);
+                }
+            }
+#endif
+#if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("hal_seed.h")
+            else if (strcmp(_cmd_buf, "SEED_STATUS") == 0) {
+                if (!_seed_ok) {
+                    Serial.printf("[seed] Not initialized\n");
+                } else {
+                    SeedManifest m;
+                    bool has_manifest = _seed.getManifest(m);
+                    Serial.printf("[seed] available=%s manifest=%s",
+                                  _seed.hasSeedPayload() ? "yes" : "no",
+                                  has_manifest ? "yes" : "no");
+                    if (has_manifest) {
+                        uint32_t total = 0;
+                        for (int i = 0; i < m.file_count; i++) total += m.files[i].size;
+                        Serial.printf(" files=%d size=%luKB fw=%s board=%s",
+                                      m.file_count, (unsigned long)(total / 1024),
+                                      m.firmware_version, m.board_type);
+                    }
+                    Serial.printf(" sd=%s\n", _seed.hasSD() ? "yes" : "no");
+                }
+            }
+            else if (strcmp(_cmd_buf, "SEED_LIST") == 0) {
+                if (!_seed_ok) {
+                    Serial.printf("[seed] Not initialized\n");
+                } else {
+                    SeedManifest m;
+                    if (_seed.getManifest(m)) {
+                        Serial.printf("[seed] %d files in manifest:\n", m.file_count);
+                        for (int i = 0; i < m.file_count; i++) {
+                            Serial.printf("  %s  %lu bytes  %s\n",
+                                          m.files[i].path,
+                                          (unsigned long)m.files[i].size,
+                                          m.files[i].sha256);
+                        }
+                    } else {
+                        Serial.printf("[seed] No manifest found. Run SEED_CREATE first.\n");
+                    }
+                }
+            }
+            else if (strcmp(_cmd_buf, "SEED_CREATE") == 0) {
+                if (!_seed_ok) {
+                    Serial.printf("[seed] Not initialized\n");
+                } else {
+                    Serial.printf("[seed] Creating seed package...\n");
+                    if (_seed.createSeedPackage()) {
+                        SeedManifest m;
+                        _seed.getManifest(m);
+                        Serial.printf("[seed] Package created: %d files, fw=%s\n",
+                                      m.file_count, m.firmware_version);
+                    } else {
+                        Serial.printf("[seed] Package creation failed\n");
+                    }
                 }
             }
 #endif
@@ -543,6 +606,18 @@ static void services_init() {
             _espnow.meshDiscovery();
         } else {
             Serial.printf("[tritium] ESP-NOW Mesh: init failed\n");
+        }
+    }
+#endif
+
+// Self-seeding — init SD card + seed HAL for firmware distribution
+#if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("hal_seed.h")
+    {
+        if (_seed_sd.init()) {
+            _seed_ok = _seed.init(&_seed_sd, nullptr);
+            Serial.printf("[tritium] Self-seed: %s\n", _seed_ok ? "OK" : "FAIL");
+        } else {
+            Serial.printf("[tritium] Self-seed: SD card not available\n");
         }
     }
 #endif

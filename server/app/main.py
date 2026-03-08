@@ -122,6 +122,12 @@ async def admin_panel(request: Request):
     return templates.TemplateResponse("admin.html", {"request": request})
 
 
+@app.get("/map", response_class=HTMLResponse)
+async def fleet_map(request: Request):
+    """Serve the standalone fleet map page."""
+    return templates.TemplateResponse("map.html", {"request": request})
+
+
 @app.get("/api/plugins/pages")
 async def plugin_pages():
     """List plugin-contributed UI pages for admin sidebar."""
