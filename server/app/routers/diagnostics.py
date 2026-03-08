@@ -13,6 +13,16 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from tritium_lib.models.diagnostics import (
+    AnomalyType,
+    HealthSnapshot,
+    NodeDiagReport,
+    Anomaly as LibAnomaly,
+    aggregate_fleet_health,
+    classify_node_health,
+    detect_fleet_anomalies,
+)
+
 router = APIRouter(prefix="/api", tags=["diagnostics"])
 
 # In-memory diagnostic cache — keyed by device_id
@@ -192,4 +202,113 @@ async def fleet_anomalies(
     return {
         "total": len(all_anomalies),
         "anomalies": all_anomalies[:limit],
+    }
+
+
+def _cache_entry_to_report(device_id: str, entry: dict) -> NodeDiagReport:
+    """Convert a cached diag entry to a tritium-lib NodeDiagReport."""
+    report = entry["report"]
+    health_data = report.get("health", {})
+
+    health = HealthSnapshot(
+        timestamp=datetime.fromtimestamp(entry["received_at"], tz=timezone.utc),
+        node_id=device_id,
+        free_heap=health_data.get("free_heap", 0),
+        min_free_heap=health_data.get("min_heap", health_data.get("min_free_heap", 0)),
+        free_psram=health_data.get("free_psram", 0),
+        largest_free_block=health_data.get("largest_block", 0),
+        battery_voltage=health_data.get("battery_v"),
+        battery_percent=health_data.get("battery_pct"),
+        cpu_temp_c=health_data.get("cpu_temp_c", health_data.get("cpu_c")),
+        wifi_rssi=health_data.get("wifi_rssi"),
+        wifi_connected=health_data.get("wifi_connected", False),
+        wifi_disconnects=health_data.get("wifi_disconnects", 0),
+        i2c_devices_found=health_data.get("i2c_devices", 0),
+        i2c_errors=health_data.get("i2c_errors", 0),
+        loop_time_us=health_data.get("loop_us", 0),
+        max_loop_time_us=health_data.get("max_loop_us", 0),
+        uptime_s=health_data.get("uptime_s", 0),
+        reboot_count=health_data.get("reboot_count", 0),
+        reset_reason=health_data.get("reset_reason"),
+    )
+
+    anomalies = []
+    for a in entry.get("anomalies", []):
+        anomalies.append(LibAnomaly(
+            timestamp=health.timestamp,
+            node_id=device_id,
+            anomaly_type=_map_anomaly_type(a.get("subsystem", "")),
+            subsystem=a.get("subsystem", "unknown"),
+            description=a.get("description", ""),
+            severity_score=min(1.0, max(0.0, a.get("severity", a.get("score", 0.5)))),
+        ))
+
+    return NodeDiagReport(
+        node_id=device_id,
+        board_type=report.get("board", "unknown"),
+        firmware_version=report.get("version", "unknown"),
+        current_health=health,
+        active_anomalies=anomalies,
+    )
+
+
+def _map_anomaly_type(subsystem: str) -> AnomalyType:
+    """Map a subsystem name to an AnomalyType enum."""
+    mapping = {
+        "memory": AnomalyType.MEMORY_LEAK,
+        "power": AnomalyType.BATTERY_DRAIN,
+        "wifi": AnomalyType.WIFI_DEGRADATION,
+        "perf": AnomalyType.PERFORMANCE_DROP,
+        "i2c": AnomalyType.I2C_FAILURE,
+        "display": AnomalyType.DISPLAY_FAILURE,
+        "thermal": AnomalyType.TEMPERATURE_HIGH,
+    }
+    return mapping.get(subsystem, AnomalyType.PERFORMANCE_DROP)
+
+
+@router.get("/fleet/health-report")
+async def fleet_health_report():
+    """Fleet health report using tritium-lib classification.
+
+    Returns healthy/warning/critical node counts, per-node status,
+    and cross-node infrastructure anomaly detection.
+    """
+    reports = []
+    for device_id, entry in _diag_cache.items():
+        reports.append(_cache_entry_to_report(device_id, entry))
+
+    summary = aggregate_fleet_health(reports)
+    infra_anomalies = detect_fleet_anomalies(reports)
+
+    node_statuses = []
+    for report in reports:
+        status = classify_node_health(report)
+        node_statuses.append({
+            "device_id": report.node_id,
+            "status": status,
+            "board": report.board_type,
+            "version": report.firmware_version,
+            "anomaly_count": len(report.active_anomalies),
+            "free_heap": report.current_health.free_heap,
+            "wifi_rssi": report.current_health.wifi_rssi,
+            "uptime_s": report.current_health.uptime_s,
+        })
+
+    return {
+        "health_score": round(summary.health_score, 3),
+        "total_nodes": summary.total_nodes,
+        "healthy_nodes": summary.healthy_nodes,
+        "warning_nodes": summary.warning_nodes,
+        "critical_nodes": summary.critical_nodes,
+        "infrastructure_anomalies": [
+            {
+                "type": a.anomaly_type.value,
+                "subsystem": a.subsystem,
+                "description": a.description,
+                "severity": round(a.severity_score, 2),
+            }
+            for a in infra_anomalies
+        ],
+        "nodes": node_statuses,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }

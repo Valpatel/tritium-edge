@@ -252,3 +252,85 @@ def test_diagnostics_history_with_anomalies(client):
     assert len(data) == 1
     assert data[0]["anomaly_count"] == 2
     assert len(data[0]["anomalies"]) == 2
+
+
+# --- Fleet health report (tritium-lib integration) ---
+
+
+def test_fleet_health_report_empty(client):
+    """Empty fleet returns perfect score."""
+    resp = client.get("/api/fleet/health-report")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["health_score"] == 1.0
+    assert data["total_nodes"] == 0
+    assert data["infrastructure_anomalies"] == []
+
+
+def test_fleet_health_report_healthy_node(client):
+    """Single healthy node classified correctly."""
+    client.post("/api/devices/healthy-1/diag", json={
+        "health": {
+            "free_heap": 120000,
+            "min_free_heap": 100000,
+            "free_psram": 4000000,
+            "largest_block": 80000,
+            "wifi_rssi": -45,
+            "wifi_connected": True,
+            "uptime_s": 3600,
+        },
+        "anomalies": [],
+    })
+    resp = client.get("/api/fleet/health-report")
+    data = resp.json()
+    assert data["total_nodes"] == 1
+    assert data["healthy_nodes"] == 1
+    assert data["health_score"] == 1.0
+    assert data["nodes"][0]["status"] == "healthy"
+
+
+def test_fleet_health_report_critical_node(client):
+    """Node with critical anomaly classified as critical."""
+    client.post("/api/devices/crit-1/diag", json={
+        "health": {
+            "free_heap": 10000,  # Below 20KB critical threshold
+            "min_free_heap": 5000,
+            "free_psram": 0,
+            "largest_block": 5000,
+            "wifi_connected": True,
+        },
+        "anomalies": [
+            {"subsystem": "memory", "description": "Heap critical", "severity": 0.9},
+        ],
+    })
+    resp = client.get("/api/fleet/health-report")
+    data = resp.json()
+    assert data["critical_nodes"] == 1
+    assert data["healthy_nodes"] == 0
+    assert data["health_score"] == 0.0
+    assert data["nodes"][0]["status"] == "critical"
+
+
+def test_fleet_health_report_infra_anomalies(client):
+    """Cross-node anomaly detection flags fleet-wide WiFi issues."""
+    # Submit 3 nodes with bad WiFi
+    for i in range(3):
+        client.post(f"/api/devices/wifi-bad-{i}/diag", json={
+            "health": {
+                "free_heap": 120000,
+                "min_free_heap": 100000,
+                "free_psram": 4000000,
+                "largest_block": 80000,
+                "wifi_rssi": -85,
+                "wifi_connected": True,
+                "uptime_s": 3600,
+            },
+            "anomalies": [],
+        })
+    resp = client.get("/api/fleet/health-report")
+    data = resp.json()
+    assert data["total_nodes"] == 3
+    # All 3 have RSSI < -80, which exceeds threshold (>50%)
+    assert len(data["infrastructure_anomalies"]) >= 1
+    infra_types = [a["type"] for a in data["infrastructure_anomalies"]]
+    assert "wifi_degradation" in infra_types
