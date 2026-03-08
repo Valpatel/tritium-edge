@@ -120,14 +120,22 @@ def process_heartbeat(store: FleetStore, device_id: str, body: dict) -> dict:
     if reported_config:
         device["reported_config"] = reported_config
 
+    # Sensor data (BLE scanner, etc.)
+    sensors = body.get("sensors")
+    if sensors:
+        device["sensors"] = sensors
+
     store.save_device(device)
 
     # Record telemetry point
-    store.add_telemetry(device_id, {
+    telemetry = {
         "free_heap": body.get("free_heap"),
         "rssi": body.get("wifi_rssi", body.get("rssi")),
         "uptime_s": body.get("uptime_s"),
-    })
+    }
+    if sensors:
+        telemetry["sensors"] = sensors
+    store.add_telemetry(device_id, telemetry)
 
     # Build response
     response = {

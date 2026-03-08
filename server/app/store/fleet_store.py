@@ -197,6 +197,8 @@ class FleetStore:
             "rssi": data.get("rssi"),
             "uptime_s": data.get("uptime_s"),
         }
+        if data.get("sensors"):
+            point["sensors"] = data["sensors"]
         with open(p, "a") as f:
             f.write(json.dumps(point) + "\n")
 

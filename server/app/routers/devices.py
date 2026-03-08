@@ -100,6 +100,20 @@ async def get_device_telemetry(device_id: str, request: Request, limit: int = 60
     return store.get_telemetry(device_id, limit=limit)
 
 
+@router.get("/devices/{device_id}/sensors")
+async def get_device_sensors(device_id: str, request: Request):
+    """Get latest sensor data (BLE scanner, etc.) for a device."""
+    store = _get_store(request)
+    device = store.get_device(device_id)
+    if not device:
+        raise HTTPException(404, "Device not found")
+    return {
+        "device_id": device_id,
+        "sensors": device.get("sensors", {}),
+        "last_seen": device.get("last_seen"),
+    }
+
+
 @router.get("/devices/{device_id}/config")
 async def get_device_config(device_id: str, request: Request):
     """Get desired and reported config for a device."""
