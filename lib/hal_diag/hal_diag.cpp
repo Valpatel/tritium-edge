@@ -115,6 +115,10 @@ void test_display_pattern(esp_lcd_panel_handle_t, int, int) {}
 uint32_t get_reboot_count() { return 1; }
 uint8_t get_last_reset_reason() { return 0; }
 const char* reset_reason_str(uint8_t) { return "SIMULATOR"; }
+bool has_crash_info() { return false; }
+bool get_crash_info(CrashInfo&) { return false; }
+void clear_crash_info() {}
+void store_crash(const char*, const char*) {}
 
 }  // namespace hal_diag
 
@@ -745,6 +749,30 @@ bool init(const DiagConfig& cfg) {
     log(Severity::INFO, "system", "Boot #%lu, reset: %s",
         (unsigned long)_reboot_count, reset_reason_str(_reset_reason));
 
+    // Check for crash info from previous boot
+    if (has_crash_info()) {
+        CrashInfo crash = {};
+        if (get_crash_info(crash)) {
+            log(Severity::FATAL, "system",
+                "Previous crash: %s (task=%s, heap=%lu, uptime=%lums)",
+                crash.message, crash.task_name,
+                (unsigned long)crash.free_heap,
+                (unsigned long)crash.uptime_ms);
+#if DIAG_HAS_DIAGLOG
+            // Also write to persistent log for fleet server collection
+            hal_diaglog::DiagEvent evt = {};
+            evt.epoch = crash.epoch_time;
+            evt.uptime_ms = crash.uptime_ms;
+            evt.severity = 5;  // FATAL
+            strncpy(evt.subsystem, "crash", sizeof(evt.subsystem));
+            strncpy(evt.message, crash.message, sizeof(evt.message));
+            evt.value = (float)crash.free_heap;
+            hal_diaglog::diaglog_write(evt);
+#endif
+            clear_crash_info();
+        }
+    }
+
     return true;
 }
 
@@ -1344,6 +1372,91 @@ const char* reset_reason_str(uint8_t reason) {
         case ESP_RST_USB:       return "USB";
         default:                return "UNKNOWN";
     }
+}
+
+// ── Crash / panic tracking ────────────────────────────────────────────────
+
+static constexpr const char* NVS_KEY_CRASH_VALID = "crash_ok";
+static constexpr const char* NVS_KEY_CRASH_EPOCH = "crash_epoch";
+static constexpr const char* NVS_KEY_CRASH_UPTIME = "crash_up";
+static constexpr const char* NVS_KEY_CRASH_HEAP = "crash_heap";
+static constexpr const char* NVS_KEY_CRASH_REASON = "crash_rsn";
+static constexpr const char* NVS_KEY_CRASH_MSG = "crash_msg";
+static constexpr const char* NVS_KEY_CRASH_TASK = "crash_task";
+
+bool has_crash_info() {
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
+    uint8_t valid = 0;
+    esp_err_t err = nvs_get_u8(handle, NVS_KEY_CRASH_VALID, &valid);
+    nvs_close(handle);
+    return (err == ESP_OK && valid == 1);
+}
+
+bool get_crash_info(CrashInfo& out) {
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
+
+    uint8_t valid = 0;
+    if (nvs_get_u8(handle, NVS_KEY_CRASH_VALID, &valid) != ESP_OK || valid != 1) {
+        nvs_close(handle);
+        return false;
+    }
+
+    memset(&out, 0, sizeof(out));
+    nvs_get_u32(handle, NVS_KEY_CRASH_EPOCH, &out.epoch_time);
+    nvs_get_u32(handle, NVS_KEY_CRASH_UPTIME, &out.uptime_ms);
+    nvs_get_u32(handle, NVS_KEY_CRASH_HEAP, &out.free_heap);
+    nvs_get_u8(handle, NVS_KEY_CRASH_REASON, &out.reset_reason);
+
+    size_t msg_len = sizeof(out.message);
+    nvs_get_str(handle, NVS_KEY_CRASH_MSG, out.message, &msg_len);
+    size_t task_len = sizeof(out.task_name);
+    nvs_get_str(handle, NVS_KEY_CRASH_TASK, out.task_name, &task_len);
+
+    nvs_close(handle);
+    return true;
+}
+
+void clear_crash_info() {
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return;
+    nvs_set_u8(handle, NVS_KEY_CRASH_VALID, 0);
+    nvs_commit(handle);
+    nvs_close(handle);
+}
+
+void store_crash(const char* message, const char* task_name) {
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return;
+
+    // Get current time if available
+    time_t now;
+    time(&now);
+    uint32_t epoch = (now > 1700000000) ? (uint32_t)now : 0;
+
+    nvs_set_u8(handle, NVS_KEY_CRASH_VALID, 1);
+    nvs_set_u32(handle, NVS_KEY_CRASH_EPOCH, epoch);
+    nvs_set_u32(handle, NVS_KEY_CRASH_UPTIME, millis());
+    nvs_set_u32(handle, NVS_KEY_CRASH_HEAP,
+                heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    nvs_set_u8(handle, NVS_KEY_CRASH_REASON, (uint8_t)esp_reset_reason());
+
+    if (message) {
+        nvs_set_str(handle, NVS_KEY_CRASH_MSG, message);
+    }
+    if (task_name) {
+        nvs_set_str(handle, NVS_KEY_CRASH_TASK, task_name);
+    } else {
+        // Try to get current task name
+        TaskHandle_t th = xTaskGetCurrentTaskHandle();
+        if (th) {
+            nvs_set_str(handle, NVS_KEY_CRASH_TASK, pcTaskGetName(th));
+        }
+    }
+
+    nvs_commit(handle);
+    nvs_close(handle);
 }
 
 }  // namespace hal_diag

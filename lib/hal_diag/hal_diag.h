@@ -288,4 +288,32 @@ void report_i2c_result(uint8_t addr, bool success, bool is_timeout = false,
 /// @param frame_us Duration of the display write in microseconds.
 void report_display_frame(uint32_t frame_us);
 
+// ── Crash / panic tracking (NVS-backed) ──────────────────────────────────
+
+/// Crash info stored in NVS for post-mortem analysis.
+struct CrashInfo {
+    uint32_t epoch_time;         // UTC timestamp of crash (0 if NTP unavailable)
+    uint32_t uptime_ms;          // Uptime at crash
+    uint32_t free_heap;          // Heap at crash
+    uint8_t  reset_reason;       // ESP reset reason
+    char     message[64];        // Crash description
+    char     task_name[16];      // FreeRTOS task that crashed
+};
+
+/// Check if a crash was recorded from the previous boot.
+/// @return true if crash info is available.
+bool has_crash_info();
+
+/// Get the crash info from the previous boot.
+/// @param out [out] Filled with crash data if available.
+/// @return true if crash info was retrieved.
+bool get_crash_info(CrashInfo& out);
+
+/// Clear the stored crash info (called after it has been reported to server).
+void clear_crash_info();
+
+/// Store crash info to NVS. Called from panic handler or watchdog timeout.
+/// This is safe to call from ISR context (uses NVS directly, no heap alloc).
+void store_crash(const char* message, const char* task_name = nullptr);
+
 }  // namespace hal_diag
