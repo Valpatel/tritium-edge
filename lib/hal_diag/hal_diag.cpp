@@ -42,6 +42,9 @@ bool init(const DiagConfig& cfg) {
 
 void tick() {}
 
+void set_power_provider(PowerProvider) {}
+void report_loop_time(uint32_t) {}
+
 void log(Severity sev, const char* subsystem, const char* fmt, ...) {
     if (!_initialized) return;
     char msg[128];
@@ -181,6 +184,9 @@ static volatile uint8_t  _i2c_errors = 0;
 static uint32_t         _loop_time_us = 0;
 static uint32_t         _max_loop_time_us = 0;
 static uint32_t         _loop_start_us = 0;
+
+// External providers
+static PowerProvider    _power_provider = nullptr;
 
 // NVS keys
 static constexpr const char* NVS_NAMESPACE = "hal_diag";
@@ -595,6 +601,15 @@ static void run_anomaly_detection() {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
+void set_power_provider(PowerProvider provider) {
+    _power_provider = provider;
+}
+
+void report_loop_time(uint32_t loop_us) {
+    _loop_time_us = loop_us;
+    if (loop_us > _max_loop_time_us) _max_loop_time_us = loop_us;
+}
+
 bool init(const DiagConfig& cfg) {
     if (_initialized) {
         DBG_WARN("diag", "Already initialized");
@@ -826,12 +841,23 @@ HealthSnapshot take_snapshot() {
     snap.reboot_count = _reboot_count;
     snap.last_reset_reason = _reset_reason;
 
-    // Power — populate if power HAL is available
-    snap.battery_voltage = 0.0f;
-    snap.battery_percent = 0.0f;
-    snap.charge_current_ma = 0.0f;
-    snap.power_source = 0;
-    snap.pmic_temp_c = 0.0f;
+    // Power — pull from provider if registered
+    if (_power_provider) {
+        PowerInfo pwr = {};
+        if (_power_provider(pwr)) {
+            snap.battery_voltage = pwr.battery_voltage;
+            snap.battery_percent = pwr.battery_percent;
+            snap.charge_current_ma = pwr.charge_current_ma;
+            snap.power_source = pwr.power_source;
+            snap.pmic_temp_c = pwr.pmic_temp_c;
+        }
+    } else {
+        snap.battery_voltage = 0.0f;
+        snap.battery_percent = 0.0f;
+        snap.charge_current_ma = 0.0f;
+        snap.power_source = 0;
+        snap.pmic_temp_c = 0.0f;
+    }
 
     return snap;
 }

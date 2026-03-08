@@ -124,6 +124,27 @@ struct DiagConfig {
     const char* sd_log_path             = "/tritium/diag";
 };
 
+// ── Power data provider (optional — wired from main.cpp) ────────────────────
+
+struct PowerInfo {
+    float battery_voltage;
+    float battery_percent;
+    float charge_current_ma;
+    uint8_t power_source;   // 0=unknown, 1=USB, 2=battery
+    float pmic_temp_c;
+};
+
+/// Callback type: fill PowerInfo and return true, or return false if unavailable.
+using PowerProvider = bool (*)(PowerInfo& out);
+
+/// Register a power data provider so take_snapshot() includes battery/PMIC data.
+void set_power_provider(PowerProvider provider);
+
+// ── Loop timing provider (optional — wired from watchdog or main loop) ──────
+
+/// Feed loop timing data to the diagnostics system.
+void report_loop_time(uint32_t loop_us);
+
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 /// Initialize diagnostics. Call once from services_init().

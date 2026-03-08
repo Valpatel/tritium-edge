@@ -54,6 +54,9 @@ static bool _webserver_enabled = false;
 
 #if defined(ENABLE_DIAG) && __has_include("hal_diag.h")
 #include "hal_diag.h"
+#if HAS_PMIC && __has_include("hal_power.h")
+#include "hal_power.h"
+#endif
 static bool _diag_enabled = true;
 #else
 static bool _diag_enabled = false;
@@ -293,6 +296,24 @@ static void services_init() {
         if (hal_diag::init(diag_cfg)) {
             Serial.printf("[tritium] Diagnostics: active\n");
             hal_diag::log(hal_diag::Severity::INFO, "system", "Tritium-Edge boot complete");
+
+            // Wire power HAL into diagnostics on boards with PMIC
+#if HAS_PMIC && __has_include("hal_power.h")
+            {
+                static PowerHAL _diag_power;
+                _diag_power.initLgfx(0, 0x34);
+                hal_diag::set_power_provider([](hal_diag::PowerInfo& out) -> bool {
+                    auto info = _diag_power.getInfo();
+                    out.battery_voltage = info.voltage;
+                    out.battery_percent = (info.percentage >= 0) ? (float)info.percentage : 0.0f;
+                    out.charge_current_ma = 0.0f;  // Not exposed by PowerHAL yet
+                    out.power_source = info.is_usb_powered ? 1 : (info.has_battery ? 2 : 0);
+                    out.pmic_temp_c = 0.0f;  // TODO: add PMIC temp read to PowerHAL
+                    return true;
+                });
+                Serial.printf("[tritium] Diagnostics: power provider wired\n");
+            }
+#endif
         } else {
             Serial.printf("[tritium] Diagnostics: init failed\n");
         }
