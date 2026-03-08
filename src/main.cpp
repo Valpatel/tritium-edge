@@ -79,6 +79,11 @@ static bool _espnow_enabled = true;
 static bool _espnow_enabled = false;
 #endif
 
+// GIS offline map tiles from SD card
+#if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("hal_gis.h")
+#include "hal_gis.h"
+#endif
+
 // Self-seeding firmware distribution via SD card
 #if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("hal_seed.h")
 #include "hal_seed.h"
@@ -745,6 +750,38 @@ static void services_init() {
             _webserver.setDiagAnomaliesProvider([](char* buf, size_t size) -> int {
                 return hal_diag::anomalies_to_json(buf, size);
             });
+#endif
+
+            // Wire GIS tile data into web server (boards with SD card)
+#if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("hal_gis.h")
+            {
+                static GisHAL _gis;
+                GisConfig gis_cfg;
+                gis_cfg.sd_mount_point = "/sdcard";
+                gis_cfg.tile_base_path = "/gis";
+                gis_cfg.max_cache_tiles = 16;
+                if (_gis.init(gis_cfg)) {
+                    _webserver.setGisTileProvider([](const char* layer, uint8_t z, uint32_t x, uint32_t y, size_t& outLen) -> uint8_t* {
+                        return _gis.getTile(layer, z, x, y, outLen);
+                    });
+                    _webserver.setGisLayerProvider([](char* buf, size_t size) -> int {
+                        int n = _gis.getLayerCount();
+                        int pos = snprintf(buf, size, "[");
+                        for (int i = 0; i < n && pos < (int)size - 200; i++) {
+                            GisLayer layer;
+                            if (!_gis.getLayer(i, layer)) continue;
+                            if (i > 0) buf[pos++] = ',';
+                            pos += snprintf(buf + pos, size - pos,
+                                "{\"name\":\"%s\",\"tile_count\":%u,\"zoom_min\":%u,\"zoom_max\":%u}",
+                                layer.name, (unsigned)layer.tile_count, layer.zoom_min, layer.zoom_max);
+                        }
+                        pos += snprintf(buf + pos, size - pos, "]");
+                        return pos;
+                    });
+                    Serial.printf("[tritium] GIS: %d layers, %u tiles\n",
+                                  _gis.getLayerCount(), (unsigned)_gis.getTileCount());
+                }
+            }
 #endif
 
             // Wire mesh topology data into web server
