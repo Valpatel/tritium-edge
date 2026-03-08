@@ -57,6 +57,14 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include <freertos/semphr.h>
 #include <cstring>
 
+// Persistent diagnostic log — optional
+#if __has_include("hal_diaglog.h")
+#include "hal_diaglog.h"
+#define WEB_HAS_DIAGLOG 1
+#else
+#define WEB_HAS_DIAGLOG 0
+#endif
+
 static WebServer* _server = nullptr;
 static WebServerHAL* _instance = nullptr;
 static DNSServer* _dnsServer = nullptr;
@@ -999,6 +1007,37 @@ void WebServerHAL::addApiEndpoints() {
         _server->send(200, "application/json",
             "{\"count\":0,\"anomalies\":[]}");
     });
+
+    // GET /api/diag/log?offset=0&count=50 — persistent diagnostic event log
+#if WEB_HAS_DIAGLOG
+    _server->on("/api/diag/log", HTTP_GET, [self]() {
+        self->_requestCount++;
+        int offset = 0;
+        int count = 50;
+        if (_server->hasArg("offset")) {
+            offset = _server->arg("offset").toInt();
+        }
+        if (_server->hasArg("count")) {
+            count = _server->arg("count").toInt();
+            if (count < 1) count = 1;
+            if (count > 200) count = 200;
+        }
+        static char buf[8192];
+        int len = diaglog_get_json(buf, sizeof(buf), offset, count);
+        if (len > 0) {
+            _server->send(200, "application/json", buf);
+        } else {
+            _server->send(200, "application/json",
+                "{\"boot_count\":0,\"total\":0,\"returned\":0,\"events\":[]}");
+        }
+    });
+
+    _server->on("/api/diag/log/clear", HTTP_POST, [self]() {
+        self->_requestCount++;
+        diaglog_clear();
+        _server->send(200, "application/json", "{\"cleared\":true}");
+    });
+#endif
 
     // GET /api/logs — recent log entries
     _server->on("/api/logs", HTTP_GET, [self]() {

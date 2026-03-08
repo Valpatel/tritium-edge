@@ -150,6 +150,14 @@ const char* reset_reason_str(uint8_t) { return "SIMULATOR"; }
 #define DIAG_HAS_DISPLAY 0
 #endif
 
+// Persistent diagnostic log — optional, writes key events to LittleFS ring buffer
+#if __has_include("hal_diaglog.h")
+#include "hal_diaglog.h"
+#define DIAG_HAS_DIAGLOG 1
+#else
+#define DIAG_HAS_DIAGLOG 0
+#endif
+
 namespace hal_diag {
 
 // ── Internal state ──────────────────────────────────────────────────────────
@@ -442,6 +450,14 @@ static void add_anomaly(const char* subsystem, const char* description,
         Serial.printf("\033[33m[diag/anomaly] %s: %s (score=%.2f)\033[0m\n",
                       subsystem, description, score);
     }
+
+    // Persist anomaly to diaglog for post-mortem analysis
+#if DIAG_HAS_DIAGLOG
+    DiagSeverity dl_sev = (score >= 0.8f) ? DiagSeverity::CRITICAL
+                        : (score >= 0.5f) ? DiagSeverity::ERR
+                                          : DiagSeverity::WARN;
+    diaglog_write(dl_sev, subsystem, 900, description, score);
+#endif
 }
 
 static void run_anomaly_detection() {
@@ -702,6 +718,36 @@ void tick() {
         flush_snapshot_to_sd(snap);
 #endif
 
+        // Persist threshold-crossing snapshots to diaglog
+#if DIAG_HAS_DIAGLOG
+        if (snap.free_heap < 20000) {
+            char msg[80];
+            snprintf(msg, sizeof(msg), "Heap critically low: %lu bytes",
+                     (unsigned long)snap.free_heap);
+            diaglog_write(DiagSeverity::WARN, "memory", 100, msg,
+                          (float)snap.free_heap);
+        }
+        if (snap.i2c_errors > 10) {
+            char msg[80];
+            snprintf(msg, sizeof(msg), "I2C errors: %u", snap.i2c_errors);
+            diaglog_write(DiagSeverity::WARN, "i2c", 200, msg,
+                          (float)snap.i2c_errors);
+        }
+        if (!snap.wifi_connected && snap.wifi_disconnects > 0) {
+            char msg[80];
+            snprintf(msg, sizeof(msg), "WiFi disconnected (%lu total)",
+                     (unsigned long)snap.wifi_disconnects);
+            diaglog_write(DiagSeverity::WARN, "wifi", 300, msg,
+                          (float)snap.wifi_disconnects);
+        }
+        if (snap.cpu_temp_c > 70.0f) {
+            char msg[80];
+            snprintf(msg, sizeof(msg), "CPU temp high: %.1f C", snap.cpu_temp_c);
+            diaglog_write(DiagSeverity::WARN, "thermal", 400, msg,
+                          snap.cpu_temp_c);
+        }
+#endif
+
         // Run anomaly detection after accumulating enough data
         if (_snap_count >= 5) {
             run_anomaly_detection();
@@ -755,6 +801,16 @@ void log(Severity sev, const char* subsystem, const char* fmt, ...) {
                       subsystem,
                       ev.message);
     }
+
+    // Persist WARN+ events to diaglog for reboot-surviving storage
+#if DIAG_HAS_DIAGLOG
+    if (sev >= Severity::WARN) {
+        DiagSeverity dl_sev = (sev >= Severity::FATAL)  ? DiagSeverity::CRITICAL
+                            : (sev >= Severity::ERROR)  ? DiagSeverity::ERR
+                                                        : DiagSeverity::WARN;
+        diaglog_write(dl_sev, subsystem, 0, ev.message);
+    }
+#endif
 }
 
 void log_value(const char* subsystem, const char* metric,

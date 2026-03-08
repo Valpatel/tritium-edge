@@ -71,6 +71,14 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #define HAS_DIAG 0
 #endif
 
+// Optional persistent diagnostic log — include event count in heartbeat
+#if __has_include("hal_diaglog.h")
+#include "hal_diaglog.h"
+#define HAS_DIAGLOG 1
+#else
+#define HAS_DIAGLOG 0
+#endif
+
 namespace hal_heartbeat {
 
 // Internal state
@@ -317,6 +325,13 @@ bool send_now() {
             pos += snprintf(body + pos, sizeof(body) - pos, ",\"ble_devices\":%s", devs_json);
         }
     }
+#endif
+
+    // Append persistent diagnostic log counts if available
+#if HAS_DIAGLOG
+    pos += snprintf(body + pos, sizeof(body) - pos,
+                    ",\"diag_event_count\":%d,\"diag_boot_count\":%u",
+                    diaglog_count(), (unsigned)diaglog_boot_count());
 #endif
 
     // Close JSON object
