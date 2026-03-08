@@ -867,13 +867,24 @@ The diagnostics system tracks trends across snapshots and auto-detects:
 ```
 Node (hal_diag)                Fleet Server                    tritium-sc
   │                               │                               │
-  ├─ Health snapshots ──────────► │ Aggregate across fleet        │
-  ├─ Diagnostic events ────────► │ Store time-series             │
-  ├─ Anomaly alerts ───────────► │ Cross-node correlation        │
+  ├─ Heartbeat POST ────────────► POST /api/devices/{id}/status  │
+  ├─ Diag piggyback (auto) ────► POST /api/devices/{id}/diag    │
+  │                               │ ├─ Cache in memory            │
+  │                               │ ├─ Log anomalies as events    │
+  │                               │ └─ Aggregate fleet health     │
   │                               │                               │
-  │  /api/diag (pull) ◄──────── │ ───────► Fleet health view    │
-  │  /api/diag (push via HB) ──► │ ───────► Anomaly dashboard   │
+  │  GET /api/diag (local) ◄──── │ Poll via FleetBridge          │
+  │                               │ GET /api/fleet/diagnostics ──► Fleet health view
+  │                               │ GET /api/fleet/anomalies ───► Anomaly dashboard
+  │                               │ GET /api/devices/{id}/diag ─► Per-node detail
 ```
+
+**Two paths for diagnostic data:**
+1. **Push (primary)**: Each heartbeat tick also POSTs the full diag report to
+   `/api/devices/{id}/diag`. Zero additional polling overhead.
+2. **Pull (fallback)**: FleetBridge in tritium-sc polls each node's local
+   `/api/diag` endpoint directly for real-time data when server aggregation
+   isn't available.
 
 ### Serial Commands
 
@@ -883,13 +894,23 @@ Node (hal_diag)                Fleet Server                    tritium-sc
 | `HEALTH` | Current health snapshot as JSON |
 | `ANOMALIES` | Active anomalies as JSON |
 
-### Web API Endpoints
+### Web API Endpoints (Per-Node)
 
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/diag` | Full diagnostic report (health + events + anomalies) |
 | `GET /api/logs` | Recent log entries from ring buffer |
 | `GET /api/status` | Quick status (uptime, heap, RSSI) |
+
+### Fleet Server Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/devices/{id}/diag` | Device submits diagnostic report (piggybacked on heartbeat) |
+| `GET /api/devices/{id}/diag` | Get latest diagnostic report for a specific node |
+| `GET /api/fleet/diagnostics` | Fleet-wide health overview — total nodes, critical/stale detection |
+| `GET /api/fleet/anomalies` | All anomalies across fleet, sorted by severity, filterable |
+| `GET /api/fleet/health` | Fleet health score (0.0-1.0) from online ratio, RSSI, heap |
 
 ### Fleet-Level Diagnostics
 
