@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TRITIUM-EDGE // Fleet Command</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <style>
 /* Created by Matthew Valancy
    Copyright 2026 Valpatel Software LLC
@@ -518,6 +520,136 @@ body::after {
   .nav-item.active { border-bottom-color: var(--cyan); border-left-color: transparent; }
   .main { max-height: calc(100vh - 48px - 42px); }
 }
+
+/* Fleet Map */
+#fleet-map {
+  width: 100%;
+  height: calc(100vh - 140px);
+  min-height: 400px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #0a0a0a;
+}
+
+.leaflet-container { background: #0a0a0a; }
+.leaflet-tile-pane { filter: brightness(0.6) invert(1) contrast(2.5) hue-rotate(190deg) saturate(0.3) brightness(0.7); }
+.leaflet-popup-content-wrapper { background: var(--bg-card); color: var(--text); border: 1px solid var(--border-bright); border-radius: 4px; }
+.leaflet-popup-tip { background: var(--bg-card); }
+.leaflet-popup-content { font-family: var(--font); font-size: 11px; margin: 10px; }
+.leaflet-popup-content .popup-title { color: var(--cyan); font-weight: bold; font-size: 12px; margin-bottom: 6px; }
+.leaflet-popup-content .popup-row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+.leaflet-popup-content .popup-label { color: var(--text-dim); }
+.leaflet-popup-content .popup-val { color: var(--text); }
+
+.map-unplaced {
+  margin-top: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.map-unplaced-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.map-unplaced-item:last-child { border-bottom: none; }
+
+/* Form Controls */
+.form-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.form-input {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  font-family: var(--font);
+  font-size: 11px;
+  border-radius: 4px;
+  outline: none;
+}
+.form-input:focus { border-color: var(--cyan-mid); }
+.form-select {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  font-family: var(--font);
+  font-size: 11px;
+  border-radius: 4px;
+}
+
+/* Checkbox grid */
+.node-select-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.node-select-item {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-size: 11px;
+}
+
+.node-select-item:hover { border-color: var(--cyan-mid); }
+.node-select-item.selected { border-color: var(--cyan); background: rgba(0, 255, 208, 0.05); }
+.node-select-item .node-id { color: var(--cyan); font-weight: bold; font-size: 12px; }
+.node-select-item .node-meta { color: var(--text-dim); margin-top: 4px; }
+
+/* Progress bar */
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: #1a1a1a;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--cyan);
+  border-radius: 3px;
+  transition: width 0.5s;
+}
+
+/* Provision card */
+.prov-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 14px;
+  margin-bottom: 10px;
+  transition: all 0.2s;
+}
+
+.prov-card:hover { border-color: var(--cyan-mid); }
+.prov-card .prov-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.prov-card .prov-id { color: var(--cyan); font-weight: bold; font-size: 12px; }
+.prov-card .prov-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 11px; }
+.prov-card .prov-label { color: var(--text-dim); }
+.prov-card .prov-value { color: var(--text); }
+
+.prov-form {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  display: none;
+}
+
+.prov-form.open { display: block; }
 </style>
 </head>
 <body>
@@ -550,6 +682,15 @@ body::after {
     </div>
     <div class="nav-item" data-view="ota">
       <span class="icon">&#8635;</span> OTA
+    </div>
+    <div class="nav-item" data-view="map">
+      <span class="icon">&#9678;</span> Map
+    </div>
+    <div class="nav-item" data-view="fleet-ota">
+      <span class="icon">&#9889;</span> Fleet OTA
+    </div>
+    <div class="nav-item" data-view="provision">
+      <span class="icon">&#9881;</span> Provision
     </div>
     <div class="nav-item" data-view="events">
       <span class="icon">&#9679;</span> Events
@@ -631,6 +772,93 @@ body::after {
         </thead>
         <tbody id="ota-tbody"></tbody>
       </table>
+    </div>
+
+    <!-- MAP VIEW -->
+    <div id="view-map" class="view">
+      <div class="section-header">Fleet Map</div>
+      <div id="fleet-map"></div>
+      <div class="map-unplaced" id="map-unplaced" style="display:none">
+        <div style="color:var(--cyan);font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">
+          Unplaced Nodes — click map to place
+        </div>
+        <div id="map-unplaced-list"></div>
+      </div>
+    </div>
+
+    <!-- FLEET OTA VIEW -->
+    <div id="view-fleet-ota" class="view">
+      <div class="section-header">Fleet OTA Management</div>
+      <div class="stat-cards" id="fleet-ota-stats"></div>
+
+      <div class="section-header">Upload Firmware</div>
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:4px;padding:16px;margin-bottom:16px">
+        <form id="fw-upload-form" class="form-row" style="flex-wrap:wrap;gap:10px">
+          <input type="file" id="fw-file" accept=".bin,.ota" class="form-input" style="flex:1;min-width:200px" />
+          <input type="text" id="fw-version" placeholder="Version (auto-detect)" class="form-input" style="width:160px" />
+          <input type="text" id="fw-board" placeholder="Board (any)" class="form-input" style="width:160px" />
+          <input type="text" id="fw-notes" placeholder="Notes" class="form-input" style="width:200px" />
+          <button type="submit" class="ota-btn">Upload</button>
+        </form>
+        <div id="fw-upload-status" style="margin-top:8px;font-size:11px;color:var(--text-dim)"></div>
+      </div>
+
+      <div class="section-header">Select Firmware</div>
+      <div class="form-row">
+        <select id="ota-fw-select" class="form-select" style="min-width:300px">
+          <option value="">-- Select firmware --</option>
+        </select>
+        <select id="ota-board-filter" class="form-select">
+          <option value="">All boards</option>
+        </select>
+        <button class="ota-btn" onclick="selectAllOtaNodes()">Select All</button>
+        <button class="ota-btn" onclick="deselectAllOtaNodes()">Deselect All</button>
+      </div>
+
+      <div class="section-header">Target Nodes</div>
+      <div class="node-select-grid" id="ota-node-grid"></div>
+
+      <div class="form-row" style="margin-top:16px">
+        <button class="ota-btn" id="ota-push-btn" onclick="pushFleetOTA()" style="background:rgba(0,255,208,0.1);border-color:var(--cyan)">
+          Push OTA to Selected
+        </button>
+        <button class="ota-btn" onclick="cancelAllOTA()" style="border-color:var(--red);color:var(--red)">
+          Cancel All Pending
+        </button>
+        <span id="ota-push-status" style="font-size:11px;color:var(--text-dim)"></span>
+      </div>
+
+      <div class="section-header">Pending Deployments</div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Device</th>
+            <th>Board</th>
+            <th>Current</th>
+            <th>Target</th>
+            <th>Status</th>
+            <th>Scheduled</th>
+          </tr>
+        </thead>
+        <tbody id="fleet-ota-pending"></tbody>
+      </table>
+    </div>
+
+    <!-- PROVISIONING VIEW -->
+    <div id="view-provision" class="view">
+      <div class="section-header">Node Provisioning</div>
+      <div class="stat-cards" id="prov-stats"></div>
+
+      <div class="form-row">
+        <button class="ota-btn" onclick="scanForNodes()" id="prov-scan-btn">Scan Network</button>
+        <span id="prov-scan-status" style="font-size:11px;color:var(--text-dim)"></span>
+      </div>
+
+      <div class="section-header">Discovered Nodes (Pending)</div>
+      <div id="prov-discovered"></div>
+
+      <div class="section-header">Commissioned Nodes</div>
+      <div id="prov-commissioned"></div>
     </div>
 
     <!-- EVENTS VIEW -->
@@ -747,6 +975,9 @@ async function refreshView() {
     case 'firmware': await refreshFirmware(); break;
     case 'ota': await refreshOTA(); break;
     case 'events': await refreshEvents(); break;
+    case 'map': await refreshMap(); break;
+    case 'fleet-ota': await refreshFleetOTA(); break;
+    case 'provision': await refreshProvision(); break;
   }
   await refreshTopBar();
 }
@@ -1035,6 +1266,491 @@ function renderEvents(container, events) {
       '<span class="event-detail">' + (escHtml(e.detail || e.message || '')) + '</span>' +
     '</div>';
   }).join('');
+}
+
+// ========================================================================
+// FLEET MAP
+// ========================================================================
+let fleetMap = null;
+let mapMarkers = {};
+let placingNodeId = null;
+
+function initMap() {
+  if (fleetMap) return;
+  var container = document.getElementById('fleet-map');
+  if (!container || container.offsetWidth === 0) return;
+  fleetMap = L.map('fleet-map').setView([39.8283, -98.5795], 4);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap',
+    maxZoom: 19,
+  }).addTo(fleetMap);
+
+  fleetMap.on('click', function(e) {
+    if (placingNodeId) {
+      placeNodeOnMap(placingNodeId, e.latlng.lat, e.latlng.lng);
+    }
+  });
+}
+
+async function refreshMap() {
+  initMap();
+  if (!fleetMap) return;
+  var data = await fetchJSON('/api/map/nodes');
+  if (!data) return;
+
+  // Clear old markers
+  Object.values(mapMarkers).forEach(function(m) { fleetMap.removeLayer(m); });
+  mapMarkers = {};
+
+  var bounds = [];
+  var unplaced = [];
+
+  data.nodes.forEach(function(n) {
+    if (n.location) {
+      var color = n.online ? '#00ff88' : '#ff3355';
+      var icon = L.divIcon({
+        className: '',
+        html: '<div style="width:14px;height:14px;border-radius:50%;background:' + color +
+          ';box-shadow:0 0 8px ' + color + ';border:2px solid #0a0a0a"></div>',
+        iconSize: [14, 14],
+        iconAnchor: [7, 7],
+      });
+
+      var marker = L.marker([n.location.lat, n.location.lng], { icon: icon }).addTo(fleetMap);
+      var caps = (n.capabilities || []).join(', ') || 'none';
+      var popup = '<div class="popup-title">' + escHtml(n.device_name || n.device_id) + '</div>' +
+        '<div class="popup-row"><span class="popup-label">ID:</span><span class="popup-val">' + escHtml(n.device_id) + '</span></div>' +
+        '<div class="popup-row"><span class="popup-label">IP:</span><span class="popup-val">' + (escHtml(n.ip) || '--') + '</span></div>' +
+        '<div class="popup-row"><span class="popup-label">Board:</span><span class="popup-val">' + escHtml(n.board) + '</span></div>' +
+        '<div class="popup-row"><span class="popup-label">Firmware:</span><span class="popup-val">' + escHtml(n.version) + '</span></div>' +
+        '<div class="popup-row"><span class="popup-label">Status:</span><span class="popup-val" style="color:' + color + '">' + (n.online ? 'Online' : 'Offline') + '</span></div>' +
+        '<div class="popup-row"><span class="popup-label">Capabilities:</span><span class="popup-val">' + escHtml(caps) + '</span></div>' +
+        '<div class="popup-row"><span class="popup-label">Last seen:</span><span class="popup-val">' + escHtml(n.age) + '</span></div>';
+      if (n.location.label) {
+        popup += '<div class="popup-row"><span class="popup-label">Location:</span><span class="popup-val">' + escHtml(n.location.label) + '</span></div>';
+      }
+      marker.bindPopup(popup);
+      mapMarkers[n.device_id] = marker;
+      bounds.push([n.location.lat, n.location.lng]);
+    } else {
+      unplaced.push(n);
+    }
+  });
+
+  if (bounds.length > 0) {
+    fleetMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+  }
+
+  // Unplaced nodes panel
+  var panel = document.getElementById('map-unplaced');
+  var list = document.getElementById('map-unplaced-list');
+  if (unplaced.length > 0) {
+    panel.style.display = '';
+    list.innerHTML = unplaced.map(function(n) {
+      var sel = placingNodeId === n.device_id ? ' style="color:var(--yellow)"' : '';
+      return '<div class="map-unplaced-item">' +
+        '<span style="color:var(--cyan)">' + escHtml(n.device_name || n.device_id) + '</span>' +
+        '<span style="color:var(--text-dim)">' + escHtml(n.board) + '</span>' +
+        '<button class="ota-btn" style="padding:3px 8px;font-size:10px"' + sel +
+          ' onclick="startPlacing(\'' + escHtml(n.device_id) + '\')">Place on Map</button>' +
+      '</div>';
+    }).join('');
+  } else {
+    panel.style.display = 'none';
+  }
+
+  // Invalidate map size after layout
+  setTimeout(function() { fleetMap.invalidateSize(); }, 200);
+}
+
+function startPlacing(deviceId) {
+  placingNodeId = deviceId;
+  document.getElementById('fleet-map').style.cursor = 'crosshair';
+  refreshMap();
+}
+
+async function placeNodeOnMap(deviceId, lat, lng) {
+  placingNodeId = null;
+  document.getElementById('fleet-map').style.cursor = '';
+  await fetch('/api/map/nodes/' + encodeURIComponent(deviceId) + '/location', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lat: lat, lng: lng }),
+  });
+  refreshMap();
+}
+
+// ========================================================================
+// FLEET OTA MANAGEMENT
+// ========================================================================
+let otaSelectedNodes = new Set();
+
+document.getElementById('fw-upload-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var file = document.getElementById('fw-file').files[0];
+  if (!file) return;
+  var status = document.getElementById('fw-upload-status');
+  status.textContent = 'Uploading...';
+  status.style.color = 'var(--yellow)';
+
+  var fd = new FormData();
+  fd.append('file', file);
+  var ver = document.getElementById('fw-version').value;
+  var board = document.getElementById('fw-board').value;
+  var notes = document.getElementById('fw-notes').value;
+  if (ver) fd.append('version', ver);
+  if (board) fd.append('board', board);
+  if (notes) fd.append('notes', notes);
+
+  try {
+    var r = await fetch('/api/firmware/upload', { method: 'POST', body: fd });
+    var data = await r.json();
+    if (r.ok) {
+      status.textContent = 'Uploaded: ' + data.id + ' (' + data.version + ')';
+      status.style.color = 'var(--green)';
+      document.getElementById('fw-upload-form').reset();
+      refreshFleetOTA();
+    } else {
+      status.textContent = 'Error: ' + (data.detail || JSON.stringify(data));
+      status.style.color = 'var(--red)';
+    }
+  } catch(err) {
+    status.textContent = 'Upload failed: ' + err.message;
+    status.style.color = 'var(--red)';
+  }
+});
+
+async function refreshFleetOTA() {
+  var [fws, targets, otaStatus] = await Promise.all([
+    fetchJSON('/api/firmware'),
+    fetchJSON('/api/fleet-ota/targets'),
+    fetchJSON('/api/fleet-ota/status'),
+  ]);
+
+  // Stats
+  if (otaStatus) {
+    document.getElementById('fleet-ota-stats').innerHTML =
+      '<div class="stat-card"><div class="label">Total Devices</div><div class="value">' + (otaStatus.total_devices || 0) + '</div></div>' +
+      '<div class="stat-card"><div class="label">Pending OTA</div><div class="value yellow">' + (otaStatus.pending_count || 0) + '</div></div>' +
+      '<div class="stat-card"><div class="label">Firmware Images</div><div class="value">' + (fws ? fws.length : 0) + '</div></div>';
+  }
+
+  // Firmware select
+  if (fws && Array.isArray(fws)) {
+    var sel = document.getElementById('ota-fw-select');
+    var curVal = sel.value;
+    sel.innerHTML = '<option value="">-- Select firmware --</option>';
+    fws.forEach(function(f) {
+      var opt = document.createElement('option');
+      opt.value = f.id;
+      opt.textContent = f.version + ' (' + f.board + ') - ' + f.id;
+      sel.appendChild(opt);
+    });
+    if (curVal) sel.value = curVal;
+  }
+
+  // Board filter
+  if (targets) {
+    var boardSel = document.getElementById('ota-board-filter');
+    var curBoard = boardSel.value;
+    boardSel.innerHTML = '<option value="">All boards</option>';
+    (targets.boards || []).forEach(function(b) {
+      var opt = document.createElement('option');
+      opt.value = b;
+      opt.textContent = b;
+      boardSel.appendChild(opt);
+    });
+    if (curBoard) boardSel.value = curBoard;
+
+    // Node grid
+    var boardFilter = boardSel.value;
+    var filtered = targets.targets || [];
+    if (boardFilter) {
+      filtered = filtered.filter(function(t) { return t.board.toLowerCase() === boardFilter.toLowerCase(); });
+    }
+
+    var grid = document.getElementById('ota-node-grid');
+    grid.innerHTML = filtered.map(function(t) {
+      var selected = otaSelectedNodes.has(t.device_id) ? ' selected' : '';
+      var statusCol = t.online ? 'var(--green)' : 'var(--red)';
+      var statusTxt = t.online ? 'Online' : 'Offline';
+      var pending = t.pending_ota ? ' <span style="color:var(--yellow)">[OTA pending]</span>' : '';
+      return '<div class="node-select-item' + selected + '" data-id="' + escHtml(t.device_id) + '" onclick="toggleOtaNode(this)">' +
+        '<div class="node-id">' + escHtml(t.device_name || t.device_id) + '</div>' +
+        '<div class="node-meta">' +
+          '<span style="color:' + statusCol + '">' + statusTxt + '</span> | ' +
+          escHtml(t.board) + ' | v' + escHtml(t.version) + pending +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  // Pending table
+  if (otaStatus && otaStatus.pending) {
+    var tbody = document.getElementById('fleet-ota-pending');
+    if (otaStatus.pending.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="loading">No pending OTA deployments.</td></tr>';
+    } else {
+      tbody.innerHTML = otaStatus.pending.map(function(p) {
+        var statusCol = p.online ? 'var(--green)' : 'var(--text-dim)';
+        return '<tr>' +
+          '<td style="color:var(--cyan)">' + escHtml(p.device_name || p.device_id) + '</td>' +
+          '<td>' + escHtml(p.board) + '</td>' +
+          '<td>' + escHtml(p.current_version) + '</td>' +
+          '<td style="color:var(--yellow)">' + escHtml(p.target_version) + '</td>' +
+          '<td style="color:' + statusCol + '">' + (p.online ? 'Waiting for heartbeat' : 'Offline') + '</td>' +
+          '<td>' + (escHtml(p.scheduled_at) || '--') + '</td>' +
+        '</tr>';
+      }).join('');
+    }
+  }
+}
+
+document.getElementById('ota-board-filter').addEventListener('change', refreshFleetOTA);
+
+function toggleOtaNode(el) {
+  var id = el.dataset.id;
+  if (otaSelectedNodes.has(id)) {
+    otaSelectedNodes.delete(id);
+    el.classList.remove('selected');
+  } else {
+    otaSelectedNodes.add(id);
+    el.classList.add('selected');
+  }
+}
+
+function selectAllOtaNodes() {
+  document.querySelectorAll('#ota-node-grid .node-select-item').forEach(function(el) {
+    otaSelectedNodes.add(el.dataset.id);
+    el.classList.add('selected');
+  });
+}
+
+function deselectAllOtaNodes() {
+  otaSelectedNodes.clear();
+  document.querySelectorAll('#ota-node-grid .node-select-item').forEach(function(el) {
+    el.classList.remove('selected');
+  });
+}
+
+async function pushFleetOTA() {
+  var fwId = document.getElementById('ota-fw-select').value;
+  if (!fwId) { alert('Select firmware first'); return; }
+  var ids = Array.from(otaSelectedNodes);
+  var boardFilter = document.getElementById('ota-board-filter').value;
+  if (ids.length === 0 && !boardFilter) {
+    if (!confirm('No nodes selected and no board filter. Push to ALL devices?')) return;
+  }
+
+  var status = document.getElementById('ota-push-status');
+  status.textContent = 'Pushing OTA...';
+  status.style.color = 'var(--yellow)';
+
+  try {
+    var body = { firmware_id: fwId };
+    if (ids.length > 0) body.device_ids = ids;
+    if (boardFilter) body.board_filter = boardFilter;
+
+    var r = await fetch('/api/fleet-ota/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    var data = await r.json();
+    if (r.ok) {
+      status.textContent = 'Scheduled OTA for ' + data.scheduled + ' devices (rollout: ' + data.rollout_id + ')';
+      status.style.color = 'var(--green)';
+      otaSelectedNodes.clear();
+      refreshFleetOTA();
+    } else {
+      status.textContent = 'Error: ' + (data.detail || JSON.stringify(data));
+      status.style.color = 'var(--red)';
+    }
+  } catch(err) {
+    status.textContent = 'Push failed: ' + err.message;
+    status.style.color = 'var(--red)';
+  }
+}
+
+async function cancelAllOTA() {
+  if (!confirm('Cancel ALL pending OTA deployments?')) return;
+  try {
+    var r = await fetch('/api/fleet-ota/cancel', { method: 'POST' });
+    var data = await r.json();
+    document.getElementById('ota-push-status').textContent = 'Cancelled ' + data.cancelled + ' pending deployments';
+    refreshFleetOTA();
+  } catch(err) {}
+}
+
+// ========================================================================
+// PROVISIONING WORKFLOW
+// ========================================================================
+async function refreshProvision() {
+  var data = await fetchJSON('/api/provision/discovered');
+  if (!data) return;
+
+  document.getElementById('prov-stats').innerHTML =
+    '<div class="stat-card"><div class="label">Discovered</div><div class="value yellow">' + data.discovered_count + '</div></div>' +
+    '<div class="stat-card"><div class="label">Commissioned</div><div class="value green">' + data.commissioned_count + '</div></div>';
+
+  // Discovered nodes
+  var disc = document.getElementById('prov-discovered');
+  if (data.discovered.length === 0) {
+    disc.innerHTML = '<div class="loading">No pending nodes. Run a network scan or wait for heartbeats.</div>';
+  } else {
+    disc.innerHTML = data.discovered.map(function(n, i) {
+      return '<div class="prov-card">' +
+        '<div class="prov-header">' +
+          '<div class="prov-id">' + escHtml(n.device_id) + '</div>' +
+          '<div>' +
+            (n.online ? '<span class="status-badge status-online"><span class="status-dot"></span>Online</span>' :
+                        '<span class="status-badge status-offline"><span class="status-dot"></span>Offline</span>') +
+          '</div>' +
+        '</div>' +
+        '<div class="prov-meta">' +
+          '<span class="prov-label">Board</span><span class="prov-value">' + escHtml(n.board) + '</span>' +
+          '<span class="prov-label">IP</span><span class="prov-value">' + (escHtml(n.ip) || '--') + '</span>' +
+          '<span class="prov-label">MAC</span><span class="prov-value">' + (escHtml(n.mac) || '--') + '</span>' +
+          '<span class="prov-label">Firmware</span><span class="prov-value">' + escHtml(n.version) + '</span>' +
+          '<span class="prov-label">Capabilities</span><span class="prov-value">' + ((n.capabilities || []).join(', ') || '--') + '</span>' +
+          '<span class="prov-label">Registered</span><span class="prov-value">' + (escHtml(n.registered_at) || '--') + '</span>' +
+        '</div>' +
+        '<div style="margin-top:8px">' +
+          '<button class="ota-btn" style="padding:4px 12px;font-size:10px" onclick="toggleProvForm(\'prov-form-' + i + '\')">Commission</button>' +
+        '</div>' +
+        '<div class="prov-form" id="prov-form-' + i + '">' +
+          '<div class="form-row">' +
+            '<input type="text" class="form-input" placeholder="Name" id="prov-name-' + i + '" style="width:150px" />' +
+            '<input type="text" class="form-input" placeholder="Location" id="prov-loc-' + i + '" style="width:150px" />' +
+            '<select class="form-select" id="prov-role-' + i + '">' +
+              '<option value="">Role...</option>' +
+              '<option value="sensor">Sensor</option>' +
+              '<option value="gateway">Gateway</option>' +
+              '<option value="display">Display</option>' +
+              '<option value="camera">Camera</option>' +
+              '<option value="controller">Controller</option>' +
+            '</select>' +
+          '</div>' +
+          '<div class="form-row">' +
+            '<input type="text" class="form-input" placeholder="WiFi SSID" id="prov-ssid-' + i + '" style="width:150px" />' +
+            '<input type="password" class="form-input" placeholder="WiFi Pass" id="prov-pass-' + i + '" style="width:150px" />' +
+            '<input type="text" class="form-input" placeholder="Server URL" id="prov-url-' + i + '" style="width:200px" />' +
+          '</div>' +
+          '<button class="ota-btn" style="margin-top:6px;background:rgba(0,255,208,0.1);border-color:var(--cyan)" ' +
+            'onclick="commissionNode(\'' + escHtml(n.device_id) + '\',' + i + ')">Commission Node</button>' +
+          '<span id="prov-status-' + i + '" style="margin-left:10px;font-size:11px;color:var(--text-dim)"></span>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  // Commissioned nodes
+  var comm = document.getElementById('prov-commissioned');
+  if (data.commissioned.length === 0) {
+    comm.innerHTML = '<div class="loading">No commissioned nodes.</div>';
+  } else {
+    comm.innerHTML = data.commissioned.map(function(n) {
+      return '<div class="prov-card" style="border-color:rgba(0,255,136,0.2)">' +
+        '<div class="prov-header">' +
+          '<div class="prov-id">' + escHtml(n.device_name || n.device_id) + '</div>' +
+          '<div style="display:flex;gap:8px;align-items:center">' +
+            (n.role ? '<span class="fw-badge fw-signed">' + escHtml(n.role) + '</span>' : '') +
+            (n.online ? '<span class="status-badge status-online"><span class="status-dot"></span>Online</span>' :
+                        '<span class="status-badge status-offline"><span class="status-dot"></span>Offline</span>') +
+          '</div>' +
+        '</div>' +
+        '<div class="prov-meta">' +
+          '<span class="prov-label">ID</span><span class="prov-value" style="font-size:10px">' + escHtml(n.device_id) + '</span>' +
+          '<span class="prov-label">Board</span><span class="prov-value">' + escHtml(n.board) + '</span>' +
+          '<span class="prov-label">IP</span><span class="prov-value">' + (escHtml(n.ip) || '--') + '</span>' +
+          '<span class="prov-label">Location</span><span class="prov-value">' + (escHtml(n.location_label) || '--') + '</span>' +
+        '</div>' +
+        '<div style="margin-top:6px">' +
+          '<button class="ota-btn" style="padding:3px 10px;font-size:10px;border-color:var(--red);color:var(--red)" ' +
+            'onclick="decommissionNode(\'' + escHtml(n.device_id) + '\')">Decommission</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+}
+
+function toggleProvForm(id) {
+  var el = document.getElementById(id);
+  if (el) el.classList.toggle('open');
+}
+
+async function commissionNode(deviceId, idx) {
+  var name = document.getElementById('prov-name-' + idx).value;
+  var loc = document.getElementById('prov-loc-' + idx).value;
+  var role = document.getElementById('prov-role-' + idx).value;
+  var ssid = document.getElementById('prov-ssid-' + idx).value;
+  var pass = document.getElementById('prov-pass-' + idx).value;
+  var url = document.getElementById('prov-url-' + idx).value;
+
+  var status = document.getElementById('prov-status-' + idx);
+  status.textContent = 'Commissioning...';
+  status.style.color = 'var(--yellow)';
+
+  try {
+    var body = { device_id: deviceId };
+    if (name) body.device_name = name;
+    if (loc) body.location = loc;
+    if (role) body.role = role;
+    if (ssid) body.wifi_ssid = ssid;
+    if (pass) body.wifi_pass = pass;
+    if (url) body.server_url = url;
+
+    var r = await fetch('/api/provision/commission', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    var data = await r.json();
+    if (r.ok) {
+      status.textContent = 'Commissioned!';
+      status.style.color = 'var(--green)';
+      setTimeout(refreshProvision, 1000);
+    } else {
+      status.textContent = 'Error: ' + (data.detail || JSON.stringify(data));
+      status.style.color = 'var(--red)';
+    }
+  } catch(err) {
+    status.textContent = 'Failed: ' + err.message;
+    status.style.color = 'var(--red)';
+  }
+}
+
+async function decommissionNode(deviceId) {
+  if (!confirm('Decommission ' + deviceId + '?')) return;
+  try {
+    await fetch('/api/provision/decommission/' + encodeURIComponent(deviceId), { method: 'POST' });
+    refreshProvision();
+  } catch(err) {}
+}
+
+async function scanForNodes() {
+  var btn = document.getElementById('prov-scan-btn');
+  var status = document.getElementById('prov-scan-status');
+  btn.disabled = true;
+  status.textContent = 'Scanning network (this may take a few seconds)...';
+  status.style.color = 'var(--yellow)';
+
+  try {
+    var r = await fetch('/api/commission/discover');
+    var data = await r.json();
+    if (r.ok) {
+      status.textContent = 'Found ' + (data.count || 0) + ' nodes via network scan';
+      status.style.color = 'var(--green)';
+      refreshProvision();
+    } else {
+      status.textContent = 'Scan error: ' + (data.detail || 'unknown');
+      status.style.color = 'var(--red)';
+    }
+  } catch(err) {
+    status.textContent = 'Scan failed: ' + err.message;
+    status.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
 }
 
 // Plugin Nav

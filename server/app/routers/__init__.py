@@ -12,6 +12,9 @@ from .stats import router as stats_router
 from .profiles import router as profiles_router
 from .ws import router as ws_router
 from .presence import router as presence_router
+from .map import router as map_router
+from .fleet_ota import router as fleet_ota_router
+from .provision import router as provision_router
 
 __all__ = [
     "devices_router",
@@ -23,4 +26,7 @@ __all__ = [
     "profiles_router",
     "ws_router",
     "presence_router",
+    "map_router",
+    "fleet_ota_router",
+    "provision_router",
 ]
