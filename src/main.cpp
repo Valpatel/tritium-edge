@@ -34,6 +34,13 @@ static bool _ble_scanner_enabled = true;
 static bool _ble_scanner_enabled = false;
 #endif
 
+#if defined(ENABLE_LORA) && __has_include("hal_lora.h")
+#include "hal_lora.h"
+static bool _lora_enabled = true;
+#else
+static bool _lora_enabled = false;
+#endif
+
 #if defined(ENABLE_WEBSERVER) && __has_include("hal_webserver.h")
 #include "hal_webserver.h"
 #include <WiFi.h>
@@ -173,12 +180,28 @@ static void services_init() {
 
     if (wifi.isConnected()) {
         Serial.printf("[tritium] WiFi: %s (%s)\n", wifi.getSSID(), wifi.getIP());
+#if defined(APP_STARFIELD)
+        {
+            char l1[48];
+            snprintf(l1, sizeof(l1), "%s", wifi.getIP());
+            app_instance.setOverlayText("TRITIUM", l1, nullptr);
+        }
+#endif
     } else {
         Serial.printf("[tritium] WiFi: not connected\n");
 #if defined(ENABLE_WEBSERVER)
         // No WiFi? Start AP mode for phone commissioning
         Serial.printf("[tritium] Starting AP mode for commissioning...\n");
         wifi.startAP();  // Creates "Tritium-XXYY" open network
+        // Show commissioning info on display overlay
+#if defined(APP_STARFIELD)
+        {
+            char l1[48], l2[48];
+            snprintf(l1, sizeof(l1), "WIFI: %s", wifi.getSSID());
+            snprintf(l2, sizeof(l2), "HTTP://%s/", wifi.getAPIP());
+            app_instance.setOverlayText("TRITIUM SETUP", l1, l2);
+        }
+#endif
 #else
         Serial.printf("[tritium] Will retry in background\n");
 #endif
@@ -213,6 +236,17 @@ static void services_init() {
             Serial.printf("[tritium] BLE Scanner: active\n");
         } else {
             Serial.printf("[tritium] BLE Scanner: failed to start\n");
+        }
+    }
+#endif
+
+#if defined(ENABLE_LORA)
+    {
+        hal_lora::LoRaConfig lora_cfg;
+        if (hal_lora::init(lora_cfg)) {
+            Serial.printf("[tritium] LoRa: active (%s)\n", hal_lora::get_mode());
+        } else {
+            Serial.printf("[tritium] LoRa: init failed\n");
         }
     }
 #endif
