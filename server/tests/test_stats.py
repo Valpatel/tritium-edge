@@ -128,3 +128,29 @@ def test_fleet_config_with_drift(client, sample_device):
     assert drift_dev["max_severity"] == "critical"
     drift_keys = {d["key"] for d in drift_dev["drifts"]}
     assert "server_url" in drift_keys
+
+
+# --- Dashboard summary ---
+
+
+def test_fleet_dashboard_empty(client):
+    """Dashboard summary returns all sections for empty fleet."""
+    r = client.get("/api/fleet/dashboard")
+    assert r.status_code == 200
+    data = r.json()
+    assert "health" in data
+    assert "config" in data
+    assert "alerts" in data
+    assert data["health"]["total_nodes"] == 0
+    assert data["config"]["synced_count"] == 0
+    assert data["alerts"]["recent_count"] == 0
+    assert "server_uptime_s" in data
+
+
+def test_fleet_dashboard_with_device(client, sample_device):
+    """Dashboard includes device in health and config sections."""
+    r = client.get("/api/fleet/dashboard")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["health"]["total_nodes"] == 1
+    assert data["config"]["synced_count"] == 1  # No profile = synced

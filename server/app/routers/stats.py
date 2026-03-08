@@ -10,6 +10,7 @@ from fastapi import APIRouter, Request
 
 from tritium_lib.models.config import compute_fleet_config_status
 
+from ..services.alert_service import get_alert_service
 from ..services.device_service import enrich_devices, build_fleet_status, get_fleet_health
 
 router = APIRouter(prefix="/api", tags=["stats"])
@@ -138,5 +139,76 @@ async def fleet_config(request: Request):
         "critical_drift_count": status.critical_drift_count,
         "sync_ratio": round(status.sync_ratio, 3),
         "drifted_devices": drifted_details,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/fleet/dashboard")
+async def fleet_dashboard(request: Request):
+    """Combined dashboard summary — health + config + alerts in one call.
+
+    Reduces roundtrips for the admin UI by combining the most
+    commonly-needed fleet metrics into a single response.
+    """
+    store = request.app.state.store
+    devices = enrich_devices(store.list_devices())
+    start_time = getattr(request.app.state, "start_time", time.time())
+
+    # Fleet health
+    fleet = build_fleet_status(devices)
+    health_score = get_fleet_health(devices)
+
+    # Config sync
+    config_entries = []
+    for d in devices:
+        profile_id = d.get("profile_id")
+        desired = {}
+        if profile_id:
+            profile = store.get_profile(profile_id)
+            if profile:
+                desired = profile.get("config", {})
+        reported = d.get("reported_config", d.get("config", {}))
+        config_entries.append({
+            "device_id": d.get("device_id", d.get("id", "?")),
+            "desired_config": desired,
+            "reported_config": reported,
+        })
+    config_status = compute_fleet_config_status(config_entries)
+
+    # Recent alerts
+    alert_svc = get_alert_service()
+    recent_alerts = []
+    alert_counts = {"critical": 0, "warning": 0, "info": 0}
+    if alert_svc:
+        recent_alerts = alert_svc.get_history(limit=10)
+        for a in recent_alerts:
+            sev = a.get("severity", 0)
+            if sev >= 0.7:
+                alert_counts["critical"] += 1
+            elif sev >= 0.4:
+                alert_counts["warning"] += 1
+            else:
+                alert_counts["info"] += 1
+
+    return {
+        "health": {
+            "score": round(health_score, 3),
+            "total_nodes": fleet.total_nodes,
+            "online_count": fleet.online_count,
+            "ble_total": fleet.ble_total,
+        },
+        "config": {
+            "synced_count": config_status.synced_count,
+            "drifted_count": config_status.drifted_count,
+            "critical_drift_count": config_status.critical_drift_count,
+            "sync_ratio": round(config_status.sync_ratio, 3),
+        },
+        "alerts": {
+            "recent_count": len(recent_alerts),
+            "critical": alert_counts["critical"],
+            "warning": alert_counts["warning"],
+            "recent": recent_alerts[:5],
+        },
+        "server_uptime_s": int(time.time() - start_time),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
