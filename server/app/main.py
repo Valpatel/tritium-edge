@@ -29,6 +29,7 @@ from .routers import (
     stats_router,
     profiles_router,
     ws_router,
+    presence_router,
 )
 
 
@@ -91,6 +92,7 @@ app.include_router(events_router)
 app.include_router(stats_router)
 app.include_router(profiles_router)
 app.include_router(ws_router)
+app.include_router(presence_router)
 
 # Templates (reuse existing admin.html)
 _server_dir = Path(__file__).parent.parent

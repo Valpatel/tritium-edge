@@ -11,6 +11,7 @@ from .events import router as events_router
 from .stats import router as stats_router
 from .profiles import router as profiles_router
 from .ws import router as ws_router
+from .presence import router as presence_router
 
 __all__ = [
     "devices_router",
@@ -21,4 +22,5 @@ __all__ = [
     "stats_router",
     "profiles_router",
     "ws_router",
+    "presence_router",
 ]
