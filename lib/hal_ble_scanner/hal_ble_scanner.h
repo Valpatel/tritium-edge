@@ -65,6 +65,11 @@ bool is_device_visible(const uint8_t addr[6]);
 // Returns bytes written to buf.
 int get_summary_json(char* buf, size_t buf_size);
 
+// Get JSON array of visible devices for detailed heartbeat.
+// Format: [{"mac":"AA:BB:CC:DD:EE:FF","rssi":-50,"name":"...","known":true},...]
+// Returns bytes written to buf.
+int get_devices_json(char* buf, size_t buf_size);
+
 // Is scanner running?
 bool is_active();
 

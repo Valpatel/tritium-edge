@@ -242,8 +242,8 @@ bool send_now() {
     const esp_partition_t* running = esp_ota_get_running_partition();
     if (running) partition = running->label;
 
-    // Build base JSON payload
-    char body[1024];
+    // Build base JSON payload (3KB for BLE device list)
+    static char body[3072];
     int pos = snprintf(body, sizeof(body),
              "{\"version\":\"%s\",\"board\":\"%s\",\"partition\":\"%s\","
              "\"ip\":\"%s\",\"mac\":\"%s\",\"uptime_s\":%lu,\"free_heap\":%u,"
@@ -264,6 +264,12 @@ bool send_now() {
         char ble_json[128];
         hal_ble_scanner::get_summary_json(ble_json, sizeof(ble_json));
         pos += snprintf(body + pos, sizeof(body) - pos, ",\"sensors\":%s", ble_json);
+        // Append per-device list if space permits
+        if (pos < (int)sizeof(body) - 200) {
+            static char devs_json[2048];
+            hal_ble_scanner::get_devices_json(devs_json, sizeof(devs_json));
+            pos += snprintf(body + pos, sizeof(body) - pos, ",\"ble_devices\":%s", devs_json);
+        }
     }
 #endif
 

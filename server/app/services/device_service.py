@@ -125,6 +125,10 @@ def process_heartbeat(store: FleetStore, device_id: str, body: dict) -> dict:
     sensors = body.get("sensors")
     if sensors:
         device["sensors"] = sensors
+    # Detailed BLE device list
+    ble_devices = body.get("ble_devices")
+    if ble_devices:
+        device["ble_devices"] = ble_devices
 
     store.save_device(device)
 

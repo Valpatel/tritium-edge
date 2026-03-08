@@ -15,6 +15,7 @@ int get_visible_count() { return 0; }
 int get_known_visible_count() { return 0; }
 bool is_device_visible(const uint8_t[6]) { return false; }
 int get_summary_json(char* buf, size_t buf_size) { return snprintf(buf, buf_size, "{}"); }
+int get_devices_json(char* buf, size_t buf_size) { return snprintf(buf, buf_size, "[]"); }
 bool is_active() { return false; }
 }
 
@@ -255,6 +256,39 @@ int get_summary_json(char* buf, size_t buf_size) {
 
     xSemaphoreGive(_mutex);
     return written;
+}
+
+int get_devices_json(char* buf, size_t buf_size) {
+    if (!_mutex) return snprintf(buf, buf_size, "[]");
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+
+    uint32_t now = millis();
+    int pos = 0;
+    pos += snprintf(buf + pos, buf_size - pos, "[");
+
+    bool first = true;
+    for (int i = 0; i < _device_count && pos < (int)buf_size - 80; i++) {
+        if ((now - _devices[i].last_seen) >= BLE_DEVICE_TIMEOUT_MS) continue;
+        if (!first) pos += snprintf(buf + pos, buf_size - pos, ",");
+        first = false;
+        pos += snprintf(buf + pos, buf_size - pos,
+            "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"rssi\":%d,\"seen\":%u%s%s%s}",
+            _devices[i].addr[0], _devices[i].addr[1], _devices[i].addr[2],
+            _devices[i].addr[3], _devices[i].addr[4], _devices[i].addr[5],
+            _devices[i].rssi, (unsigned)_devices[i].seen_count,
+            _devices[i].name[0] ? ",\"name\":\"" : "",
+            _devices[i].name[0] ? _devices[i].name : "",
+            _devices[i].name[0] ? "\"" : "");
+        if (_devices[i].is_known && pos < (int)buf_size - 20) {
+            // Overwrite last } and add known flag
+            pos--;  // back over }
+            pos += snprintf(buf + pos, buf_size - pos, ",\"known\":true}");
+        }
+    }
+
+    pos += snprintf(buf + pos, buf_size - pos, "]");
+    xSemaphoreGive(_mutex);
+    return pos;
 }
 
 bool is_active() {
