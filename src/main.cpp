@@ -2,6 +2,12 @@
 #include "display.h"
 #include "app.h"
 
+// SD card support (for SD_FORMAT command)
+#if defined(HAS_SDCARD) && HAS_SDCARD && defined(SD_MMC_D0)
+#include <SD_MMC.h>
+#include <FS.h>
+#endif
+
 // --- Optional background services (enabled via build flags) ---
 #if defined(ENABLE_WIFI) && __has_include("wifi_manager.h")
 #include "wifi_manager.h"
@@ -67,6 +73,34 @@ static void handleSerialCommands() {
                               display_get_width(), display_get_height(),
                               app->name());
             }
+#if defined(HAS_SDCARD) && HAS_SDCARD && defined(SD_MMC_D0)
+            else if (strcmp(_cmd_buf, "SD_FORMAT") == 0) {
+                Serial.printf("[sd] Formatting SD card...\n");
+                SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
+                if (SD_MMC.begin("/sdcard", true)) {  // 1-bit mode
+                    // Delete all files in root
+                    File root = SD_MMC.open("/");
+                    if (root) {
+                        File f = root.openNextFile();
+                        while (f) {
+                            char path[128];
+                            snprintf(path, sizeof(path), "/%s", f.name());
+                            f.close();
+                            SD_MMC.remove(path);
+                            Serial.printf("[sd] Deleted: %s\n", path);
+                            f = root.openNextFile();
+                        }
+                        root.close();
+                    }
+                    Serial.printf("[sd] Card cleared. Total: %lluMB, Used: %lluMB\n",
+                        (unsigned long long)(SD_MMC.totalBytes() / (1024*1024)),
+                        (unsigned long long)(SD_MMC.usedBytes() / (1024*1024)));
+                    SD_MMC.end();
+                } else {
+                    Serial.printf("[sd] Could not mount SD card\n");
+                }
+            }
+#endif
             _cmd_idx = 0;
         } else if (_cmd_idx < sizeof(_cmd_buf) - 1) {
             _cmd_buf[_cmd_idx++] = c;
