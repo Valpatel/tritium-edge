@@ -63,6 +63,14 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #define HAS_COT 0
 #endif
 
+// Optional diagnostics — piggyback diag report upload on heartbeat ticks
+#if __has_include("hal_diag.h")
+#include "hal_diag.h"
+#define HAS_DIAG 1
+#else
+#define HAS_DIAG 0
+#endif
+
 namespace hal_heartbeat {
 
 // Internal state
@@ -373,6 +381,30 @@ bool send_now() {
 #if HAS_COT
     if (_cot_enabled && hal_cot::is_active()) {
         hal_cot::tick();
+    }
+#endif
+
+    // Piggyback diagnostic report upload on heartbeat tick
+#if HAS_DIAG
+    if (code == 200) {
+        static char diag_buf[4096];
+        int diag_len = hal_diag::full_report_json(diag_buf, sizeof(diag_buf));
+        if (diag_len > 0) {
+            char diag_url[320];
+            snprintf(diag_url, sizeof(diag_url), "%s/api/devices/%s/diag",
+                     _server_url, _device_id);
+            HTTPClient diag_http;
+            diag_http.begin(diag_url);
+            diag_http.addHeader("Content-Type", "application/json");
+            diag_http.setTimeout(3000);
+            int diag_code = diag_http.POST((uint8_t*)diag_buf, diag_len);
+            if (diag_code == 200) {
+                DBG_DEBUG(TAG, "Diag report sent (%d bytes)", diag_len);
+            } else {
+                DBG_DEBUG(TAG, "Diag report failed: HTTP %d", diag_code);
+            }
+            diag_http.end();
+        }
     }
 #endif
 
