@@ -47,6 +47,14 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #include <mbedtls/sha256.h>
 #include "hal_provision.h"
 
+// Optional BLE scanner integration
+#if __has_include("hal_ble_scanner.h")
+#include "hal_ble_scanner.h"
+#define HAS_BLE_SCANNER 1
+#else
+#define HAS_BLE_SCANNER 0
+#endif
+
 namespace hal_heartbeat {
 
 // Internal state
@@ -234,12 +242,13 @@ bool send_now() {
     const esp_partition_t* running = esp_ota_get_running_partition();
     if (running) partition = running->label;
 
-    char body[768];
-    snprintf(body, sizeof(body),
+    // Build base JSON payload
+    char body[1024];
+    int pos = snprintf(body, sizeof(body),
              "{\"version\":\"%s\",\"board\":\"%s\",\"partition\":\"%s\","
              "\"ip\":\"%s\",\"mac\":\"%s\",\"uptime_s\":%lu,\"free_heap\":%u,"
              "\"rssi\":%d,\"fw_hash\":\"%s\","
-             "\"reported_config\":{\"heartbeat_interval_s\":%lu}}",
+             "\"reported_config\":{\"heartbeat_interval_s\":%lu}",
              _fw_version, _board_name, partition,
              WiFi.localIP().toString().c_str(),
              WiFi.macAddress().c_str(),
@@ -248,6 +257,21 @@ bool send_now() {
              WiFi.RSSI(),
              _fw_hash,
              (unsigned long)(_interval_ms / 1000));
+
+    // Append BLE scanner data if available
+#if HAS_BLE_SCANNER
+    if (hal_ble_scanner::is_active()) {
+        char ble_json[128];
+        hal_ble_scanner::get_summary_json(ble_json, sizeof(ble_json));
+        pos += snprintf(body + pos, sizeof(body) - pos, ",\"sensors\":%s", ble_json);
+    }
+#endif
+
+    // Close JSON object
+    if (pos < (int)sizeof(body) - 1) {
+        body[pos++] = '}';
+        body[pos] = '\0';
+    }
 
     int code = http.POST(body);
     if (code == 200) {
