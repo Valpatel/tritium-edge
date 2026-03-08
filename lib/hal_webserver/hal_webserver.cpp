@@ -17,8 +17,14 @@ void WebServerHAL::addApiEndpoints() {}
 void WebServerHAL::addWiFiSetup() {}
 void WebServerHAL::addBleViewer() {}
 void WebServerHAL::addCommissionPage() {}
+void WebServerHAL::addSystemPage() {}
+void WebServerHAL::addLogsPage() {}
+void WebServerHAL::addErrorPages() {}
 void WebServerHAL::addAllPages() {}
+void WebServerHAL::captureLog(const char*) {}
+int WebServerHAL::getLogJson(char*, size_t) { return 0; }
 void WebServerHAL::setBleProvider(BleJsonProvider) {}
+void WebServerHAL::setDiagProvider(DiagJsonProvider) {}
 void WebServerHAL::startCaptivePortal() {}
 void WebServerHAL::stopCaptivePortal() {}
 void WebServerHAL::sendResponse(int, const char*, const char*) {}
@@ -41,6 +47,10 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include <DNSServer.h>
 #include <Update.h>
 #include <LittleFS.h>
+#include <esp_system.h>
+#include <esp_partition.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <cstring>
 
 static WebServer* _server = nullptr;
@@ -94,9 +104,11 @@ button.danger:hover{background:#ff6690}
 static const char NAV_HTML[] PROGMEM = R"rawliteral(
 <div class="nav">
   <a href="/">Dashboard</a>
+  <a href="/system">System</a>
   <a href="/wifi">WiFi</a>
   <a href="/ble">BLE Scan</a>
-  <a href="/update">OTA Update</a>
+  <a href="/ota">OTA Update</a>
+  <a href="/logs">Logs</a>
   <a href="/config">Config</a>
   <a href="/files">Files</a>
   <a href="/commission">Commission</a>
@@ -121,6 +133,13 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 .scanline{position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;
   background:repeating-linear-gradient(transparent,transparent 2px,rgba(0,255,208,0.015) 2px,rgba(0,255,208,0.015) 4px);z-index:999}
+.cap-badge{display:inline-block;padding:3px 10px;margin:3px;border-radius:12px;font-size:11px;
+  border:1px solid #00ffd044;color:#00ffd0;background:#00ffd00a}
+.cap-badge.active{border-color:#00ffd0;background:#00ffd01a}
+.cap-badge.inactive{border-color:#333;color:#555;background:transparent}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.status-dot.on{background:#00ffd0;box-shadow:0 0 6px #00ffd066}
+.status-dot.off{background:#333}
 </style>
 </head><body>
 <div class="scanline"></div>
@@ -146,6 +165,17 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
 </td></tr>
 </table>
 </div>
+<div class="card">
+<h2>Capabilities</h2>
+<div id="caps">%CAPABILITIES%</div>
+</div>
+<div class="card" id="ble_card" style="display:%BLE_DISPLAY%">
+<h2>BLE Scanner</h2>
+<table>
+<tr><td class="label">Status</td><td id="ble_status">%BLE_STATUS%</td></tr>
+<tr><td class="label">Devices</td><td id="ble_count">%BLE_COUNT%</td></tr>
+</table>
+</div>
 <script>
 function fmt(n){return n>1048576?(n/1048576).toFixed(1)+'M':n>1024?(n/1024).toFixed(0)+'K':n}
 function uptimeFmt(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d+'d '+h+'h '+m+'m'}
@@ -159,6 +189,12 @@ setInterval(function(){
     var pct=Math.min(100,Math.max(0,2*(d.rssi+100)));
     document.getElementById('v_rssi_bar').style.width=pct+'%';
   });
+  fetch('/api/ble').then(r=>r.json()).then(d=>{
+    if(d.active!==undefined){
+      document.getElementById('ble_status').textContent=d.active?'Active':'Inactive';
+      document.getElementById('ble_count').textContent=d.total+' total, '+d.known+' known';
+    }
+  }).catch(()=>{});
 },3000);
 </script>
 </body></html>
@@ -357,6 +393,10 @@ void WebServerHAL::setBleProvider(BleJsonProvider provider) {
     _bleProvider = provider;
 }
 
+void WebServerHAL::setDiagProvider(DiagJsonProvider provider) {
+    _diagProvider = provider;
+}
+
 void WebServerHAL::sendResponse(int code, const char* contentType, const char* body) {
     if (_server) _server->send(code, contentType, body);
 }
@@ -373,11 +413,8 @@ void WebServerHAL::startCaptivePortal() {
     _dnsServer = new DNSServer();
     _dnsServer->start(53, "*", WiFi.softAPIP());
 
-    // Redirect all unknown URIs to /wifi setup page
-    _server->onNotFound([]() {
-        _server->sendHeader("Location", "http://192.168.4.1/wifi", true);
-        _server->send(302, "text/plain", "Redirecting to setup...");
-    });
+    // Note: onNotFound handler in addErrorPages() checks _dnsServer and
+    // redirects to /wifi when captive portal is active. No need to set it here.
 
     // Android/iOS captive portal detection endpoints
     _server->on("/generate_204", HTTP_GET, []() {
@@ -458,6 +495,57 @@ void WebServerHAL::addDashboard() {
         html.replace("%RSSI_PCT%", String(rssiToPercent(rssi)));
         html.replace("%REQCOUNT%", String(self->_requestCount));
 
+        // Build capabilities badges
+        String caps;
+        auto addBadge = [&](const char* name, bool active) {
+            caps += "<span class=\"cap-badge ";
+            caps += active ? "active" : "inactive";
+            caps += "\"><span class=\"status-dot ";
+            caps += active ? "on" : "off";
+            caps += "\"></span>";
+            caps += name;
+            caps += "</span>";
+        };
+
+        addBadge("WiFi", WiFi.isConnected());
+        addBadge("WebServer", true);
+#if defined(ENABLE_BLE_SCANNER)
+        addBadge("BLE Scanner", true);
+#endif
+#if defined(ENABLE_HEARTBEAT)
+        addBadge("Heartbeat", true);
+#endif
+#if defined(HAS_CAMERA) && HAS_CAMERA
+        addBadge("Camera", true);
+#endif
+#if defined(HAS_IMU) && HAS_IMU
+        addBadge("IMU", true);
+#endif
+#if defined(HAS_AUDIO) && HAS_AUDIO
+        addBadge("Audio", true);
+#endif
+#if defined(HAS_RTC) && HAS_RTC
+        addBadge("RTC", true);
+#endif
+#if defined(HAS_PMIC) && HAS_PMIC
+        addBadge("PMIC", true);
+#endif
+#if defined(HAS_SDCARD) && HAS_SDCARD
+        addBadge("SD Card", true);
+#endif
+        html.replace("%CAPABILITIES%", caps);
+
+        // BLE card visibility
+#if defined(ENABLE_BLE_SCANNER)
+        html.replace("%BLE_DISPLAY%", "block");
+        html.replace("%BLE_STATUS%", "Checking...");
+        html.replace("%BLE_COUNT%", "...");
+#else
+        html.replace("%BLE_DISPLAY%", "none");
+        html.replace("%BLE_STATUS%", "");
+        html.replace("%BLE_COUNT%", "");
+#endif
+
         _server->send(200, "text/html", html);
     });
 
@@ -516,7 +604,16 @@ void WebServerHAL::addOtaPage() {
         }
     );
 
-    DBG_INFO("web", "OTA page added at /update");
+    // Also serve on /ota as an alias
+    _server->on("/ota", HTTP_GET, [self]() {
+        self->_requestCount++;
+        String html(FPSTR(OTA_HTML));
+        html.replace("%THEME%", FPSTR(THEME_CSS));
+        html.replace("%NAV%",   FPSTR(NAV_HTML));
+        _server->send(200, "text/html", html);
+    });
+
+    DBG_INFO("web", "OTA page added at /update and /ota");
 }
 
 // ── addConfigEditor() ───────────────────────────────────────────────────────
@@ -792,8 +889,41 @@ void WebServerHAL::addApiEndpoints() {
 #if defined(HAS_SDCARD) && HAS_SDCARD
         addCap("sdcard");
 #endif
+#if defined(ENABLE_DIAG)
+        addCap("diagnostics");
+#endif
+#if defined(ENABLE_LORA)
+        addCap("lora");
+#endif
         pos += snprintf(buf + pos, sizeof(buf) - pos, "]}");
         _server->send(200, "application/json", buf);
+    });
+
+    // GET /api/diag — full diagnostics report (requires diag provider)
+    _server->on("/api/diag", HTTP_GET, [self]() {
+        self->_requestCount++;
+        if (self->_diagProvider) {
+            static char buf[4096];
+            int len = self->_diagProvider(buf, sizeof(buf));
+            if (len > 0) {
+                _server->send(200, "application/json", buf);
+                return;
+            }
+        }
+        _server->send(200, "application/json",
+            "{\"enabled\":false,\"message\":\"Diagnostics not available\"}");
+    });
+
+    // GET /api/logs — recent log entries
+    _server->on("/api/logs", HTTP_GET, [self]() {
+        self->_requestCount++;
+        static char buf[4096];
+        int len = WebServerHAL::getLogJson(buf, sizeof(buf));
+        if (len > 0) {
+            _server->send(200, "application/json", buf);
+        } else {
+            _server->send(200, "application/json", "{\"lines\":[]}");
+        }
     });
 
     DBG_INFO("web", "API endpoints added at /api/*");
@@ -1462,6 +1592,400 @@ void WebServerHAL::addCommissionPage() {
     DBG_INFO("web", "Commission page added at /commission");
 }
 
+// ── Log ring buffer ──────────────────────────────────────────────────────
+
+static const int LOG_RING_SIZE = 200;       // Number of lines to keep
+static const int LOG_LINE_MAX  = 160;       // Max chars per line
+static char  _logRing[LOG_RING_SIZE][LOG_LINE_MAX];
+static int   _logHead = 0;                  // Next write position
+static int   _logCount = 0;                 // Total lines stored (up to LOG_RING_SIZE)
+static SemaphoreHandle_t _logMutex = nullptr;
+
+void WebServerHAL::captureLog(const char* line) {
+    if (!line || !line[0]) return;
+    if (!_logMutex) _logMutex = xSemaphoreCreateMutex();
+    if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        strncpy(_logRing[_logHead], line, LOG_LINE_MAX - 1);
+        _logRing[_logHead][LOG_LINE_MAX - 1] = '\0';
+        // Strip trailing newline
+        int len = strlen(_logRing[_logHead]);
+        if (len > 0 && _logRing[_logHead][len - 1] == '\n')
+            _logRing[_logHead][len - 1] = '\0';
+        _logHead = (_logHead + 1) % LOG_RING_SIZE;
+        if (_logCount < LOG_RING_SIZE) _logCount++;
+        xSemaphoreGive(_logMutex);
+    }
+}
+
+int WebServerHAL::getLogJson(char* buf, size_t size) {
+    if (!_logMutex) _logMutex = xSemaphoreCreateMutex();
+    if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(50)) != pdTRUE) return 0;
+
+    int pos = snprintf(buf, size, "{\"count\":%d,\"lines\":[", _logCount);
+    int start = (_logCount < LOG_RING_SIZE) ? 0 : _logHead;
+    int count = _logCount;
+
+    for (int i = 0; i < count && pos < (int)size - 20; i++) {
+        int idx = (start + i) % LOG_RING_SIZE;
+        if (i > 0 && pos < (int)size - 2) buf[pos++] = ',';
+        buf[pos++] = '"';
+        // JSON-escape the line
+        for (int c = 0; _logRing[idx][c] && pos < (int)size - 4; c++) {
+            char ch = _logRing[idx][c];
+            if (ch == '"') { buf[pos++] = '\\'; buf[pos++] = '"'; }
+            else if (ch == '\\') { buf[pos++] = '\\'; buf[pos++] = '\\'; }
+            else if (ch == '\n') { buf[pos++] = '\\'; buf[pos++] = 'n'; }
+            else if (ch == '\r') { /* skip */ }
+            else if ((unsigned char)ch < 0x20) { buf[pos++] = '.'; }
+            else { buf[pos++] = ch; }
+        }
+        buf[pos++] = '"';
+    }
+    pos += snprintf(buf + pos, size - pos, "]}");
+    xSemaphoreGive(_logMutex);
+    return pos;
+}
+
+// ── System Info page (/system) ───────────────────────────────────────────
+
+static const char SYSTEM_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>System Info</title>
+%THEME%
+</head><body>
+%NAV%
+<h1>// System Info</h1>
+<div class="card">
+<h2>Chip</h2>
+<table>
+<tr><td class="label">Model</td><td>%CHIP_MODEL%</td></tr>
+<tr><td class="label">Revision</td><td>%CHIP_REV%</td></tr>
+<tr><td class="label">Cores</td><td>%CORES%</td></tr>
+<tr><td class="label">CPU Frequency</td><td>%CPU_MHZ% MHz</td></tr>
+<tr><td class="label">SDK Version</td><td>%SDK%</td></tr>
+</table>
+</div>
+<div class="card">
+<h2>Memory</h2>
+<table>
+<tr><td class="label">Flash Size</td><td>%FLASH_SIZE%</td></tr>
+<tr><td class="label">Flash Speed</td><td>%FLASH_SPEED% MHz</td></tr>
+<tr><td class="label">Heap Total</td><td>%HEAP_TOTAL%</td></tr>
+<tr><td class="label">Heap Free</td><td id="heap_free">%HEAP_FREE%</td></tr>
+<tr><td class="label">Heap Min Free</td><td>%HEAP_MIN%</td></tr>
+<tr><td class="label">PSRAM Total</td><td>%PSRAM_TOTAL%</td></tr>
+<tr><td class="label">PSRAM Free</td><td id="psram_free">%PSRAM_FREE%</td></tr>
+</table>
+</div>
+<div class="card">
+<h2>Network</h2>
+<table>
+<tr><td class="label">MAC Address</td><td style="font-family:monospace">%MAC%</td></tr>
+<tr><td class="label">WiFi SSID</td><td>%SSID%</td></tr>
+<tr><td class="label">IP Address</td><td>%IP%</td></tr>
+<tr><td class="label">Gateway</td><td>%GATEWAY%</td></tr>
+<tr><td class="label">DNS</td><td>%DNS%</td></tr>
+<tr><td class="label">RSSI</td><td>%RSSI% dBm</td></tr>
+<tr><td class="label">Channel</td><td>%CHANNEL%</td></tr>
+</table>
+</div>
+<div class="card">
+<h2>Runtime</h2>
+<table>
+<tr><td class="label">Uptime</td><td>%UPTIME%</td></tr>
+<tr><td class="label">Web Requests</td><td>%REQCOUNT%</td></tr>
+<tr><td class="label">Reset Reason</td><td>%RESET_REASON%</td></tr>
+</table>
+</div>
+<div class="card">
+<h2>Partitions</h2>
+<table>
+<tr><th>Label</th><th>Type</th><th>Offset</th><th>Size</th></tr>
+%PARTITIONS%
+</table>
+</div>
+<div class="card">
+<h2>Tasks</h2>
+<pre id="tasks" style="color:#00ffd0;font-size:12px;white-space:pre;overflow-x:auto">%TASKS%</pre>
+</div>
+<script>
+function fmt(n){return n>1048576?(n/1048576).toFixed(1)+' MB':n>1024?(n/1024).toFixed(0)+' KB':n+' B'}
+setInterval(function(){
+  fetch('/api/status').then(r=>r.json()).then(d=>{
+    document.getElementById('heap_free').textContent=fmt(d.free_heap);
+    document.getElementById('psram_free').textContent=fmt(d.psram_free);
+  });
+},5000);
+</script>
+</body></html>
+)rawliteral";
+
+void WebServerHAL::addSystemPage() {
+    if (!_server) return;
+
+    WebServerHAL* self = this;
+
+    _server->on("/system", HTTP_GET, [self]() {
+        self->_requestCount++;
+
+        String html(FPSTR(SYSTEM_HTML));
+        html.replace("%THEME%", FPSTR(THEME_CSS));
+        html.replace("%NAV%",   FPSTR(NAV_HTML));
+
+        // Chip info
+        html.replace("%CHIP_MODEL%", ESP.getChipModel());
+        html.replace("%CHIP_REV%", String(ESP.getChipRevision()));
+        html.replace("%CORES%", String(ESP.getChipCores()));
+        html.replace("%CPU_MHZ%", String(ESP.getCpuFreqMHz()));
+        html.replace("%SDK%", ESP.getSdkVersion());
+
+        // Memory
+        char sizeBuf[32];
+        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f MB", ESP.getFlashChipSize() / 1048576.0f);
+        html.replace("%FLASH_SIZE%", sizeBuf);
+        html.replace("%FLASH_SPEED%", String(ESP.getFlashChipSpeed() / 1000000));
+        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f KB", ESP.getHeapSize() / 1024.0f);
+        html.replace("%HEAP_TOTAL%", sizeBuf);
+        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f KB", ESP.getFreeHeap() / 1024.0f);
+        html.replace("%HEAP_FREE%", sizeBuf);
+        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f KB", ESP.getMinFreeHeap() / 1024.0f);
+        html.replace("%HEAP_MIN%", sizeBuf);
+        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f MB", ESP.getPsramSize() / 1048576.0f);
+        html.replace("%PSRAM_TOTAL%", sizeBuf);
+        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f MB", ESP.getFreePsram() / 1048576.0f);
+        html.replace("%PSRAM_FREE%", sizeBuf);
+
+        // Network
+        uint8_t mac[6];
+        WiFi.macAddress(mac);
+        char macStr[18];
+        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        html.replace("%MAC%", macStr);
+        html.replace("%SSID%", WiFi.isConnected() ? WiFi.SSID() : "Not connected");
+        html.replace("%IP%", WiFi.localIP().toString());
+        html.replace("%GATEWAY%", WiFi.gatewayIP().toString());
+        html.replace("%DNS%", WiFi.dnsIP().toString());
+        html.replace("%RSSI%", String(WiFi.RSSI()));
+        html.replace("%CHANNEL%", String(WiFi.channel()));
+
+        // Runtime
+        html.replace("%UPTIME%", uptimeString());
+        html.replace("%REQCOUNT%", String(self->_requestCount));
+
+        // Reset reason
+        esp_reset_reason_t reason = esp_reset_reason();
+        const char* reasonStr = "Unknown";
+        switch (reason) {
+            case ESP_RST_POWERON:  reasonStr = "Power-on"; break;
+            case ESP_RST_SW:       reasonStr = "Software"; break;
+            case ESP_RST_PANIC:    reasonStr = "Panic"; break;
+            case ESP_RST_INT_WDT:  reasonStr = "Interrupt WDT"; break;
+            case ESP_RST_TASK_WDT: reasonStr = "Task WDT"; break;
+            case ESP_RST_WDT:      reasonStr = "Other WDT"; break;
+            case ESP_RST_DEEPSLEEP:reasonStr = "Deep Sleep"; break;
+            case ESP_RST_BROWNOUT: reasonStr = "Brownout"; break;
+            default: break;
+        }
+        html.replace("%RESET_REASON%", reasonStr);
+
+        // Partition table
+        String partHtml;
+        esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY,
+            ESP_PARTITION_SUBTYPE_ANY, NULL);
+        while (it) {
+            const esp_partition_t* part = esp_partition_get(it);
+            if (part) {
+                char row[256];
+                const char* typeStr = (part->type == ESP_PARTITION_TYPE_APP) ? "app" :
+                                      (part->type == ESP_PARTITION_TYPE_DATA) ? "data" : "?";
+                snprintf(row, sizeof(row),
+                    "<tr><td>%s</td><td>%s</td><td>0x%06lX</td><td>%.0f KB</td></tr>",
+                    part->label, typeStr,
+                    (unsigned long)part->address, part->size / 1024.0f);
+                partHtml += row;
+            }
+            it = esp_partition_next(it);
+        }
+        esp_partition_iterator_release(it);
+        if (partHtml.length() == 0)
+            partHtml = "<tr><td colspan='4' style='color:#666'>No partition info</td></tr>";
+        html.replace("%PARTITIONS%", partHtml);
+
+        // Task list via vTaskList
+        char taskBuf[1024];
+#if configUSE_TRACE_FACILITY && configTASKLIST_INCLUDE_COREID
+        vTaskList(taskBuf);
+#else
+        snprintf(taskBuf, sizeof(taskBuf), "Name             State  Prio  Stack  Num\n");
+        // vTaskList may not be available with all configs
+        char* p = taskBuf + strlen(taskBuf);
+        snprintf(p, sizeof(taskBuf) - (p - taskBuf),
+            "(Task list requires configUSE_TRACE_FACILITY=1)");
+#endif
+        html.replace("%TASKS%", taskBuf);
+
+        _server->send(200, "text/html", html);
+    });
+
+    DBG_INFO("web", "System page added at /system");
+}
+
+// ── Logs page (/logs) ────────────────────────────────────────────────────
+
+static const char LOGS_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>System Logs</title>
+%THEME%
+<style>
+#log-container{background:#050505;border:1px solid #00ffd022;border-radius:4px;
+  padding:10px;height:60vh;overflow-y:auto;font-size:12px;line-height:1.6;
+  font-family:'Courier New',monospace;color:#8a8a8a}
+#log-container .line{white-space:pre-wrap;word-wrap:break-word}
+.log-controls{display:flex;gap:10px;align-items:center;margin:10px 0}
+.log-controls label{color:#666;font-size:12px}
+.log-count{color:#666;font-size:12px}
+</style>
+</head><body>
+%NAV%
+<h1>// System Logs</h1>
+<div class="card">
+<div class="log-controls">
+  <button onclick="clearLog()">Clear</button>
+  <button onclick="togglePause()"><span id="pause-btn">Pause</span></button>
+  <label><input type="checkbox" id="autoscroll" checked> Auto-scroll</label>
+  <span class="log-count" id="log-count">0 lines</span>
+</div>
+<div id="log-container"></div>
+</div>
+<script>
+var paused=false,lastCount=0;
+function togglePause(){
+  paused=!paused;
+  document.getElementById('pause-btn').textContent=paused?'Resume':'Pause';
+}
+function clearLog(){
+  document.getElementById('log-container').innerHTML='';
+  lastCount=0;
+}
+function fetchLogs(){
+  if(paused)return;
+  fetch('/api/logs').then(r=>r.json()).then(d=>{
+    var c=document.getElementById('log-container');
+    if(d.count!==lastCount){
+      var html='';
+      d.lines.forEach(function(l){
+        var cls='';
+        if(l.indexOf('[E]')>=0||l.indexOf('ERROR')>=0) cls='color:#ff3366';
+        else if(l.indexOf('[W]')>=0||l.indexOf('WARN')>=0) cls='color:#ffaa00';
+        else if(l.indexOf('[I]')>=0||l.indexOf('INFO')>=0) cls='color:#00ffd0';
+        html+='<div class="line" style="'+cls+'">'+escHtml(l)+'</div>';
+      });
+      c.innerHTML=html;
+      lastCount=d.count;
+      document.getElementById('log-count').textContent=d.lines.length+' lines';
+      if(document.getElementById('autoscroll').checked){
+        c.scrollTop=c.scrollHeight;
+      }
+    }
+  }).catch(()=>{});
+}
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+setInterval(fetchLogs,1500);
+fetchLogs();
+</script>
+</body></html>
+)rawliteral";
+
+void WebServerHAL::addLogsPage() {
+    if (!_server) return;
+
+    WebServerHAL* self = this;
+
+    _server->on("/logs", HTTP_GET, [self]() {
+        self->_requestCount++;
+        String html(FPSTR(LOGS_HTML));
+        html.replace("%THEME%", FPSTR(THEME_CSS));
+        html.replace("%NAV%",   FPSTR(NAV_HTML));
+        _server->send(200, "text/html", html);
+    });
+
+    // API endpoint for log data
+    _server->on("/api/logs", HTTP_GET, [self]() {
+        self->_requestCount++;
+        // Allocate from PSRAM if available for large log buffer
+        static char* logBuf = nullptr;
+        static const size_t LOG_BUF_SIZE = 48 * 1024;
+        if (!logBuf) {
+            logBuf = (char*)ps_malloc(LOG_BUF_SIZE);
+            if (!logBuf) logBuf = (char*)malloc(LOG_BUF_SIZE);
+        }
+        if (logBuf) {
+            int len = WebServerHAL::getLogJson(logBuf, LOG_BUF_SIZE);
+            if (len > 0) {
+                _server->send(200, "application/json", logBuf);
+                return;
+            }
+        }
+        _server->send(200, "application/json", "{\"count\":0,\"lines\":[]}");
+    });
+
+    DBG_INFO("web", "Logs page added at /logs");
+}
+
+// ── Error pages (404, 500) ───────────────────────────────────────────────
+
+static const char ERROR_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>%ERROR_CODE% - %ERROR_TITLE%</title>
+%THEME%
+<style>
+.error-code{font-size:72px;color:#ff3366;font-weight:bold;text-align:center;
+  margin:40px 0 10px;text-shadow:0 0 20px #ff336644}
+.error-msg{text-align:center;color:#666;font-size:14px;margin-bottom:30px}
+.error-uri{color:#ff3366;font-family:monospace}
+</style>
+</head><body>
+%NAV%
+<div class="error-code">%ERROR_CODE%</div>
+<div class="error-msg">%ERROR_MSG%</div>
+<div style="text-align:center"><a href="/">Back to Dashboard</a></div>
+</body></html>
+)rawliteral";
+
+void WebServerHAL::addErrorPages() {
+    if (!_server) return;
+
+    WebServerHAL* self = this;
+
+    _server->onNotFound([self]() {
+        self->_requestCount++;
+
+        // If captive portal is active, redirect instead of 404
+        if (_dnsServer) {
+            _server->sendHeader("Location", "http://192.168.4.1/wifi", true);
+            _server->send(302, "text/plain", "Redirecting to setup...");
+            return;
+        }
+
+        String html(FPSTR(ERROR_HTML));
+        html.replace("%THEME%", FPSTR(THEME_CSS));
+        html.replace("%NAV%",   FPSTR(NAV_HTML));
+        html.replace("%ERROR_CODE%", "404");
+        html.replace("%ERROR_TITLE%", "Not Found");
+        String msg = "The path <span class=\"error-uri\">";
+        msg += _server->uri();
+        msg += "</span> does not exist on this node.";
+        html.replace("%ERROR_MSG%", msg);
+        _server->send(404, "text/html", html);
+    });
+
+    DBG_INFO("web", "Error pages registered (404/500)");
+}
+
 // ── addAllPages() ────────────────────────────────────────────────────────
 
 void WebServerHAL::addAllPages() {
@@ -1473,6 +1997,9 @@ void WebServerHAL::addAllPages() {
     addWiFiSetup();
     addBleViewer();
     addCommissionPage();
+    addSystemPage();
+    addLogsPage();
+    addErrorPages();       // Must be last — registers onNotFound handler
     DBG_INFO("web", "All pages registered");
 }
 
