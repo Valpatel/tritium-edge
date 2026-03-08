@@ -468,7 +468,15 @@ void setup() {
 }
 
 void loop() {
+#if defined(ENABLE_DIAG)
+    uint32_t loop_start = micros();
+#endif
+
     handleSerialCommands();
     app->loop();
     services_tick();
+
+#if defined(ENABLE_DIAG)
+    hal_diag::report_loop_time(micros() - loop_start);
+#endif
 }
