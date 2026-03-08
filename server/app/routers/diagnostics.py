@@ -22,6 +22,7 @@ from ..services.diaglog_service import DiagLogStore
 from tritium_lib.models.diagnostics import (
     AnomalyType,
     HealthSnapshot,
+    I2cSlaveHealth,
     NodeDiagReport,
     Anomaly as LibAnomaly,
     aggregate_fleet_health,
@@ -216,6 +217,20 @@ def _cache_entry_to_report(device_id: str, entry: dict) -> NodeDiagReport:
     report = entry["report"]
     health_data = report.get("health", {})
 
+    # Parse per-slave I2C data
+    i2c_slaves = []
+    for s in health_data.get("i2c_slaves", []):
+        i2c_slaves.append(I2cSlaveHealth(
+            addr=s.get("addr", "0x00"),
+            nack_count=s.get("nack", 0),
+            timeout_count=s.get("timeout", 0),
+            success_count=s.get("ok", 0),
+            last_latency_us=s.get("lat_us", 0),
+        ))
+
+    # Parse camera metrics
+    cam = health_data.get("camera", {})
+
     health = HealthSnapshot(
         timestamp=datetime.fromtimestamp(entry["received_at"], tz=timezone.utc),
         node_id=device_id,
@@ -226,11 +241,20 @@ def _cache_entry_to_report(device_id: str, entry: dict) -> NodeDiagReport:
         battery_voltage=health_data.get("battery_v"),
         battery_percent=health_data.get("battery_pct"),
         cpu_temp_c=health_data.get("cpu_temp_c", health_data.get("cpu_c")),
+        display_frame_us=health_data.get("frame_us"),
+        display_max_frame_us=health_data.get("max_frame_us"),
         wifi_rssi=health_data.get("wifi_rssi"),
         wifi_connected=health_data.get("wifi_connected", False),
         wifi_disconnects=health_data.get("wifi_disconnects", 0),
         i2c_devices_found=health_data.get("i2c_devices", 0),
         i2c_errors=health_data.get("i2c_errors", 0),
+        i2c_slaves=i2c_slaves,
+        camera_available=bool(cam),
+        camera_frames=cam.get("frames", 0),
+        camera_fails=cam.get("fails", 0),
+        camera_last_us=cam.get("last_us", 0),
+        camera_max_us=cam.get("max_us", 0),
+        camera_avg_fps=cam.get("avg_fps", 0.0),
         loop_time_us=health_data.get("loop_us", 0),
         max_loop_time_us=health_data.get("max_loop_us", 0),
         uptime_s=health_data.get("uptime_s", 0),
@@ -289,16 +313,42 @@ async def fleet_health_report():
     node_statuses = []
     for report in reports:
         status = classify_node_health(report)
-        node_statuses.append({
+        h = report.current_health
+        node_info = {
             "device_id": report.node_id,
             "status": status,
             "board": report.board_type,
             "version": report.firmware_version,
             "anomaly_count": len(report.active_anomalies),
-            "free_heap": report.current_health.free_heap,
-            "wifi_rssi": report.current_health.wifi_rssi,
-            "uptime_s": report.current_health.uptime_s,
-        })
+            "free_heap": h.free_heap,
+            "min_free_heap": h.min_free_heap,
+            "battery_pct": h.battery_percent,
+            "wifi_rssi": h.wifi_rssi,
+            "wifi_connected": h.wifi_connected,
+            "i2c_errors": h.i2c_errors,
+            "uptime_s": h.uptime_s,
+            "reboot_count": h.reboot_count,
+        }
+        # Include I2C per-slave data if available
+        if h.i2c_slaves:
+            node_info["i2c_slaves"] = [
+                {
+                    "addr": s.addr,
+                    "ok": s.success_count,
+                    "nack": s.nack_count,
+                    "timeout": s.timeout_count,
+                    "rate": round(s.success_rate, 3),
+                }
+                for s in h.i2c_slaves
+            ]
+        # Include camera data if available
+        if h.camera_available:
+            node_info["camera"] = {
+                "frames": h.camera_frames,
+                "fails": h.camera_fails,
+                "avg_fps": round(h.camera_avg_fps, 1),
+            }
+        node_statuses.append(node_info)
 
     return {
         "health_score": round(summary.health_score, 3),
