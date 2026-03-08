@@ -154,6 +154,76 @@ async def provision_device(request: Request):
     }
 
 
+@router.get("/discover")
+async def discover_nodes(request: Request):
+    """Scan local network for Tritium nodes via mDNS and /api/node probing."""
+    import asyncio
+    import httpx
+    from zeroconf import Zeroconf, ServiceBrowser, ServiceStateChange
+
+    discovered = []
+
+    # Method 1: mDNS discovery (_http._tcp.local.)
+    zc = Zeroconf()
+    mdns_hosts = []
+
+    class Listener:
+        def add_service(self, zc, type_, name):
+            info = zc.get_service_info(type_, name)
+            if info and b"tritium" in name.lower().encode():
+                ip = ".".join(str(b) for b in info.addresses[0]) if info.addresses else None
+                if ip:
+                    mdns_hosts.append({"ip": ip, "port": info.port, "name": name})
+
+        def remove_service(self, *args): pass
+        def update_service(self, *args): pass
+
+    listener = Listener()
+    browser = ServiceBrowser(zc, "_http._tcp.local.", listener)
+    await asyncio.sleep(3)  # Wait for mDNS responses
+    zc.close()
+
+    # Method 2: Probe known device IPs from store
+    store = _get_store(request)
+    known_ips = set()
+    for dev in store.list_devices():
+        ip = dev.get("ip")
+        if ip and ip != "0.0.0.0":
+            known_ips.add(ip)
+
+    # Add mDNS-discovered IPs
+    for h in mdns_hosts:
+        known_ips.add(h["ip"])
+
+    # Probe each IP for /api/node
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        async def probe(ip):
+            try:
+                r = await client.get(f"http://{ip}/api/node")
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("tritium"):
+                        data["discovered_ip"] = ip
+                        return data
+            except Exception:
+                pass
+            return None
+
+        tasks = [probe(ip) for ip in known_ips]
+        results = await asyncio.gather(*tasks)
+
+    for r in results:
+        if r:
+            discovered.append(r)
+
+    return {
+        "discovered": discovered,
+        "mdns_hosts": mdns_hosts,
+        "probed_ips": list(known_ips),
+        "count": len(discovered),
+    }
+
+
 @router.post("/generate")
 async def generate_provision(request: Request):
     """Generate provisioning identity (pre-register device)."""

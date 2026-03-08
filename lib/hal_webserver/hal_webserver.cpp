@@ -695,6 +695,77 @@ void WebServerHAL::addApiEndpoints() {
         _server->send(200, "application/json", json);
     });
 
+    // GET /api/node — full node identity and capabilities for fleet discovery
+    _server->on("/api/node", HTTP_GET, [self]() {
+        self->_requestCount++;
+        uint8_t mac[6];
+        WiFi.macAddress(mac);
+
+        static char buf[768];
+        int pos = snprintf(buf, sizeof(buf),
+            "{\"tritium\":true,\"version\":\"1.0\","
+            "\"device_id\":\"%02X%02X%02X%02X%02X%02X\","
+            "\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+            "\"ip\":\"%s\",\"port\":%u,"
+            "\"uptime_s\":%lu,"
+            "\"free_heap\":%lu,\"psram_free\":%lu,"
+            "\"flash_size\":%lu,\"psram_size\":%lu,"
+            "\"cpu_freq\":%lu,"
+            "\"rssi\":%d,"
+            "\"sdk\":\"%s\","
+            "\"requests\":%lu,",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+            WiFi.localIP().toString().c_str(),
+            self->_port,
+            (unsigned long)(millis() / 1000),
+            (unsigned long)ESP.getFreeHeap(),
+            (unsigned long)ESP.getFreePsram(),
+            (unsigned long)ESP.getFlashChipSize(),
+            (unsigned long)ESP.getPsramSize(),
+            (unsigned long)ESP.getCpuFreqMHz(),
+            WiFi.RSSI(),
+            ESP.getSdkVersion(),
+            (unsigned long)self->_requestCount);
+
+        // Capabilities list based on build flags
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "\"capabilities\":[");
+        bool first = true;
+        auto addCap = [&](const char* name) {
+            if (!first) buf[pos++] = ',';
+            pos += snprintf(buf + pos, sizeof(buf) - pos, "\"%s\"", name);
+            first = false;
+        };
+        addCap("webserver");
+        addCap("wifi");
+#if defined(ENABLE_HEARTBEAT)
+        addCap("heartbeat");
+#endif
+#if defined(ENABLE_BLE_SCANNER)
+        addCap("ble_scanner");
+#endif
+#if defined(HAS_CAMERA) && HAS_CAMERA
+        addCap("camera");
+#endif
+#if defined(HAS_IMU) && HAS_IMU
+        addCap("imu");
+#endif
+#if defined(HAS_AUDIO) && HAS_AUDIO
+        addCap("audio");
+#endif
+#if defined(HAS_RTC) && HAS_RTC
+        addCap("rtc");
+#endif
+#if defined(HAS_PMIC) && HAS_PMIC
+        addCap("pmic");
+#endif
+#if defined(HAS_SDCARD) && HAS_SDCARD
+        addCap("sdcard");
+#endif
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "]}");
+        _server->send(200, "application/json", buf);
+    });
+
     DBG_INFO("web", "API endpoints added at /api/*");
 }
 
