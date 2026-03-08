@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstddef>
 #include <functional>
 
 static constexpr int ESPNOW_MAX_PEERS = 20;
@@ -110,6 +111,36 @@ public:
     // Run discovery + ping test. duration_s = how long to listen for peers.
     TestResult runTest(int duration_s = 10);
 
+    // ── Diagnostics integration ──────────────────────────────────────────
+
+    /// Mesh health metrics for diagnostic snapshots.
+    struct MeshHealth {
+        int      peer_count;          // Current known peers
+        int      direct_peers;        // Peers reachable in 1 hop
+        uint32_t msgs_sent;           // Total tx_count
+        uint32_t msgs_received;       // Total rx_count
+        uint32_t msgs_relayed;        // Total relay_count
+        uint32_t send_failures;       // Total tx_fail
+        float    packet_loss_rate;    // tx_fail / (tx_count + tx_fail), 0.0-1.0
+        float    avg_hop_count;       // Average hop count across known peers
+        int8_t   best_rssi;           // Best RSSI across peers
+        int8_t   worst_rssi;          // Worst RSSI across peers
+        uint32_t discovery_rounds;    // Total discovery cycles
+        uint32_t uptime_ms;           // Time since init()
+    };
+
+    /// Get current mesh health metrics.
+    MeshHealth getMeshHealth() const;
+
+    /// Serialize mesh topology to JSON for /api/mesh endpoint.
+    /// Returns bytes written, or -1 on error.
+    /// JSON format: {"self":{mac,role,channel},"peers":[{mac,rssi,hops,direct,age_ms}],"stats":{...}}
+    int meshToJson(char* buf, size_t size) const;
+
+    /// Enable diagnostic event logging to hal_diag (if ENABLE_DIAG is defined).
+    /// Call after both hal_espnow and hal_diag are initialized.
+    void enableDiagLogging(bool enable = true);
+
 private:
     bool _ready = false;
     EspNowRole _role = EspNowRole::NODE;
@@ -139,6 +170,13 @@ private:
     uint32_t _lastDiscoveryMs = 0;
     static constexpr uint32_t DISCOVERY_INTERVAL_MS = 10000;
     static constexpr uint32_t PEER_EXPIRY_MS = 30000;
+
+    // Diagnostics integration
+    bool _diagEnabled = false;
+    uint32_t _initTimeMs = 0;
+    int _prevPeerCount = 0;     // For detecting connect/disconnect events
+    void logDiagEvent(const char* fmt, ...);
+    void checkPeerChanges();
 
     // Internal helpers
     bool isDuplicate(uint16_t msgId);

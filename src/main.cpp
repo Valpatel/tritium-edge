@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "display.h"
+#include "tritium_splash.h"
 #include "app.h"
 
 // SD card support (for SD_FORMAT command) — only when networking libs are available
@@ -56,6 +57,14 @@ static bool _webserver_enabled = false;
 static bool _diag_enabled = true;
 #else
 static bool _diag_enabled = false;
+#endif
+
+#if defined(ENABLE_ESPNOW) && __has_include("hal_espnow.h")
+#include "hal_espnow.h"
+static EspNowHAL _espnow;
+static bool _espnow_enabled = true;
+#else
+static bool _espnow_enabled = false;
 #endif
 
 // --- App selection via build flag ---
@@ -290,6 +299,24 @@ static void services_init() {
     }
 #endif
 
+#if defined(ENABLE_ESPNOW)
+    {
+        // Initialize ESP-NOW mesh with default node role
+        // Note: ESP-NOW uses WiFi STA internally but does not conflict with
+        // an active WiFi connection on the same channel.
+        if (_espnow.init(EspNowRole::NODE, 1)) {
+            Serial.printf("[tritium] ESP-NOW Mesh: active\n");
+#if defined(ENABLE_DIAG)
+            _espnow.enableDiagLogging(true);
+#endif
+            // Run initial discovery to find neighbors immediately
+            _espnow.meshDiscovery();
+        } else {
+            Serial.printf("[tritium] ESP-NOW Mesh: init failed\n");
+        }
+    }
+#endif
+
 #if defined(ENABLE_WEBSERVER)
     if (_wifi_enabled && (wifi.isConnected() || wifi.isAPMode())) {
         LittleFS.begin(true);  // Format on first mount
@@ -333,6 +360,13 @@ static void services_init() {
             });
 #endif
 
+            // Wire mesh topology data into web server
+#if defined(ENABLE_ESPNOW)
+            _webserver.setMeshProvider([](char* buf, size_t size) -> int {
+                return _espnow.meshToJson(buf, size);
+            });
+#endif
+
             // In AP mode, start captive portal for auto-redirect
             if (wifi.isAPMode()) {
                 _webserver.startCaptivePortal();
@@ -362,6 +396,9 @@ static void services_tick() {
 #if defined(ENABLE_DIAG)
     hal_diag::tick();
 #endif
+#if defined(ENABLE_ESPNOW)
+    _espnow.process();
+#endif
 #if defined(ENABLE_WEBSERVER)
     _webserver.process();
 #endif
@@ -387,7 +424,10 @@ void setup() {
 
     Serial.printf("[tritium] Board: %s %dx%d\n", DISPLAY_DRIVER, w, h);
 
-    // Start the app first (display something while WiFi connects)
+    // Boot splash — shows on every boot before app starts
+    tritium_splash(panel, w, h);
+
+    // Start the app (display something while WiFi connects)
     app->setup(panel, w, h);
     Serial.printf("[tritium] App '%s' started\n", app->name());
 

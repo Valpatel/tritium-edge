@@ -51,8 +51,10 @@ public:
     // Data provider callbacks (set from main.cpp to inject sensor data)
     using BleJsonProvider = std::function<int(char* buf, size_t size)>;
     using DiagJsonProvider = std::function<int(char* buf, size_t size)>;
+    using MeshJsonProvider = std::function<int(char* buf, size_t size)>;
     void setBleProvider(BleJsonProvider provider);
     void setDiagProvider(DiagJsonProvider provider);
+    void setMeshProvider(MeshJsonProvider provider);
 
     // Helpers for handlers
     void sendResponse(int code, const char* contentType, const char* body);
@@ -89,4 +91,5 @@ private:
     char _ip[16] = {0};
     BleJsonProvider _bleProvider = nullptr;
     DiagJsonProvider _diagProvider = nullptr;
+    MeshJsonProvider _meshProvider = nullptr;
 };

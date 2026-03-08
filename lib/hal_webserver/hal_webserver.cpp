@@ -25,6 +25,7 @@ void WebServerHAL::captureLog(const char*) {}
 int WebServerHAL::getLogJson(char*, size_t) { return 0; }
 void WebServerHAL::setBleProvider(BleJsonProvider) {}
 void WebServerHAL::setDiagProvider(DiagJsonProvider) {}
+void WebServerHAL::setMeshProvider(MeshJsonProvider) {}
 void WebServerHAL::startCaptivePortal() {}
 void WebServerHAL::stopCaptivePortal() {}
 void WebServerHAL::sendResponse(int, const char*, const char*) {}
@@ -397,6 +398,10 @@ void WebServerHAL::setDiagProvider(DiagJsonProvider provider) {
     _diagProvider = provider;
 }
 
+void WebServerHAL::setMeshProvider(MeshJsonProvider provider) {
+    _meshProvider = provider;
+}
+
 void WebServerHAL::sendResponse(int code, const char* contentType, const char* body) {
     if (_server) _server->send(code, contentType, body);
 }
@@ -532,6 +537,9 @@ void WebServerHAL::addDashboard() {
 #endif
 #if defined(HAS_SDCARD) && HAS_SDCARD
         addBadge("SD Card", true);
+#endif
+#if defined(ENABLE_ESPNOW)
+        addBadge("ESP-NOW Mesh", true);
 #endif
         html.replace("%CAPABILITIES%", caps);
 
@@ -895,8 +903,26 @@ void WebServerHAL::addApiEndpoints() {
 #if defined(ENABLE_LORA)
         addCap("lora");
 #endif
+#if defined(ENABLE_ESPNOW)
+        addCap("espnow_mesh");
+#endif
         pos += snprintf(buf + pos, sizeof(buf) - pos, "]}");
         _server->send(200, "application/json", buf);
+    });
+
+    // GET /api/mesh — mesh topology and health for visualization
+    _server->on("/api/mesh", HTTP_GET, [self]() {
+        self->_requestCount++;
+        if (self->_meshProvider) {
+            static char buf[2048];
+            int len = self->_meshProvider(buf, sizeof(buf));
+            if (len > 0) {
+                _server->send(200, "application/json", buf);
+                return;
+            }
+        }
+        _server->send(200, "application/json",
+            "{\"enabled\":false,\"message\":\"ESP-NOW mesh not available\"}");
     });
 
     // GET /api/diag — full diagnostics report (requires diag provider)

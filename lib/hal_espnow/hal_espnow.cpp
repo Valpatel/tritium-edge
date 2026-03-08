@@ -2,6 +2,11 @@
 #include "debug_log.h"
 #include <cstring>
 #include <cstdio>
+#include <cstdarg>
+
+#if defined(ENABLE_DIAG)
+#include "hal_diag.h"
+#endif
 
 static constexpr uint8_t MESH_MAGIC = 0xE5;
 static constexpr const char* TAG = "espnow";
@@ -53,6 +58,8 @@ void EspNowHAL::onSendStatic(const uint8_t* mac, uint8_t status) {
         _instance->_stats.tx_fail++;
         DBG_DEBUG(TAG, "Send failed to %02X:%02X:%02X:%02X:%02X:%02X",
                   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        _instance->logDiagEvent("Send failed to %02X:%02X:%02X:%02X:%02X:%02X",
+                                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     }
 }
 
@@ -99,11 +106,15 @@ bool EspNowHAL::init(EspNowRole role, uint8_t channel) {
 
     resetStats();
     _lastDiscoveryMs = millis();
+    _initTimeMs = millis();
+    _prevPeerCount = 0;
     _ready = true;
 
     DBG_INFO(TAG, "Init OK, role=%d ch=%d MAC=%02X:%02X:%02X:%02X:%02X:%02X",
              (int)_role, _channel,
              _mac[0], _mac[1], _mac[2], _mac[3], _mac[4], _mac[5]);
+
+    logDiagEvent("Mesh init OK, role=%d ch=%d", (int)_role, _channel);
     return true;
 }
 
@@ -121,6 +132,7 @@ void EspNowHAL::deinit() {
 
     if (_instance == this) _instance = nullptr;
     DBG_INFO(TAG, "Deinitialized");
+    logDiagEvent("Mesh deinitialized");
 }
 
 bool EspNowHAL::isReady() const { return _ready; }
@@ -308,6 +320,9 @@ void EspNowHAL::updatePeer(const uint8_t mac[6], int8_t rssi,
         DBG_INFO(TAG, "New peer: %02X:%02X:%02X:%02X:%02X:%02X rssi=%d hops=%d direct=%d",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
                  rssi, hopCount, isDirect);
+        logDiagEvent("Peer connected: %02X:%02X:%02X:%02X:%02X:%02X rssi=%d hops=%d",
+                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                     rssi, hopCount);
     }
 }
 
@@ -318,6 +333,9 @@ void EspNowHAL::expirePeers() {
             DBG_DEBUG(TAG, "Peer expired: %02X:%02X:%02X:%02X:%02X:%02X",
                       _peers[i].mac[0], _peers[i].mac[1], _peers[i].mac[2],
                       _peers[i].mac[3], _peers[i].mac[4], _peers[i].mac[5]);
+            logDiagEvent("Peer disconnected: %02X:%02X:%02X:%02X:%02X:%02X (expired)",
+                         _peers[i].mac[0], _peers[i].mac[1], _peers[i].mac[2],
+                         _peers[i].mac[3], _peers[i].mac[4], _peers[i].mac[5]);
 
             // Remove from ESP-NOW peer list
             esp_now_del_peer(_peers[i].mac);
@@ -379,6 +397,10 @@ void EspNowHAL::handleMeshPacket(const uint8_t* senderMac,
     switch (hdr->type) {
         case MeshMsgType::DATA:
             if (forUs || isBroadcast) {
+                logDiagEvent("Mesh DATA from %02X:%02X:%02X:%02X:%02X:%02X hops=%d len=%d",
+                             hdr->src[0], hdr->src[1], hdr->src[2],
+                             hdr->src[3], hdr->src[4], hdr->src[5],
+                             hdr->hop_count, payloadLen);
                 if (_meshCb) {
                     _meshCb(hdr->src, payload, payloadLen, hdr->hop_count);
                 }
@@ -496,7 +518,7 @@ void EspNowHAL::process() {
 
     uint32_t now = millis();
 
-    // Periodic discovery
+    // Periodic discovery (also serves as beacon/probe for neighbor discovery)
     if ((now - _lastDiscoveryMs) >= DISCOVERY_INTERVAL_MS) {
         _lastDiscoveryMs = now;
         meshDiscovery();
@@ -504,6 +526,9 @@ void EspNowHAL::process() {
 
     // Expire stale peers
     expirePeers();
+
+    // Check for peer count changes and log to diagnostics
+    checkPeerChanges();
 }
 
 // ---- Stats ----
@@ -512,6 +537,128 @@ EspNowHAL::Stats EspNowHAL::getStats() const { return _stats; }
 
 void EspNowHAL::resetStats() {
     memset(&_stats, 0, sizeof(_stats));
+}
+
+// ---- Diagnostics integration ----
+
+void EspNowHAL::logDiagEvent(const char* fmt, ...) {
+    if (!_diagEnabled) return;
+#if defined(ENABLE_DIAG)
+    char msg[128];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+    hal_diag::log(hal_diag::Severity::INFO, "mesh", "%s", msg);
+#else
+    (void)fmt;
+#endif
+}
+
+void EspNowHAL::checkPeerChanges() {
+    if (!_diagEnabled) return;
+    if (_peerCount != _prevPeerCount) {
+#if defined(ENABLE_DIAG)
+        hal_diag::log_value("mesh", "peer_count", (float)_peerCount, 0, ESPNOW_MAX_PEERS);
+#endif
+        _prevPeerCount = _peerCount;
+    }
+}
+
+void EspNowHAL::enableDiagLogging(bool enable) {
+    _diagEnabled = enable;
+    if (enable) {
+        DBG_INFO(TAG, "Diagnostic logging enabled");
+    }
+}
+
+EspNowHAL::MeshHealth EspNowHAL::getMeshHealth() const {
+    MeshHealth h = {};
+    h.peer_count = _peerCount;
+    h.msgs_sent = _stats.tx_count;
+    h.msgs_received = _stats.rx_count;
+    h.msgs_relayed = _stats.relay_count;
+    h.send_failures = _stats.tx_fail;
+    h.discovery_rounds = _stats.discovery_count;
+    h.uptime_ms = _ready ? (millis() - _initTimeMs) : 0;
+
+    // Packet loss rate
+    uint32_t totalAttempts = _stats.tx_count + _stats.tx_fail;
+    h.packet_loss_rate = (totalAttempts > 0)
+        ? (float)_stats.tx_fail / (float)totalAttempts
+        : 0.0f;
+
+    // Peer analysis
+    h.direct_peers = 0;
+    h.best_rssi = -127;
+    h.worst_rssi = 0;
+    float hopSum = 0;
+
+    if (_peerCount > 0) {
+        for (int i = 0; i < _peerCount; i++) {
+            if (_peers[i].is_direct) h.direct_peers++;
+            if (_peers[i].rssi > h.best_rssi) h.best_rssi = _peers[i].rssi;
+            if (_peers[i].rssi < h.worst_rssi) h.worst_rssi = _peers[i].rssi;
+            hopSum += _peers[i].hop_count;
+        }
+        h.avg_hop_count = hopSum / _peerCount;
+    } else {
+        h.best_rssi = 0;
+        h.worst_rssi = 0;
+        h.avg_hop_count = 0;
+    }
+
+    return h;
+}
+
+int EspNowHAL::meshToJson(char* buf, size_t size) const {
+    if (!buf || size < 64) return -1;
+
+    const char* roleStr = "node";
+    if (_role == EspNowRole::GATEWAY) roleStr = "gateway";
+    else if (_role == EspNowRole::LEAF) roleStr = "leaf";
+
+    int pos = snprintf(buf, size,
+        "{\"self\":{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+        "\"role\":\"%s\",\"channel\":%d},",
+        _mac[0], _mac[1], _mac[2], _mac[3], _mac[4], _mac[5],
+        roleStr, _channel);
+
+    // Peers array
+    pos += snprintf(buf + pos, size - pos, "\"peers\":[");
+    for (int i = 0; i < _peerCount && pos < (int)size - 128; i++) {
+        if (i > 0) buf[pos++] = ',';
+        uint32_t age = _ready ? (millis() - _peers[i].last_seen_ms) : 0;
+        pos += snprintf(buf + pos, size - pos,
+            "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+            "\"rssi\":%d,\"hops\":%d,\"direct\":%s,\"age_ms\":%lu}",
+            _peers[i].mac[0], _peers[i].mac[1], _peers[i].mac[2],
+            _peers[i].mac[3], _peers[i].mac[4], _peers[i].mac[5],
+            _peers[i].rssi, _peers[i].hop_count,
+            _peers[i].is_direct ? "true" : "false",
+            (unsigned long)age);
+    }
+    pos += snprintf(buf + pos, size - pos, "],");
+
+    // Stats
+    MeshHealth h = getMeshHealth();
+    pos += snprintf(buf + pos, size - pos,
+        "\"stats\":{\"tx\":%lu,\"rx\":%lu,\"relayed\":%lu,"
+        "\"tx_fail\":%lu,\"dup_dropped\":%lu,\"ttl_expired\":%lu,"
+        "\"discovery_rounds\":%lu,\"packet_loss_rate\":%.3f,"
+        "\"avg_hop_count\":%.2f,\"uptime_ms\":%lu}}",
+        (unsigned long)_stats.tx_count,
+        (unsigned long)_stats.rx_count,
+        (unsigned long)_stats.relay_count,
+        (unsigned long)_stats.tx_fail,
+        (unsigned long)_stats.dup_dropped,
+        (unsigned long)_stats.ttl_expired,
+        (unsigned long)_stats.discovery_count,
+        h.packet_loss_rate,
+        h.avg_hop_count,
+        (unsigned long)h.uptime_ms);
+
+    return pos;
 }
 
 // ---- Test harness ----
@@ -687,5 +834,19 @@ void EspNowHAL::expirePeers() {}
 void EspNowHAL::buildMeshHeader(MeshHeader&, MeshMsgType, const uint8_t[6], uint8_t) {}
 bool EspNowHAL::relayPacket(const uint8_t*, uint8_t) { return false; }
 void EspNowHAL::handleMeshPacket(const uint8_t*, const uint8_t*, int, int8_t) {}
+
+// Diagnostics stubs
+void EspNowHAL::logDiagEvent(const char*, ...) {}
+void EspNowHAL::checkPeerChanges() {}
+void EspNowHAL::enableDiagLogging(bool) {}
+
+EspNowHAL::MeshHealth EspNowHAL::getMeshHealth() const {
+    return MeshHealth{};
+}
+
+int EspNowHAL::meshToJson(char* buf, size_t size) const {
+    if (!buf || size < 32) return -1;
+    return snprintf(buf, size, "{\"self\":{},\"peers\":[],\"stats\":{}}");
+}
 
 #endif // SIMULATOR
