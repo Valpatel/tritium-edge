@@ -560,6 +560,28 @@ ProvisionHAL::TestResult ProvisionHAL::runTest() {
     return r;
 }
 
+// --- BLE provisioning stubs (simulator — no real BLE) ---
+bool ProvisionHAL::startBLEProvision() {
+    DBG_INFO(TAG, "BLE provisioning not available in simulator");
+    return false;
+}
+
+void ProvisionHAL::stopBLEProvision() {}
+
+bool ProvisionHAL::isBLEProvisionActive() const { return false; }
+
+bool ProvisionHAL::processBLEProvision() { return false; }
+
+// --- Web provisioning stubs (simulator) ---
+bool ProvisionHAL::startWebProvision() {
+    DBG_INFO(TAG, "Web provisioning not available in simulator");
+    return false;
+}
+
+void ProvisionHAL::stopWebProvision() {}
+
+bool ProvisionHAL::isWebProvisionActive() const { return false; }
+
 // ============================================================================
 // ESP32 — real LittleFS + SD_MMC
 // ============================================================================
@@ -1048,6 +1070,323 @@ ProvisionHAL::TestResult ProvisionHAL::runTest() {
     DBG_INFO(TAG, "All passed: %s, Duration: %u ms", allPassed ? "YES" : "NO", r.test_duration_ms);
 
     return r;
+}
+
+// ============================================================================
+// BLE Provisioning — NimBLE GATT service
+// Created by Matthew Valancy / Copyright 2026 Valpatel Software LLC
+// Licensed under AGPL-3.0
+// ============================================================================
+#if defined(ENABLE_BLE)
+
+#include <esp_mac.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLE2902.h>
+#include <Preferences.h>
+
+// Provisioning service UUIDs (from COMMISSIONING.md spec)
+static const char* PROV_SERVICE_UUID = "00001234-0000-1000-8000-00805f9b34fb";
+static const char* PROV_CHAR_UUID    = "00001235-0000-1000-8000-00805f9b34fb";
+
+// Forward declarations for NimBLE callbacks
+static BLEServer* s_provServer = nullptr;
+static BLECharacteristic* s_provChar = nullptr;
+static bool s_provConnected = false;
+static bool s_provComplete = false;
+static ProvisionHAL* s_provInstance = nullptr;
+
+// Tracks whether a complete JSON payload has been received
+static char s_provJsonBuf[4096] = {};
+static size_t s_provJsonLen = 0;
+
+// Braces depth tracker for detecting complete JSON
+static int s_braceDepth = 0;
+static bool s_inString = false;
+static bool s_escape = false;
+
+static void _resetJsonParser() {
+    s_provJsonLen = 0;
+    s_braceDepth = 0;
+    s_inString = false;
+    s_escape = false;
+    memset(s_provJsonBuf, 0, sizeof(s_provJsonBuf));
+}
+
+// Track brace nesting to detect complete JSON objects
+static bool _appendAndCheckComplete(const char* data, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if (s_provJsonLen >= sizeof(s_provJsonBuf) - 1) {
+            Serial.printf("[provision] BLE JSON buffer overflow, resetting\n");
+            _resetJsonParser();
+            return false;
+        }
+        char c = data[i];
+        s_provJsonBuf[s_provJsonLen++] = c;
+
+        if (s_escape) {
+            s_escape = false;
+            continue;
+        }
+        if (c == '\\' && s_inString) {
+            s_escape = true;
+            continue;
+        }
+        if (c == '"') {
+            s_inString = !s_inString;
+            continue;
+        }
+        if (!s_inString) {
+            if (c == '{') s_braceDepth++;
+            else if (c == '}') {
+                s_braceDepth--;
+                if (s_braceDepth == 0 && s_provJsonLen > 1) {
+                    s_provJsonBuf[s_provJsonLen] = '\0';
+                    return true;  // Complete JSON object received
+                }
+            }
+        }
+    }
+    return false;
+}
+
+class ProvBLEServerCallbacks : public BLEServerCallbacks {
+    void onConnect(BLEServer* server) override {
+        s_provConnected = true;
+        Serial.printf("[provision] BLE client connected\n");
+    }
+    void onDisconnect(BLEServer* server) override {
+        s_provConnected = false;
+        Serial.printf("[provision] BLE client disconnected\n");
+        if (!s_provComplete) {
+            // Re-advertise if provisioning didn't complete
+            server->startAdvertising();
+        }
+    }
+};
+
+class ProvBLECharCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* characteristic) override {
+        std::string val = characteristic->getValue();
+        if (val.empty()) return;
+
+        Serial.printf("[provision] BLE chunk received: %zu bytes\n", val.length());
+
+        bool complete = _appendAndCheckComplete(val.c_str(), val.length());
+        if (complete) {
+            Serial.printf("[provision] Complete JSON received (%zu bytes)\n", s_provJsonLen);
+            s_provComplete = true;
+        }
+    }
+};
+
+bool ProvisionHAL::startBLEProvision() {
+    if (_bleActive) {
+        DBG_WARN(TAG, "BLE provisioning already active");
+        return true;
+    }
+
+    s_provInstance = this;
+    s_provComplete = false;
+    s_provConnected = false;
+    _resetJsonParser();
+
+    // Generate device name from MAC for discoverability
+    char devName[32];
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_BT);
+    snprintf(devName, sizeof(devName), "Tritium-%02X%02X", mac[4], mac[5]);
+
+    BLEDevice::init(devName);
+    s_provServer = BLEDevice::createServer();
+    s_provServer->setCallbacks(new ProvBLEServerCallbacks());
+
+    BLEService* service = s_provServer->createService(PROV_SERVICE_UUID);
+
+    s_provChar = service->createCharacteristic(
+        PROV_CHAR_UUID,
+        BLECharacteristic::PROPERTY_WRITE |
+        BLECharacteristic::PROPERTY_WRITE_NR |
+        BLECharacteristic::PROPERTY_NOTIFY
+    );
+    s_provChar->addDescriptor(new BLE2902());
+    s_provChar->setCallbacks(new ProvBLECharCallbacks());
+
+    service->start();
+
+    BLEAdvertising* advertising = BLEDevice::getAdvertising();
+    advertising->addServiceUUID(PROV_SERVICE_UUID);
+    advertising->setScanResponse(true);
+    advertising->setMinPreferred(0x06);
+    BLEDevice::startAdvertising();
+
+    _bleActive = true;
+    DBG_INFO(TAG, "BLE provisioning started — advertising as \"%s\"", devName);
+    DBG_INFO(TAG, "Service: %s", PROV_SERVICE_UUID);
+    return true;
+}
+
+void ProvisionHAL::stopBLEProvision() {
+    if (!_bleActive) return;
+
+    BLEDevice::deinit(true);
+    s_provServer = nullptr;
+    s_provChar = nullptr;
+    s_provConnected = false;
+    s_provComplete = false;
+    s_provInstance = nullptr;
+    _resetJsonParser();
+
+    _bleActive = false;
+    DBG_INFO(TAG, "BLE provisioning stopped");
+}
+
+bool ProvisionHAL::isBLEProvisionActive() const {
+    return _bleActive;
+}
+
+bool ProvisionHAL::processBLEProvision() {
+    if (!_bleActive) return false;
+    if (!s_provComplete) return false;
+
+    // We have a complete JSON payload — parse it
+    DBG_INFO(TAG, "Processing BLE provision payload");
+
+    char cmd[32] = {};
+    jsonGetString(s_provJsonBuf, "cmd", cmd, sizeof(cmd));
+
+    if (strcmp(cmd, "provision") != 0) {
+        DBG_ERROR(TAG, "Unknown BLE command: \"%s\"", cmd);
+        // Notify client of error
+        if (s_provChar && s_provConnected) {
+            const char* err = "{\"status\":\"error\",\"msg\":\"Unknown command\"}";
+            s_provChar->setValue((uint8_t*)err, strlen(err));
+            s_provChar->notify();
+        }
+        _resetJsonParser();
+        s_provComplete = false;
+        return false;
+    }
+
+    // Extract provisioning fields
+    char ssid[64] = {};
+    char password[64] = {};
+    char serverUrl[256] = {};
+    char deviceName[64] = {};
+    char deviceId[64] = {};
+    char mqttBroker[128] = {};
+    int mqttPort = 8883;
+
+    jsonGetString(s_provJsonBuf, "ssid", ssid, sizeof(ssid));
+    jsonGetString(s_provJsonBuf, "password", password, sizeof(password));
+    jsonGetString(s_provJsonBuf, "server_url", serverUrl, sizeof(serverUrl));
+    jsonGetString(s_provJsonBuf, "device_name", deviceName, sizeof(deviceName));
+    jsonGetString(s_provJsonBuf, "device_id", deviceId, sizeof(deviceId));
+    jsonGetString(s_provJsonBuf, "mqtt_broker", mqttBroker, sizeof(mqttBroker));
+    jsonGetInt(s_provJsonBuf, "mqtt_port", &mqttPort);
+
+    // Validate — at minimum we need an SSID
+    if (ssid[0] == '\0') {
+        DBG_ERROR(TAG, "BLE provision missing required field: ssid");
+        if (s_provChar && s_provConnected) {
+            const char* err = "{\"status\":\"error\",\"msg\":\"Missing ssid\"}";
+            s_provChar->setValue((uint8_t*)err, strlen(err));
+            s_provChar->notify();
+        }
+        _resetJsonParser();
+        s_provComplete = false;
+        return false;
+    }
+
+    DBG_INFO(TAG, "BLE provision: ssid=\"%s\" server=\"%s\" name=\"%s\"",
+             ssid, serverUrl, deviceName);
+
+    // Save WiFi credentials to NVS via Preferences
+    {
+        Preferences prefs;
+        prefs.begin("ble_prov", false);
+        prefs.putString("ssid", ssid);
+        prefs.putString("password", password);
+        if (serverUrl[0]) prefs.putString("server_url", serverUrl);
+        if (deviceName[0]) prefs.putString("dev_name", deviceName);
+        prefs.end();
+        DBG_INFO(TAG, "WiFi credentials saved to NVS");
+    }
+
+    // Also save as factory WiFi JSON for hal_wifi pickup
+    {
+        char wifiJson[256];
+        snprintf(wifiJson, sizeof(wifiJson),
+                 "{\"ssid\":\"%s\",\"password\":\"%s\"}", ssid, password);
+        _parseFactoryWifiJson(wifiJson);
+        DBG_INFO(TAG, "Factory WiFi config saved");
+    }
+
+    // Update device identity if fields provided
+    if (deviceId[0]) {
+        strncpy(_identity.device_id, deviceId, sizeof(_identity.device_id) - 1);
+    }
+    if (deviceName[0]) {
+        strncpy(_identity.device_name, deviceName, sizeof(_identity.device_name) - 1);
+    }
+    if (serverUrl[0]) {
+        strncpy(_identity.server_url, serverUrl, sizeof(_identity.server_url) - 1);
+    }
+    if (mqttBroker[0]) {
+        strncpy(_identity.mqtt_broker, mqttBroker, sizeof(_identity.mqtt_broker) - 1);
+    }
+    _identity.mqtt_port = (uint16_t)mqttPort;
+    _identity.provisioned = true;
+    _saveIdentity();
+
+    // Notify client of success
+    if (s_provChar && s_provConnected) {
+        const char* ok = "{\"status\":\"ok\",\"msg\":\"Provisioned — rebooting\"}";
+        s_provChar->setValue((uint8_t*)ok, strlen(ok));
+        s_provChar->notify();
+    }
+
+    DBG_INFO(TAG, "BLE provisioning complete — rebooting in 2 seconds");
+
+    // Short delay to allow notification delivery, then disconnect and reboot
+    delay(2000);
+    stopBLEProvision();
+    delay(500);
+    ESP.restart();
+
+    // Unreachable, but satisfy return type
+    return true;
+}
+
+#else  // !ENABLE_BLE
+
+bool ProvisionHAL::startBLEProvision() {
+    DBG_WARN(TAG, "BLE provisioning not available (ENABLE_BLE not defined)");
+    return false;
+}
+
+void ProvisionHAL::stopBLEProvision() {}
+
+bool ProvisionHAL::isBLEProvisionActive() const { return false; }
+
+bool ProvisionHAL::processBLEProvision() { return false; }
+
+#endif  // ENABLE_BLE
+
+// ============================================================================
+// Web provisioning stubs (ESP32 — not yet implemented)
+// ============================================================================
+bool ProvisionHAL::startWebProvision() {
+    DBG_WARN(TAG, "Web provisioning not yet implemented");
+    return false;
+}
+
+void ProvisionHAL::stopWebProvision() {
+    _webActive = false;
+}
+
+bool ProvisionHAL::isWebProvisionActive() const {
+    return _webActive;
 }
 
 #endif // SIMULATOR
