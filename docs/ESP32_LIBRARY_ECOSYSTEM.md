@@ -26,6 +26,9 @@ Reference document mapping the essential libraries, frameworks, and tools availa
 14. [Protocol Buffers / Serialization](#14-protocol-buffers--serialization)
 15. [Testing](#15-testing)
 16. [Self-Seeding SD Card](#16-self-seeding-sd-card)
+17. [Acoustic Modem / Data-over-Audio](#17-acoustic-modem--data-over-audio)
+18. [Offline GIS / Map Tiles](#18-offline-gis--map-tiles)
+19. [Fleet Management (Commercial Reference)](#19-fleet-management-commercial-reference)
 
 ---
 
@@ -744,6 +747,85 @@ lib_deps =
 
 ---
 
+## 17. Acoustic Modem / Data-over-Audio
+
+### ESP32Modem
+
+| | |
+|---|---|
+| **Source** | https://github.com/mikegofton/ESP32Modem |
+| **What it does** | ASK/FSK modulation using ESP32 LEDC (LED PWM) hardware |
+| **Status** | Evaluated — our `hal_acoustic_modem` uses I2S instead for bidirectional audio (speaker + mic) |
+
+### SoftModem
+
+| | |
+|---|---|
+| **Source** | https://github.com/arms22/SoftModem |
+| **What it does** | Bell 202-like FSK encoding at 1225 bps via audio jack |
+| **Status** | Reference only — ATmega focused, not ESP32 native |
+
+**Why custom over ESP32Modem:** ESP32Modem uses LEDC PWM (output-only). Our
+acoustic modem needs bidirectional I2S for both transmission (speaker) and
+reception (microphone). The I2S approach also gives us better frequency control
+and DMA-based buffer management.
+
+---
+
+## 18. Offline GIS / Map Tiles
+
+### IceNav-v3
+
+| | |
+|---|---|
+| **Source** | https://github.com/jgauchia/IceNav-v3 |
+| **What it does** | Full GPS navigator with offline OSM tiles on SD card, LVGL 9 + LovyanGFX |
+| **Status** | Reference — same tile format (`{z}/{x}/{y}.png`), same display stack |
+
+Uses standard OSM slippy map tile layout. Includes mass-copy scripts optimized for
+small-file SD card transfers. Supports zoom levels 6-17 via Maperitive tile generation.
+
+### OpenStreetMap-esp32
+
+| | |
+|---|---|
+| **Source** | https://github.com/CelliesProjects/OpenStreetMap-esp32 |
+| **What it does** | Online tile fetching with PSRAM LRU cache, LovyanGFX sprite output |
+| **Status** | Candidate for online tile download + caching to SD |
+
+Dual-core tile decode, 128KB per 256px tile in PSRAM. Could complement our offline
+`hal_gis` by downloading tiles on first access when WiFi is available.
+
+### ESP32_GPS
+
+| | |
+|---|---|
+| **Source** | https://github.com/aresta/ESP32_GPS |
+| **What it does** | Vector map rendering from OSM PBF extracts, custom binary format |
+| **Status** | Reference — vector approach uses less storage than raster tiles |
+
+---
+
+## 19. Fleet Management (Commercial Reference)
+
+### Golioth
+
+| | |
+|---|---|
+| **Source** | https://golioth.io |
+| **What it does** | Commercial fleet management for ESP-IDF devices — OTA, logging, settings |
+| **Status** | Competitive reference — Tritium does this open-source and self-hosted |
+
+### Espressif ESP-MDF
+
+| | |
+|---|---|
+| **Source** | https://github.com/espressif/esp-mdf |
+| **What it does** | ESP32 mesh networking framework (ESP-IDF only, not Arduino) |
+| **Status** | Reference — we use ESP-NOW mesh instead (works with Arduino framework) |
+
+---
+
 ## Decision Log
 
 | Decision | Choice | Rationale |
@@ -758,3 +840,6 @@ lib_deps =
 | OTA | Custom hal_ota over ArduinoOTA | Rollback, verification, multi-source (WiFi/SD/BLE) |
 | Sensor drivers | Custom HALs over Adafruit | Smaller, dual-mode I2C, no dependency chains |
 | Voice | MFCC/DTW over esp-sr | Works with Arduino framework, no ESP-IDF dependency |
+| Acoustic modem | Custom I2S over ESP32Modem | Bidirectional (speaker+mic), DMA buffers, better frequency control |
+| GIS tiles | Custom hal_gis over IceNav | Same tile format, but decoupled from GPS/nav — pure tile serving and caching |
+| Fleet management | Custom server over Golioth | Self-hosted, open source, no cloud dependency |

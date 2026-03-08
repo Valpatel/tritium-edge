@@ -215,3 +215,18 @@ gis.exportRegion("streets", myBounds, 12, 16, [](const GisTile& tile,
 This enables the "self-replicating data" vision: nodes carry more map data than
 they can process, and share tiles with nearby nodes that need coverage for their
 current location.
+
+## Related Projects
+
+| Project | Description | Relevance |
+|---------|-------------|-----------|
+| [IceNav-v3](https://github.com/jgauchia/IceNav-v3) | ESP32-S3 GPS navigator with offline OSM tiles. Uses LovyanGFX + LVGL 9, PSRAM tile cache, SD card storage in `{z}/{x}/{y}.png` format. | Same tile format, same display stack. Their mass-copy script and Maperitive tile generation workflow (zoom 6-17) are directly applicable. |
+| [OpenStreetMap-esp32](https://github.com/CelliesProjects/OpenStreetMap-esp32) | PlatformIO library for online OSM tile fetching with PSRAM LRU cache and LovyanGFX sprite output. | Could serve as online tile fetcher when WiFi is available — download tiles on first access, cache to SD. Dual-core tile decode. |
+| [ESP32_GPS](https://github.com/aresta/ESP32_GPS) | GPS device with custom vector map format from OSM PBF extracts on SD card. | Vector approach uses less storage than raster tiles. Worth evaluating for low-zoom overview maps. |
+
+### IceNav Tile Compatibility
+
+Our `hal_gis` tile path format (`{layer}/{z}/{x}/{y}.png`) is compatible with
+IceNav's tile storage. Tiles prepared for IceNav work with Tritium by placing them
+under the appropriate layer directory (e.g., `/sdcard/gis/streets/`). The
+`manifest.json` can be regenerated with `gis.writeManifest()` after adding tiles.
