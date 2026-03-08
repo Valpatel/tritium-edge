@@ -107,30 +107,58 @@ static const char NAV_HTML[] PROGMEM = R"rawliteral(
 static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ESP32 Dashboard</title>
+<title>Tritium Node</title>
 %THEME%
-<script>
-setTimeout(function(){location.reload()},5000);
-</script>
+<style>
+.glow{text-shadow:0 0 10px #00ffd044,0 0 20px #00ffd022}
+.metric{display:inline-block;text-align:center;padding:12px;min-width:120px}
+.metric .val{font-size:24px;color:#00ffd0;font-weight:bold}
+.metric .lbl{font-size:11px;color:#666;text-transform:uppercase;margin-top:4px}
+.grid{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.pulse{animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.scanline{position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;
+  background:repeating-linear-gradient(transparent,transparent 2px,rgba(0,255,208,0.015) 2px,rgba(0,255,208,0.015) 4px);z-index:999}
+</style>
 </head><body>
+<div class="scanline"></div>
 %NAV%
-<h1>// System Dashboard</h1>
+<h1 class="glow">// TRITIUM NODE</h1>
 <div class="card">
+<div class="grid">
+  <div class="metric"><div class="val" id="v_uptime">%UPTIME%</div><div class="lbl">Uptime</div></div>
+  <div class="metric"><div class="val" id="v_heap">%HEAP%</div><div class="lbl">Free Heap</div></div>
+  <div class="metric"><div class="val" id="v_rssi">%RSSI%</div><div class="lbl">WiFi dBm</div></div>
+  <div class="metric"><div class="val" id="v_reqs">%REQCOUNT%</div><div class="lbl">Requests</div></div>
+</div>
+</div>
+<div class="card">
+<h2>Node Identity</h2>
 <table>
-<tr><th>Parameter</th><th>Value</th></tr>
-<tr><td>Board</td><td>%BOARD%</td></tr>
-<tr><td>MAC Address</td><td>%MAC%</td></tr>
-<tr><td>IP Address</td><td>%IP%</td></tr>
-<tr><td>Uptime</td><td>%UPTIME%</td></tr>
-<tr><td>Free Heap</td><td>%HEAP% bytes</td></tr>
-<tr><td>PSRAM Total</td><td>%PSRAM_TOTAL% bytes</td></tr>
-<tr><td>PSRAM Free</td><td>%PSRAM_FREE% bytes</td></tr>
-<tr><td>WiFi RSSI</td><td>%RSSI% dBm
-  <div class="bar-bg"><div class="bar-fill" style="width:%RSSI_PCT%%"></div></div>
+<tr><td class="label">Board</td><td>%BOARD%</td></tr>
+<tr><td class="label">MAC</td><td style="font-family:monospace">%MAC%</td></tr>
+<tr><td class="label">IP</td><td>%IP%</td></tr>
+<tr><td class="label">PSRAM</td><td><span id="v_psram">%PSRAM_FREE%</span> / %PSRAM_TOTAL% bytes</td></tr>
+<tr><td class="label">Signal</td><td>
+  <div class="bar-bg" style="width:200px"><div class="bar-fill" id="v_rssi_bar" style="width:%RSSI_PCT%%"></div></div>
 </td></tr>
-<tr><td>Requests Served</td><td>%REQCOUNT%</td></tr>
 </table>
 </div>
+<script>
+function fmt(n){return n>1048576?(n/1048576).toFixed(1)+'M':n>1024?(n/1024).toFixed(0)+'K':n}
+function uptimeFmt(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d+'d '+h+'h '+m+'m'}
+setInterval(function(){
+  fetch('/api/status').then(r=>r.json()).then(d=>{
+    document.getElementById('v_uptime').textContent=uptimeFmt(d.uptime_s);
+    document.getElementById('v_heap').textContent=fmt(d.free_heap);
+    document.getElementById('v_rssi').textContent=d.rssi;
+    document.getElementById('v_reqs').textContent=d.requests;
+    document.getElementById('v_psram').textContent=fmt(d.psram_free);
+    var pct=Math.min(100,Math.max(0,2*(d.rssi+100)));
+    document.getElementById('v_rssi_bar').style.width=pct+'%';
+  });
+},3000);
+</script>
 </body></html>
 )rawliteral";
 
