@@ -334,3 +334,86 @@ def test_fleet_health_report_infra_anomalies(client):
     assert len(data["infrastructure_anomalies"]) >= 1
     infra_types = [a["type"] for a in data["infrastructure_anomalies"]]
     assert "wifi_degradation" in infra_types
+
+
+def test_fleet_health_report_i2c_slaves(client):
+    """Health report includes per-slave I2C data."""
+    client.post("/api/devices/i2c-node/diag", json={
+        "health": {
+            "free_heap": 120000,
+            "min_free_heap": 100000,
+            "free_psram": 4000000,
+            "largest_block": 80000,
+            "wifi_connected": True,
+            "i2c_slaves": [
+                {"addr": "0x34", "ok": 100, "nack": 2, "timeout": 1, "lat_us": 50},
+                {"addr": "0x6B", "ok": 95, "nack": 0, "timeout": 5, "lat_us": 120},
+            ],
+        },
+        "anomalies": [],
+    })
+    resp = client.get("/api/fleet/health-report")
+    data = resp.json()
+    assert data["total_nodes"] == 1
+    node = data["nodes"][0]
+    assert "i2c_slaves" in node
+    assert len(node["i2c_slaves"]) == 2
+    assert node["i2c_slaves"][0]["addr"] == "0x34"
+    assert node["i2c_slaves"][0]["rate"] > 0.9
+
+
+def test_fleet_health_report_camera_metrics(client):
+    """Health report includes camera metrics when available."""
+    client.post("/api/devices/cam-node/diag", json={
+        "health": {
+            "free_heap": 120000,
+            "min_free_heap": 100000,
+            "free_psram": 4000000,
+            "largest_block": 80000,
+            "wifi_connected": True,
+            "camera": {
+                "frames": 1500,
+                "fails": 3,
+                "last_us": 45000,
+                "max_us": 120000,
+                "avg_fps": 3.8,
+            },
+        },
+        "anomalies": [],
+    })
+    resp = client.get("/api/fleet/health-report")
+    data = resp.json()
+    node = data["nodes"][0]
+    assert "camera" in node
+    assert node["camera"]["frames"] == 1500
+    assert node["camera"]["avg_fps"] == 3.8
+
+
+def test_fleet_health_report_node_details(client):
+    """Health report nodes include extended fields."""
+    client.post("/api/devices/detail-node/diag", json={
+        "health": {
+            "free_heap": 150000,
+            "min_free_heap": 120000,
+            "free_psram": 4000000,
+            "largest_block": 100000,
+            "battery_pct": 72.5,
+            "wifi_rssi": -55,
+            "wifi_connected": True,
+            "i2c_errors": 3,
+            "uptime_s": 7200,
+            "reboot_count": 1,
+        },
+        "anomalies": [],
+        "board": "touch-lcd-35bc",
+        "version": "1.2.0",
+    })
+    resp = client.get("/api/fleet/health-report")
+    data = resp.json()
+    node = data["nodes"][0]
+    assert node["min_free_heap"] == 120000
+    assert node["battery_pct"] == 72.5
+    assert node["i2c_errors"] == 3
+    assert node["reboot_count"] == 1
+    assert node["board"] == "touch-lcd-35bc"
+    assert node["version"] == "1.2.0"
