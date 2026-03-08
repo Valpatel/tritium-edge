@@ -314,6 +314,12 @@ static void services_init() {
                 Serial.printf("[tritium] Diagnostics: power provider wired\n");
             }
 #endif
+
+            // Touch, camera, and NTP providers are wired by the app
+            // when it initializes these peripherals. See:
+            //   hal_diag::set_touch_provider()
+            //   hal_diag::set_camera_provider()
+            //   hal_diag::set_ntp_provider()
         } else {
             Serial.printf("[tritium] Diagnostics: init failed\n");
         }
