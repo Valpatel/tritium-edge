@@ -61,8 +61,8 @@ static StarfieldApp app_instance;
 
 static App* app = &app_instance;
 
-// Serial command buffer for board identification
-static char _cmd_buf[32];
+// Serial command buffer
+static char _cmd_buf[128];
 static uint8_t _cmd_idx = 0;
 
 static void handleSerialCommands() {
@@ -81,7 +81,6 @@ static void handleSerialCommands() {
                 Serial.printf("[sd] Formatting SD card...\n");
                 SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
                 if (SD_MMC.begin("/sdcard", true)) {  // 1-bit mode
-                    // Delete all files in root
                     File root = SD_MMC.open("/");
                     if (root) {
                         File f = root.openNextFile();
@@ -101,6 +100,36 @@ static void handleSerialCommands() {
                     SD_MMC.end();
                 } else {
                     Serial.printf("[sd] Could not mount SD card\n");
+                }
+            }
+#endif
+#if defined(ENABLE_BLE_SCANNER)
+            // BLE_ADD AA:BB:CC:DD:EE:FF Label — register a known BLE device
+            else if (strncmp(_cmd_buf, "BLE_ADD ", 8) == 0) {
+                unsigned int a[6];
+                char label[32] = {};
+                if (sscanf(_cmd_buf + 8, "%x:%x:%x:%x:%x:%x %31[^\n]",
+                           &a[0], &a[1], &a[2], &a[3], &a[4], &a[5], label) >= 6) {
+                    uint8_t addr[6] = {(uint8_t)a[0],(uint8_t)a[1],(uint8_t)a[2],
+                                       (uint8_t)a[3],(uint8_t)a[4],(uint8_t)a[5]};
+                    hal_ble_scanner::add_known_device(addr, label[0] ? label : "known");
+                    Serial.printf("[ble] Added known: %02X:%02X:%02X:%02X:%02X:%02X = %s\n",
+                                  a[0],a[1],a[2],a[3],a[4],a[5], label[0] ? label : "known");
+                } else {
+                    Serial.printf("[ble] Usage: BLE_ADD AA:BB:CC:DD:EE:FF Label\n");
+                }
+            }
+            else if (strcmp(_cmd_buf, "BLE_LIST") == 0) {
+                BleDevice devs[16];
+                int n = hal_ble_scanner::get_devices(devs, 16);
+                Serial.printf("[ble] %d devices:\n", n);
+                for (int i = 0; i < n; i++) {
+                    Serial.printf("  %02X:%02X:%02X:%02X:%02X:%02X rssi=%d seen=%lu %s%s\n",
+                        devs[i].addr[0],devs[i].addr[1],devs[i].addr[2],
+                        devs[i].addr[3],devs[i].addr[4],devs[i].addr[5],
+                        devs[i].rssi, (unsigned long)devs[i].seen_count,
+                        devs[i].is_known ? "[KNOWN] " : "",
+                        devs[i].name);
                 }
             }
 #endif
