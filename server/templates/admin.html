@@ -996,6 +996,51 @@ function formatEventTime(ts) {
   } catch(e) { return '--'; }
 }
 
+// Sparkline SVG chart
+function sparklineSVG(values, opts) {
+  opts = opts || {};
+  var w = opts.width || 200, h = opts.height || 40;
+  var color = opts.color || 'var(--cyan)';
+  if (!values || values.length < 2) return '<span style="color:var(--text-dim)">--</span>';
+  var min = Math.min.apply(null, values);
+  var max = Math.max.apply(null, values);
+  var range = max - min || 1;
+  var step = w / (values.length - 1);
+  var points = values.map(function(v, i) {
+    var x = Math.round(i * step);
+    var y = Math.round(h - ((v - min) / range) * (h - 4) - 2);
+    return x + ',' + y;
+  }).join(' ');
+  var last = values[values.length - 1];
+  return '<svg width="' + w + '" height="' + h + '" style="vertical-align:middle">' +
+    '<polyline points="' + points + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round" />' +
+    '</svg>' +
+    '<span style="font-size:10px;color:' + color + ';margin-left:4px">' +
+    (opts.format ? opts.format(last) : last) + '</span>';
+}
+
+// Load and render telemetry sparklines for a device
+async function loadDeviceTelemetry(deviceId) {
+  var el = document.getElementById('telemetry-' + deviceId);
+  if (!el) return;
+  el.innerHTML = '<span style="color:var(--text-dim)">Loading...</span>';
+  var data = await fetchJSON('/api/devices/' + encodeURIComponent(deviceId) + '/telemetry?limit=60');
+  if (!data || data.length < 2) {
+    el.innerHTML = '<span style="color:var(--text-dim)">No telemetry data yet.</span>';
+    return;
+  }
+  var heaps = data.map(function(p) { return p.free_heap || 0; });
+  var rssis = data.map(function(p) { return p.rssi || 0; });
+  var uptimes = data.map(function(p) { return p.uptime_s || 0; });
+  el.innerHTML =
+    '<div style="margin-bottom:8px"><span class="detail-label">Heap (last ' + data.length + ' points):</span><br>' +
+    sparklineSVG(heaps, {color:'var(--cyan)', format:function(v){return (v/1024).toFixed(0)+' KB'}}) + '</div>' +
+    '<div style="margin-bottom:8px"><span class="detail-label">WiFi RSSI:</span><br>' +
+    sparklineSVG(rssis, {color:'var(--green)', format:function(v){return v+' dBm'}}) + '</div>' +
+    '<div><span class="detail-label">Uptime:</span><br>' +
+    sparklineSVG(uptimes, {color:'var(--yellow)', format:function(v){return formatUptime(v)}}) + '</div>';
+}
+
 // API
 async function fetchJSON(url) {
   try {
@@ -1127,6 +1172,8 @@ function renderDeviceTable() {
           '<div><span class="detail-label">Capabilities:</span> <span class="detail-value">' + ((d.capabilities || []).join(', ') || '--') + '</span></div>' +
           '<div><span class="detail-label">BLE Devices:</span> <span class="detail-value">' + (d.ble_devices || []).length + '</span></div>' +
         '</div>' +
+        '<div style="margin-top:10px"><button class="ota-btn" style="padding:3px 10px;font-size:10px" onclick="loadDeviceTelemetry(\'' + did + '\')">Load Telemetry</button>' +
+        '<div id="telemetry-' + did + '" style="margin-top:8px"></div></div>' +
         (d.sensors ? '<div style="margin-top:10px"><span class="detail-label">Sensors:</span><pre style="color:var(--text);margin-top:4px;font-size:10px;max-height:150px;overflow:auto">' + escHtml(JSON.stringify(d.sensors, null, 2)) + '</pre></div>' : '') +
         ((d.ble_devices || []).length > 0 ?
           '<div style="margin-top:10px"><span class="detail-label">BLE Devices Seen:</span>' +
@@ -1854,6 +1901,26 @@ async function refreshDiagnostics() {
       '</tr>';
     }).join('');
   }
+}
+
+// Load diagnostic history sparklines for a node in the diagnostics view
+async function loadDiagHistory(deviceId) {
+  var data = await fetchJSON('/api/devices/' + encodeURIComponent(deviceId) + '/diag/history?limit=30');
+  if (!data || data.length < 2) return;
+  var heaps = data.map(function(p) { return (p.health && p.health.free_heap) || 0; });
+  var anomCounts = data.map(function(p) { return p.anomaly_count || 0; });
+  // Find existing row and append sparkline
+  var tbody = document.getElementById('diag-node-tbody');
+  var rows = tbody.querySelectorAll('tr');
+  rows.forEach(function(row) {
+    if (row.cells[0] && row.cells[0].textContent === deviceId) {
+      // Append mini sparkline after heap value
+      if (!row.dataset.charted) {
+        row.cells[1].innerHTML += '<br>' + sparklineSVG(heaps, {width:80, height:20, color:'var(--cyan)'});
+        row.dataset.charted = '1';
+      }
+    }
+  });
 }
 
 // Plugin Nav
