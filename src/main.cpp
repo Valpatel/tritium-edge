@@ -57,6 +57,15 @@ static bool _webserver_enabled = false;
 #if HAS_PMIC && __has_include("hal_power.h")
 #include "hal_power.h"
 #endif
+#if HAS_CAMERA && __has_include("hal_camera.h")
+#include "hal_camera.h"
+#endif
+#if __has_include("hal_touch.h")
+#include "hal_touch.h"
+#endif
+#if __has_include("hal_ntp.h")
+#include "hal_ntp.h"
+#endif
 static bool _diag_enabled = true;
 #else
 static bool _diag_enabled = false;
@@ -315,11 +324,65 @@ static void services_init() {
             }
 #endif
 
-            // Touch, camera, and NTP providers are wired by the app
-            // when it initializes these peripherals. See:
-            //   hal_diag::set_touch_provider()
-            //   hal_diag::set_camera_provider()
-            //   hal_diag::set_ntp_provider()
+            // Wire camera diagnostics on boards with camera hardware
+#if HAS_CAMERA && __has_include("hal_camera.h")
+            {
+                static CameraHAL _diag_camera;
+                if (_diag_camera.init(CamResolution::QVGA_320x240, CamPixelFormat::RGB565)) {
+                    hal_diag::set_camera_provider([](hal_diag::CameraInfo& out) -> bool {
+                        out.available    = _diag_camera.available();
+                        out.frame_count  = _diag_camera.getFrameCount();
+                        out.fail_count   = _diag_camera.getFailCount();
+                        out.last_capture_us = _diag_camera.getLastCaptureUs();
+                        out.max_capture_us  = _diag_camera.getMaxCaptureUs();
+                        out.avg_fps      = _diag_camera.getAvgFps();
+                        return true;
+                    });
+                    Serial.printf("[tritium] Diagnostics: camera provider wired\n");
+                }
+            }
+#endif
+
+            // Wire touch diagnostics on boards with touch pins
+#if __has_include("hal_touch.h") && defined(TOUCH_SDA)
+            {
+                static TouchHAL _diag_touch;
+#if defined(TOUCH_I2C_NUM) && TOUCH_I2C_NUM == 1
+                static TwoWire _touch_wire(1);
+                _touch_wire.begin(TOUCH_SDA, TOUCH_SCL);
+                _touch_wire.setClock(400000);
+                _diag_touch.init(_touch_wire);
+#else
+                _diag_touch.init(Wire);
+#endif
+                hal_diag::set_touch_provider([](bool& available) -> bool {
+                    available = _diag_touch.available();
+                    return true;
+                });
+                Serial.printf("[tritium] Diagnostics: touch provider wired (%s)\n",
+                              _diag_touch.available() ? "detected" : "not found");
+            }
+#endif
+
+            // Wire NTP diagnostics when WiFi is available
+#if __has_include("hal_ntp.h") && defined(ENABLE_WIFI)
+            {
+                static NtpHAL _diag_ntp;
+                _diag_ntp.init();
+                hal_diag::set_ntp_provider([](hal_diag::NtpInfo& out) -> bool {
+                    out.synced = _diag_ntp.isSynced();
+                    uint32_t last = _diag_ntp.getLastSyncEpoch();
+                    if (last > 0) {
+                        uint32_t now = _diag_ntp.getEpoch();
+                        out.last_sync_age_s = (now > last) ? (now - last) : 0;
+                    } else {
+                        out.last_sync_age_s = 0;
+                    }
+                    return true;
+                });
+                Serial.printf("[tritium] Diagnostics: NTP provider wired\n");
+            }
+#endif
         } else {
             Serial.printf("[tritium] Diagnostics: init failed\n");
         }
