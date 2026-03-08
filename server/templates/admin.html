@@ -702,6 +702,9 @@ body::after {
     <div class="nav-item" data-view="events">
       <span class="icon">&#9679;</span> Events
     </div>
+    <div class="nav-item" data-view="config-sync">
+      <span class="icon">&#8644;</span> Config Sync
+    </div>
     <div id="plugin-nav"></div>
   </div>
 
@@ -944,6 +947,23 @@ body::after {
       <div class="event-list" id="events-full" style="max-height: none;"></div>
     </div>
 
+    <!-- CONFIG SYNC VIEW -->
+    <div id="view-config-sync" class="view">
+      <div class="stat-cards" id="config-sync-stats"></div>
+      <div class="section-header">Drifted Devices</div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Device</th>
+            <th>Drift Count</th>
+            <th>Max Severity</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody id="config-sync-tbody"></tbody>
+      </table>
+    </div>
+
   </div>
 </div>
 
@@ -1102,6 +1122,7 @@ async function refreshView() {
     case 'provision': await refreshProvision(); break;
     case 'commands': await refreshCommands(); break;
     case 'diagnostics': await refreshDiagnostics(); break;
+    case 'config-sync': await refreshConfigSync(); break;
   }
   await refreshTopBar();
 }
@@ -1989,6 +2010,66 @@ async function loadDiagHistory(deviceId) {
       }
     }
   });
+}
+
+// ========================================================================
+// CONFIG SYNC
+// ========================================================================
+async function refreshConfigSync() {
+  var data = await fetchJSON('/api/fleet/config');
+  if (!data) return;
+
+  // Summary cards
+  var syncPct = data.sync_ratio != null ? (data.sync_ratio * 100).toFixed(1) + '%' : '--';
+  var syncColor = data.sync_ratio >= 0.9 ? 'green' : data.sync_ratio >= 0.5 ? 'yellow' : 'red';
+  var critColor = data.critical_drift_count > 0 ? 'red' : 'green';
+  var driftColor = data.drifted_count > 0 ? 'yellow' : 'green';
+
+  document.getElementById('config-sync-stats').innerHTML =
+    '<div class="stat-card"><div class="label">Total Devices</div><div class="value cyan">' + data.total_devices + '</div></div>' +
+    '<div class="stat-card"><div class="label">Synced</div><div class="value green">' + data.synced_count + '</div></div>' +
+    '<div class="stat-card"><div class="label">Drifted</div><div class="value ' + driftColor + '">' + data.drifted_count + '</div></div>' +
+    '<div class="stat-card"><div class="label">Critical Drifts</div><div class="value ' + critColor + '">' + data.critical_drift_count + '</div></div>' +
+    '<div class="stat-card"><div class="label">Sync Ratio</div><div class="value ' + syncColor + '">' + syncPct + '</div></div>';
+
+  // Drifted devices table
+  var tbody = document.getElementById('config-sync-tbody');
+  if (!data.drifted_devices || data.drifted_devices.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--green)">All devices in sync.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.drifted_devices.map(function(dev) {
+    var sevColor = dev.max_severity === 'critical' ? 'var(--red)' :
+                   dev.max_severity === 'moderate' ? 'var(--orange)' :
+                   dev.max_severity === 'minor' ? 'var(--yellow)' : 'var(--text-dim)';
+
+    var detailRows = dev.drifts.map(function(d) {
+      var dSevColor = d.severity === 'critical' ? 'var(--red)' :
+                      d.severity === 'moderate' ? 'var(--orange)' :
+                      d.severity === 'minor' ? 'var(--yellow)' : 'var(--text-dim)';
+      return '<tr style="background:rgba(0,255,208,0.02)">' +
+        '<td style="padding-left:40px;color:var(--text-dim)">' + escHtml(d.key) + '</td>' +
+        '<td style="color:var(--green)">' + escHtml(String(d.desired)) + '</td>' +
+        '<td style="color:var(--red)">' + escHtml(String(d.reported)) + '</td>' +
+        '<td style="color:' + dSevColor + '">' + escHtml(d.severity) + '</td>' +
+      '</tr>';
+    }).join('');
+
+    var detailTable = '<table class="data-table" style="margin:0;border:none">' +
+      '<thead><tr><th>Key</th><th>Desired</th><th>Reported</th><th>Severity</th></tr></thead>' +
+      '<tbody>' + detailRows + '</tbody></table>';
+
+    var detailId = 'config-drift-' + escHtml(dev.device_id).replace(/[^a-zA-Z0-9-]/g, '_');
+
+    return '<tr>' +
+      '<td style="color:var(--cyan)">' + escHtml(dev.device_id) + '</td>' +
+      '<td>' + dev.drift_count + '</td>' +
+      '<td style="color:' + sevColor + ';font-weight:bold">' + escHtml(dev.max_severity) + '</td>' +
+      '<td><button onclick="var el=document.getElementById(\'' + detailId + '\');el.style.display=el.style.display===\'none\'?\'table-row\':\'none\'" style="background:var(--bg-card);border:1px solid var(--border);color:var(--cyan);padding:2px 10px;cursor:pointer;border-radius:3px;font-family:var(--font);font-size:11px">Expand</button></td>' +
+    '</tr>' +
+    '<tr id="' + detailId + '" style="display:none"><td colspan="4" style="padding:8px 12px">' + detailTable + '</td></tr>';
+  }).join('');
 }
 
 // ========================================================================
