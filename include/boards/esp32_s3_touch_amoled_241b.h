@@ -9,7 +9,7 @@
 #define HAS_RTC             1
 #define HAS_AUDIO_CODEC     0
 #define HAS_PMIC            0
-#define HAS_SDCARD          0
+#define HAS_SDCARD          1
 #define HAS_CAMERA          0
 #define HAS_IO_EXPANDER     1
 
@@ -54,6 +54,12 @@
 // EXIO2 = Touch INT
 // EXIO3 = IMU INT1
 // EXIO4 = IMU INT2
+
+// ---- SD Card (SPI/SDMMC, direct GPIO) ----
+#define SD_MMC_D0           6   // MISO / DAT0
+#define SD_MMC_CMD          5   // MOSI / CMD
+#define SD_MMC_CLK          4   // SCK / CLK
+#define SD_SPI_CS           2   // CS (SPI mode)
 
 // ---- Battery ----
 #define BAT_PWR_EN          16  // Battery power enable

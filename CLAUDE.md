@@ -111,7 +111,10 @@ Run `make new-app NAME=myapp` to scaffold, or manually:
 - **Serial port permissions**: The Makefile auto-fixes `/dev/ttyACM0` permissions. If flashing manually, run `sudo chmod 666 /dev/ttyACM0` first, or add user to `dialout` group.
 - **ESP32-S3 native USB**: CDC-on-boot is enabled. Serial goes through native USB, not UART.
 - **PSRAM cache**: `-mfix-esp32-psram-cache-issue` build flag is required for stable PSRAM access.
-- **RGB parallel panel (43C-BOX)**: Uses `Bus_RGB` + `Panel_RGB`, different from QSPI boards.
+- **RGB parallel panel (43C-BOX)**: Uses `Bus_RGB` + `Panel_RGB`, different from QSPI boards. Display glitches when USB connected — PSRAM bus contention, hardware limitation. See `docs/KNOWN_ISSUES.md` EDGE-001.
+- **RGB565 byte order**: RGB parallel panels (43C-BOX) use native byte order. QSPI/SPI panels need byte-swapped RGB565. Boot sequence handles this with `_swap_bytes` flag.
+- **43C-BOX SD card**: Uses SPI mode (not SDMMC) with CS routed through CH422G IO expander EXIO4. Requires expander init before SD access.
+- **All 6 boards have SD cards**: 43C-BOX and 241B use SPI mode; 349, 35BC, 191M, 1.8 use SDMMC 1-bit mode.
 - **RM690B0 memory offset**: The 2.41-B panel has 452px memory width but 450px visible. Requires `offset_x = 16`.
 - **Reference code**: Official Waveshare demos are in `references/`. Repos are under `waveshareteam` GitHub org (not `waveshare`). Always check these when debugging display issues.
 

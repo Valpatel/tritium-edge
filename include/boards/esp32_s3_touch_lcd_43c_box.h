@@ -10,7 +10,7 @@
 #define HAS_RTC             0
 #define HAS_AUDIO_CODEC     0
 #define HAS_PMIC            0
-#define HAS_SDCARD          0
+#define HAS_SDCARD          1
 #define HAS_CAMERA          0
 #define HAS_IO_EXPANDER     1
 #define HAS_DUAL_MIC        1
@@ -56,9 +56,19 @@
 #define TOUCH_INT           4
 #define TOUCH_RST           (-1)  // Via CH422G (EXIO1)
 
+// ---- SD Card (SPI mode, CS via CH422G EXIO4) ----
+#define SD_SPI_MOSI         11
+#define SD_SPI_SCK          12
+#define SD_SPI_MISO         13
+#define SD_SPI_CS           (-1)    // CS driven by CH422G EXIO4, not direct GPIO
+#define SD_USE_SPI          1       // SPI mode (not SDMMC)
+#define SD_CS_VIA_EXPANDER  1       // CS routed through IO expander
+#define SD_CS_EXPANDER_PIN  4       // EXIO4 on CH422G
+
 // ---- IO Expander (CH422G) ----
 #define IO_EXP_SDA          8
 #define IO_EXP_SCL          9
 // CH422G uses fixed I2C address
 // EXIO1 = Touch RST
 // EXIO2 = Backlight control
+// EXIO4 = SD card CS
