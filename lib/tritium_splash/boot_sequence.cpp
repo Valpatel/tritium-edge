@@ -117,13 +117,16 @@ static const int FONT_CHAR_COUNT = sizeof(font5x7) / sizeof(font5x7[0]);
 // Color palette — RGB565, byte-swapped for SPI
 // ============================================================================
 
+// Byte-swap flag: true for QSPI/SPI panels, false for RGB parallel panels
+static bool _swap_bytes = false;
+
 static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
     uint16_t c = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-    return (c >> 8) | (c << 8);
+    return _swap_bytes ? ((c >> 8) | (c << 8)) : c;
 }
 
-static uint16_t scale_color(uint16_t swapped, float f) {
-    uint16_t c = (swapped >> 8) | (swapped << 8);
+static uint16_t scale_color(uint16_t col, float f) {
+    uint16_t c = _swap_bytes ? ((col >> 8) | (col << 8)) : col;
     int r = ((c >> 11) & 0x1F);
     int g = ((c >> 5) & 0x3F);
     int b = (c & 0x1F);
@@ -131,12 +134,12 @@ static uint16_t scale_color(uint16_t swapped, float f) {
     g = (int)(g * f); if (g > 63) g = 63;
     b = (int)(b * f); if (b > 31) b = 31;
     uint16_t out = (r << 11) | (g << 5) | b;
-    return (out >> 8) | (out << 8);
+    return _swap_bytes ? ((out >> 8) | (out << 8)) : out;
 }
 
-// Palette (initialized in init)
-static uint16_t COL_CYAN, COL_GREEN, COL_MAGENTA, COL_YELLOW;
-static uint16_t COL_DIM_CYAN, COL_WHITE, COL_DARK_CYAN;
+// Palette (initialized in init) — all cool blue/cyan tones
+static uint16_t COL_CYAN, COL_GREEN, COL_WARN, COL_ALERT;
+static uint16_t COL_DIM_CYAN, COL_WHITE, COL_DARK_CYAN, COL_LIGHT_BLUE;
 
 // ============================================================================
 // 3D math
@@ -215,6 +218,7 @@ static esp_lcd_panel_handle_t _panel = nullptr;
 static uint16_t* _fb = nullptr;
 static uint16_t* _dma = nullptr;
 static int _w = 0, _h = 0;
+static int _crystal_clip_y = 9999;    // Y limit for crystal rendering (set in showLogo)
 static int _scale = 2;                // text scale for service log
 static int _title_scale = 4;          // title text scale
 static int _line_y = 0;               // cursor Y for next service line
@@ -231,6 +235,11 @@ static const int CHUNK = 64;
 // ============================================================================
 
 static inline void px(int x, int y, uint16_t c) {
+    if (x >= 0 && x < _w && y >= 0 && y < _h && y < _crystal_clip_y)
+        _fb[y * _w + x] = c;
+}
+// Unclipped pixel for text drawing (ignores crystal clip)
+static inline void px_text(int x, int y, uint16_t c) {
     if (x >= 0 && x < _w && y >= 0 && y < _h) _fb[y * _w + x] = c;
 }
 
@@ -294,7 +303,7 @@ static void draw_char_scaled(int x, int y, char c, uint16_t color, int sc) {
             if (bits & (1 << row)) {
                 for (int sy = 0; sy < sc; sy++)
                     for (int sx = 0; sx < sc; sx++)
-                        px(x + col*sc + sx, y + row*sc + sy, color);
+                        px_text(x + col*sc + sx, y + row*sc + sy, color);
             }
         }
     }
@@ -318,7 +327,7 @@ static int measure(const char* str, int sc) {
 static void draw_hline(int x, int y, int len, uint16_t color, int th) {
     for (int dy = 0; dy < th; dy++)
         for (int dx = 0; dx < len; dx++)
-            px(x + dx, y + dy, color);
+            px_text(x + dx, y + dy, color);
 }
 
 static void clear_region(int y0, int y1) {
@@ -477,7 +486,7 @@ static void draw_crystal(float angle_y, float angle_x,
         if (depth > 1.0f) depth = 1.0f;
 
         draw_glow_line(x0, y0, x1, y1,
-                        scale_color(COL_MAGENTA, brightness * 0.7f), depth);
+                        scale_color(COL_LIGHT_BLUE, brightness * 0.7f), depth);
     }
 
     // Connecting lines between inner and outer vertices (energy conduits)
@@ -512,10 +521,10 @@ static void draw_particles(float angle_y, float angle_x, float brightness) {
         pos = rotX(pos, angle_x * 0.3f);
         Vec2 sp = project(pos, _crystal_cx, _crystal_cy, (float)_crystal_r);
 
-        // Particle color: alternate cyan/magenta/white
+        // Particle color: alternate cyan/blue/white
         uint16_t col;
         if (i % 3 == 0) col = COL_CYAN;
-        else if (i % 3 == 1) col = COL_MAGENTA;
+        else if (i % 3 == 1) col = COL_LIGHT_BLUE;
         else col = COL_WHITE;
 
         float depth = 0.5f - pos.z / 5.0f;
@@ -552,6 +561,14 @@ void init(esp_lcd_panel_handle_t panel, int width, int height) {
     _w = width;
     _h = height;
 
+    // RGB parallel panels (43C-BOX) use native byte order;
+    // QSPI/SPI panels need byte-swapped RGB565
+#if defined(BOARD_TOUCH_LCD_43C_BOX)
+    _swap_bytes = false;
+#else
+    _swap_bytes = true;
+#endif
+
     // Scale for service log text
     if (_w >= 600)      { _scale = 2; _title_scale = 4; }
     else if (_w >= 320) { _scale = 2; _title_scale = 3; }
@@ -569,13 +586,15 @@ void init(esp_lcd_panel_handle_t panel, int width, int height) {
     _crystal_bottom = _crystal_cy + _crystal_r + 10;
 
     // Palette
-    COL_CYAN      = rgb565(0x00, 0xF0, 0xFF);
-    COL_GREEN     = rgb565(0x05, 0xFF, 0xA1);
-    COL_MAGENTA   = rgb565(0xFF, 0x2A, 0x6D);
-    COL_YELLOW    = rgb565(0xFC, 0xEE, 0x0A);
-    COL_DIM_CYAN  = rgb565(0x00, 0x70, 0x80);
-    COL_WHITE     = rgb565(0xE0, 0xE0, 0xFF);
-    COL_DARK_CYAN = rgb565(0x00, 0x30, 0x40);
+    // Cool blue/cyan palette — no warm tones
+    COL_CYAN       = rgb565(0x00, 0xF0, 0xFF);  // primary accent
+    COL_GREEN      = rgb565(0x00, 0xDD, 0xCC);  // OK status — blue-teal
+    COL_ALERT      = rgb565(0xCC, 0x44, 0xFF);  // FAIL — cool violet
+    COL_WARN       = rgb565(0x60, 0x90, 0xCC);  // SKIP — steel blue
+    COL_DIM_CYAN   = rgb565(0x00, 0x70, 0x80);  // muted labels
+    COL_WHITE      = rgb565(0xD0, 0xE0, 0xFF);  // text — blue-white
+    COL_DARK_CYAN  = rgb565(0x00, 0x30, 0x40);  // separators
+    COL_LIGHT_BLUE = rgb565(0x40, 0x80, 0xFF);  // inner crystal
 
     // Allocate buffers
     size_t fb_size = _w * _h * sizeof(uint16_t);
@@ -618,9 +637,15 @@ void showLogo(const char* version) {
     int ver_x = (_w - ver_w) / 2;
     int ver_y = title_y + 7 * _title_scale + 6;
 
-    const char* author = "VALPATEL SOFTWARE";
-    int author_w = measure(author, 1);
-    int author_x = (_w - author_w) / 2;
+    const char* author1 = "Created by Matthew Valancy";
+    int author1_w = measure(author1, 1);
+    int author1_x = (_w - author1_w) / 2;
+    int author1_y = _h - 7 - 4;  // bottom line
+
+    const char* author2 = "Copyright 2026, Valpatel Software LLC";
+    int author2_w = measure(author2, 1);
+    int author2_x = (_w - author2_w) / 2;
+    int author2_y = author1_y - 7 - 3;  // line above
 
     // Top of the text zone — crystal animation stays above this line
     int text_zone_top = _crystal_bottom + title_gap / 2;
@@ -629,6 +654,7 @@ void showLogo(const char* version) {
     int sep_y = ver_y + 7 * _scale + 10;
 
     _crystal_angle = 0.0f;
+    _crystal_clip_y = text_zone_top;  // Clip crystal rendering above title
 
     for (int frame = 0; frame < TOTAL_FRAMES; frame++) {
         uint32_t t0 = millis();
@@ -670,10 +696,15 @@ void showLogo(const char* version) {
             }
         }
 
-        // --- Author text (appears early, subtle) ---
-        if (frame > 3) {
-            float af = (frame < 15) ? (float)(frame - 3) / 12.0f : 1.0f;
-            draw_string(author_x, 4, author, scale_color(COL_DIM_CYAN, af * 0.5f), 1);
+        // --- Author text at bottom (appears early, subtle) ---
+        if (frame > 3 && frame <= 15) {
+            float af = (float)(frame - 3) / 12.0f;
+            clear_region(author2_y, _h);
+            draw_string(author2_x, author2_y, author2,
+                        scale_color(COL_DIM_CYAN, af * 0.5f), 1);
+            draw_string(author1_x, author1_y, author1,
+                        scale_color(COL_DIM_CYAN, af * 0.5f), 1);
+            push_region(author2_y, _h);
         }
 
         // Push crystal region only — fast, no flicker in text area
@@ -724,6 +755,8 @@ void showLogo(const char* version) {
     draw_hline(_margin_x, sep_y, _w - 2 * _margin_x, COL_DARK_CYAN, 1);
     draw_string(title_x, title_y, title, COL_WHITE, _title_scale);
     draw_string(ver_x, ver_y, ver_str, COL_DIM_CYAN, _scale);
+    draw_string(author2_x, author2_y, author2, scale_color(COL_DIM_CYAN, 0.5f), 1);
+    draw_string(author1_x, author1_y, author1, scale_color(COL_DIM_CYAN, 0.5f), 1);
     _line_y = sep_y + 8;
     push_full();
 }
@@ -749,8 +782,8 @@ void showService(const char* name, const char* status, const char* detail) {
     uint16_t scol = COL_CYAN;
     const char* stxt = status;
     if (strcasecmp(status, "ok") == 0)   { scol = COL_GREEN;   stxt = "OK"; }
-    else if (strcasecmp(status, "fail") == 0) { scol = COL_MAGENTA; stxt = "FAIL"; }
-    else if (strcasecmp(status, "skip") == 0) { scol = COL_YELLOW;  stxt = "SKIP"; }
+    else if (strcasecmp(status, "fail") == 0) { scol = COL_ALERT; stxt = "FAIL"; }
+    else if (strcasecmp(status, "skip") == 0) { scol = COL_WARN;  stxt = "SKIP"; }
 
     if (detail) {
         x += draw_string(x, y, detail, COL_WHITE, _scale);
