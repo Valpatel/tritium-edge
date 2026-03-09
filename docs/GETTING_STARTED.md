@@ -6,7 +6,7 @@ Step-by-step guide for setting up the development environment from scratch on Ub
 
 ```bash
 git clone <repo-url>
-cd esp32-hardware
+cd tritium-edge
 ```
 
 ## 2. Run the Setup Script

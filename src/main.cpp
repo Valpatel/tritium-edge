@@ -1,67 +1,150 @@
 #include <Arduino.h>
-#include "display_init.h"
-#include "debug_log.h"
+#include "display.h"
+#include "board_fingerprint.h"
+#if defined(BOARD_UNIVERSAL)
+#include "display_universal.h"
+#include "board_config.h"
+#endif
+#include "tritium_splash.h"
+#include "boot_sequence.h"
 #include "app.h"
+#include "service_registry.h"
+
+// Tritium-OS Shell — wire live status data into the LVGL status bar
+#if defined(ENABLE_SHELL) && __has_include("os_shell.h")
+#include "os_shell.h"
+#include "lvgl_driver.h"
+#include "touch_input.h"
+#include "shell_apps.h"
+#define SHELL_AVAILABLE 1
+#else
+#define SHELL_AVAILABLE 0
+#endif
+
+// TouchHAL global instance — required by touch_input.cpp (extern TouchHAL touch)
+#if SHELL_AVAILABLE
+#include <Wire.h>
+#include "hal_touch.h"
+TouchHAL touch;
+#endif
+
+// SD card format command (only when networking libs are available)
+#if defined(HAS_SDCARD) && HAS_SDCARD && defined(SD_MMC_D0) && defined(ENABLE_WIFI)
+#include <SD_MMC.h>
+#include <FS.h>
+#define SD_FORMAT_AVAILABLE 1
+#else
+#define SD_FORMAT_AVAILABLE 0
+#endif
+
+// --- Service adapters (each #include pulls in its HAL when enabled) ---
+#if defined(ENABLE_WIFI)
+#include "wifi_service.h"
+static WifiService svc_wifi;
+#endif
+
+#if defined(ENABLE_HEARTBEAT)
+#include "heartbeat_service.h"
+static HeartbeatService svc_heartbeat;
+#endif
+
+#if defined(ENABLE_BLE_SCANNER)
+#include "ble_scanner_service.h"
+static BleScannerService svc_ble;
+#endif
+
+#if defined(ENABLE_WIFI_SCANNER)
+#include "wifi_scanner_service.h"
+static WifiScannerService svc_wifi_scan;
+#endif
+
+#if defined(ENABLE_SIGHTING_BUFFER)
+#include "sighting_buffer_service.h"
+static SightingBufferService svc_sighting;
+#endif
+
+#if defined(ENABLE_LORA)
+#include "lora_service.h"
+static LoraService svc_lora;
+#endif
+
+#if defined(ENABLE_COT)
+#include "cot_service.h"
+static CotService svc_cot;
+#endif
+
+#if defined(ENABLE_ESPNOW)
+#include "espnow_service.h"
+static EspNowService svc_espnow;
+#endif
+
+#if defined(ENABLE_DIAG)
+#include "diag_service.h"
+static DiagService svc_diag;
+#endif
+
+#if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("seed_service.h")
+#include "seed_service.h"
+static SeedService svc_seed;
+#endif
+
+#if defined(HAS_AUDIO_CODEC) && HAS_AUDIO_CODEC && __has_include("acoustic_modem_service.h")
+#include "acoustic_modem_service.h"
+static AcousticModemService svc_modem;
+#endif
+
+#if defined(ENABLE_WEBSERVER)
+#include "webserver_service.h"
+static WebServerService svc_webserver;
+#endif
+
+#if defined(ENABLE_SETTINGS) && __has_include("settings_service.h")
+#include "settings_service.h"
+static SettingsService svc_settings;
+#endif
+
+#if defined(ENABLE_BLE_SERIAL) && __has_include("ble_serial_service.h")
+#include "ble_serial_service.h"
+static BleSerialService svc_ble_serial;
+#endif
 
 // --- App selection via build flag ---
-#if defined(APP_SYSTEM)
+#if defined(APP_STARFIELD)
+#include "starfield_app.h"
+static StarfieldApp app_instance;
+#elif defined(APP_SYSTEM)
 #include "system_app.h"
 static SystemApp app_instance;
-
+#elif defined(APP_DIAG)
+#include "diag_app.h"
+static DiagApp app_instance;
 #elif defined(APP_WIFI_SETUP)
 #include "wifi_setup_app.h"
 static WifiSetupApp app_instance;
-
 #elif defined(APP_UI_DEMO)
 #include "ui_demo_app.h"
 static UiDemoApp app_instance;
-
-#elif defined(APP_STARFIELD)
-#include "starfield_app.h"
-static StarfieldApp app_instance;
-
+#elif defined(APP_CAMERA)
+#include "camera_app.h"
+static CameraApp app_instance;
+#elif defined(APP_EFFECTS)
+#include "effects_app.h"
+static EffectsApp app_instance;
+#elif defined(APP_OTA)
+#include "ota_app.h"
+static OtaApp app_instance;
+#elif defined(APP_TEST)
+#include "test_app.h"
+static TestApp app_instance;
 #else
-// Default app: starfield
 #include "starfield_app.h"
 static StarfieldApp app_instance;
 #endif
 
-static LGFX display;
 static App* app = &app_instance;
 
-void setup() {
-    Serial.begin(115200);
-    delay(500);
-    DebugLog::init(DBG_BACKEND_SERIAL);
-
-    DBG_INFO("main", "Board: %s", DISPLAY_DRIVER);
-    DBG_INFO("main", "Display: %dx%d via %s", DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_IF);
-
-    // Board-specific pre-init (I/O expander display reset, etc.)
-#if defined(BOARD_TOUCH_LCD_35BC)
-    tca9554_reset_display();
-#endif
-
-    display.init();
-    display.setRotation(DISPLAY_ROTATION);
-    display.fillScreen(TFT_BLACK);
-    display.setBrightness(255);
-
-    // Manual backlight fallback — only for 3.5B-C where Light_PWM alone isn't enough
-#if defined(BOARD_TOUCH_LCD_35BC) && defined(LCD_BL) && LCD_BL >= 0
-    pinMode(LCD_BL, OUTPUT);
-    digitalWrite(LCD_BL, HIGH);
-#endif
-
-    DBG_INFO("main", "Display ready: %dx%d (rotation %d)",
-             display.width(), display.height(), DISPLAY_ROTATION);
-
-    app->setup(display);
-    DBG_INFO("main", "App '%s' started", app->name());
-}
-
-// Serial command buffer for board identification
-static char _cmd_buf[32];
+// --- Serial command handling ---
+static char _cmd_buf[512];
 static uint8_t _cmd_idx = 0;
 
 static void handleSerialCommands() {
@@ -69,10 +152,66 @@ static void handleSerialCommands() {
         char c = Serial.read();
         if (c == '\n' || c == '\r') {
             _cmd_buf[_cmd_idx] = '\0';
-            if (strcmp(_cmd_buf, "IDENTIFY") == 0) {
-                Serial.printf("{\"board\":\"%s\",\"display\":\"%dx%d\",\"interface\":\"%s\",\"app\":\"%s\"}\n",
-                              DISPLAY_DRIVER, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_IF, app->name());
+            if (_cmd_idx == 0) { continue; }
+
+            // Split command and args at first space
+            char* space = strchr(_cmd_buf, ' ');
+            const char* cmd = _cmd_buf;
+            const char* args = nullptr;
+            if (space) {
+                *space = '\0';
+                args = space + 1;
             }
+
+            // Built-in commands
+            if (strcmp(cmd, "IDENTIFY") == 0) {
+                const display_health_t* id_health = display_get_health();
+                Serial.printf("{\"board\":\"%s\",\"display\":\"%dx%d\",\"app\":\"%s\","
+                              "\"services\":%d}\n",
+                              id_health ? id_health->driver : "unknown",
+                              display_get_width(), display_get_height(),
+                              app->name(), ServiceRegistry::count());
+            }
+#if SD_FORMAT_AVAILABLE
+            else if (strcmp(cmd, "SD_FORMAT") == 0) {
+                Serial.printf("[sd] Formatting SD card...\n");
+                SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
+                if (SD_MMC.begin("/sdcard", true)) {
+                    File root = SD_MMC.open("/");
+                    if (root) {
+                        File f = root.openNextFile();
+                        while (f) {
+                            char path[128];
+                            snprintf(path, sizeof(path), "/%s", f.name());
+                            f.close();
+                            SD_MMC.remove(path);
+                            Serial.printf("[sd] Deleted: %s\n", path);
+                            f = root.openNextFile();
+                        }
+                        root.close();
+                    }
+                    Serial.printf("[sd] Card cleared. Total: %lluMB, Used: %lluMB\n",
+                        (unsigned long long)(SD_MMC.totalBytes() / (1024*1024)),
+                        (unsigned long long)(SD_MMC.usedBytes() / (1024*1024)));
+                    SD_MMC.end();
+                } else {
+                    Serial.printf("[sd] Could not mount SD card\n");
+                }
+            }
+#endif
+            else if (strcmp(cmd, "SERVICES") == 0) {
+                Serial.printf("[svc] %d services:\n", ServiceRegistry::count());
+                for (int i = 0; i < ServiceRegistry::count(); i++) {
+                    auto* s = ServiceRegistry::at(i);
+                    Serial.printf("  %-20s pri=%3d cap=%02X\n",
+                                  s->name(), s->initPriority(), s->capabilities());
+                }
+            }
+            // Dispatch to services
+            else if (!ServiceRegistry::dispatchCommand(cmd, args)) {
+                Serial.printf("[cmd] Unknown: %s\n", cmd);
+            }
+
             _cmd_idx = 0;
         } else if (_cmd_idx < sizeof(_cmd_buf) - 1) {
             _cmd_buf[_cmd_idx++] = c;
@@ -80,7 +219,286 @@ static void handleSerialCommands() {
     }
 }
 
+// --- Register all services ---
+static void registerServices() {
+#if defined(ENABLE_WIFI)
+    ServiceRegistry::add(&svc_wifi);
+#endif
+#if defined(ENABLE_HEARTBEAT)
+    ServiceRegistry::add(&svc_heartbeat);
+#endif
+#if defined(ENABLE_BLE_SCANNER)
+    ServiceRegistry::add(&svc_ble);
+#endif
+#if defined(ENABLE_WIFI_SCANNER)
+    ServiceRegistry::add(&svc_wifi_scan);
+#endif
+#if defined(ENABLE_SIGHTING_BUFFER)
+    ServiceRegistry::add(&svc_sighting);
+#endif
+#if defined(ENABLE_LORA)
+    ServiceRegistry::add(&svc_lora);
+#endif
+#if defined(ENABLE_COT)
+    ServiceRegistry::add(&svc_cot);
+#endif
+#if defined(ENABLE_ESPNOW)
+    ServiceRegistry::add(&svc_espnow);
+#endif
+#if defined(ENABLE_DIAG)
+    ServiceRegistry::add(&svc_diag);
+#endif
+#if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("seed_service.h")
+    ServiceRegistry::add(&svc_seed);
+#endif
+#if defined(HAS_AUDIO_CODEC) && HAS_AUDIO_CODEC && __has_include("acoustic_modem_service.h")
+    ServiceRegistry::add(&svc_modem);
+#endif
+#if defined(ENABLE_WEBSERVER)
+    ServiceRegistry::add(&svc_webserver);
+#endif
+#if defined(ENABLE_SETTINGS) && __has_include("settings_service.h")
+    ServiceRegistry::add(&svc_settings);
+#endif
+#if defined(ENABLE_BLE_SERIAL) && __has_include("ble_serial_service.h")
+    ServiceRegistry::add(&svc_ble_serial);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Shell status bar — poll services every ~1s and push live data to the LVGL
+// status bar indicators (WiFi, BLE, mesh, battery, clock).
+// ---------------------------------------------------------------------------
+#if SHELL_AVAILABLE
+static void updateShellStatus() {
+    static uint32_t last_update = 0;
+    if (millis() - last_update < 1000) return;
+    last_update = millis();
+
+    // WiFi status — use WifiService for connection state, Arduino WiFi for RSSI
+#if defined(ENABLE_WIFI)
+    {
+        auto* ws = ServiceRegistry::getAs<WifiService>("wifi");
+        if (ws) {
+            bool conn = ws->isConnected();
+            tritium_shell::setWifiStatus(conn, conn ? WiFi.RSSI() : 0);
+        }
+    }
+#endif
+
+    // BLE device count
+#if defined(ENABLE_BLE_SCANNER)
+    {
+        int n = hal_ble_scanner::get_visible_count();
+        tritium_shell::setBleStatus(n);
+    }
+#endif
+
+    // Mesh peer count
+#if defined(ENABLE_ESPNOW)
+    {
+        auto* en = ServiceRegistry::getAs<EspNowService>("espnow");
+        if (en) {
+            tritium_shell::setMeshStatus(en->mesh().peerCount());
+        }
+    }
+#endif
+
+    // Battery — no global PowerHAL instance yet; when one is added to
+    // main.cpp (or exposed by a service), wire it in here:
+    //   tritium_shell::setBatteryStatus(power.getBatteryLevel(),
+    //                                   power.isCharging());
+
+    // Clock — use NTP/RTC wall-clock if synced, otherwise show uptime
+    {
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo, 0)) {
+            tritium_shell::setClock(timeinfo.tm_hour, timeinfo.tm_min);
+        } else {
+            uint32_t up = millis() / 1000;
+            tritium_shell::setClock((up / 3600) % 24, (up / 60) % 60);
+        }
+    }
+}
+#endif  // SHELL_AVAILABLE
+
+void setup() {
+    Serial.begin(115200);
+    delay(500);
+
+    Serial.printf("[tritium] Tritium-Edge booting...\n");
+
+    /* Hardware fingerprint — identify the physical board before display init */
+    const board_fingerprint_t* fp = board_fingerprint_scan();
+    board_fingerprint_print(fp);
+#if !defined(BOARD_UNIVERSAL)
+    if (!fp->match && fp->detected != BOARD_ID_UNKNOWN) {
+        Serial.printf("[tritium] WARNING: Firmware/hardware mismatch detected!\n");
+    }
+#endif
+
+#if defined(BOARD_UNIVERSAL)
+    /* Universal firmware: use fingerprint to select board config at runtime */
+    const board_config_t* board_cfg = board_config_get(fp->detected);
+    if (!board_cfg) {
+        Serial.printf("[tritium] FATAL: No config for detected board %s\n",
+                      board_id_to_name(fp->detected));
+        return;
+    }
+    Serial.printf("[tritium] Universal mode: detected %s\n", board_cfg->name);
+
+    esp_err_t ret = display_init_universal(board_cfg);
+#else
+    esp_err_t ret = display_init();
+#endif
+    if (ret != ESP_OK) {
+        Serial.printf("[tritium] Display init FAILED: 0x%x\n", ret);
+        return;
+    }
+
+    int w = display_get_width();
+    int h = display_get_height();
+    esp_lcd_panel_handle_t panel = display_get_panel();
+    const display_health_t* dh = display_get_health();
+
+    display_set_brightness(255);
+    Serial.printf("[tritium] Board: %s %dx%d\n", dh->driver, w, h);
+    if (dh->verified) {
+        Serial.printf("[tritium] Display verified: %s (ID 0x%06lX)\n",
+                      dh->driver, (unsigned long)dh->actual_id);
+    } else {
+        Serial.printf("[tritium] WARNING: Display NOT verified! Expected %s (0x%06lX), got 0x%06lX\n",
+                      dh->driver, (unsigned long)dh->expected_id, (unsigned long)dh->actual_id);
+        Serial.printf("[tritium] Firmware may be running on wrong board (%s)\n", dh->board_name);
+    }
+
+    // Boot display: OS builds get full boot sequence, others get simple splash
+#if defined(ENABLE_SETTINGS) || defined(ENABLE_DIAG)
+    boot_sequence::init(panel, w, h);
+    boot_sequence::showLogo(TRITIUM_VERSION);
+#else
+    tritium_splash(panel, w, h);
+#endif
+
+    // Register and init all services (boot sequence shows each one)
+    registerServices();
+
+#if defined(ENABLE_SETTINGS) || defined(ENABLE_DIAG)
+    ServiceRegistry::initAll([](const char* name, bool ok, int /*index*/, int /*total*/) {
+        boot_sequence::showService(name, ok ? "ok" : "fail");
+    });
+    boot_sequence::showReady();
+    boot_sequence::finish();
+#else
+    ServiceRegistry::initAll();
+#endif
+
+    // Start the app (skip when shell is active — LVGL owns the display)
+#if !SHELL_AVAILABLE
+    app->setup(panel, w, h);
+    Serial.printf("[tritium] App '%s' started\n", app->name());
+#endif
+
+#if !SHELL_AVAILABLE
+    // Wire screen capture into web server (works for any app with a framebuffer)
+#if defined(ENABLE_WEBSERVER)
+    {
+        auto* web = ServiceRegistry::getAs<WebServerService>("webserver");
+        if (web) {
+            svc_webserver.setScreenshotApp(app);
+        }
+    }
+#endif
+
+    // Post-init: show WiFi info on starfield overlay
+#if defined(APP_STARFIELD) && defined(ENABLE_WIFI)
+    {
+        auto* ws = ServiceRegistry::getAs<WifiService>("wifi");
+        if (ws && ws->isConnected()) {
+            char l1[48];
+            snprintf(l1, sizeof(l1), "%s", ws->getIP());
+            app_instance.setOverlayText("TRITIUM", l1, nullptr);
+        } else if (ws && ws->isAPMode()) {
+            char l1[48], l2[48];
+            snprintf(l1, sizeof(l1), "WIFI: %s", ws->getSSID());
+            snprintf(l2, sizeof(l2), "HTTP://%s/", ws->getAPIP());
+            app_instance.setOverlayText("TRITIUM SETUP", l1, l2);
+        }
+    }
+#endif
+#endif  // !SHELL_AVAILABLE
+
+    // Initialize the Tritium-OS shell (LVGL window manager with status bar)
+#if SHELL_AVAILABLE
+    // Initialize LVGL display driver (must be before shell init)
+    lv_display_t* lv_disp = lvgl_driver::init(panel, w, h);
+    if (lv_disp) {
+        Serial.printf("[tritium] LVGL display driver ready\n");
+    } else {
+        Serial.printf("[tritium] LVGL display driver FAILED\n");
+    }
+
+    // Initialize I2C and touch input
+    Wire.begin(TOUCH_SDA, TOUCH_SCL);
+    Wire.setClock(400000);
+    if (touch.init(Wire)) {
+        Serial.printf("[tritium] Touch: %s detected\n",
+                      touch.getDriver() == TouchHAL::GT911 ? "GT911" :
+                      touch.getDriver() == TouchHAL::FT6336 ? "FT6336" :
+                      touch.getDriver() == TouchHAL::FT3168 ? "FT3168" : "unknown");
+    } else {
+        Serial.printf("[tritium] Touch: not detected\n");
+    }
+    if (touch_input::init()) {
+        Serial.printf("[tritium] Touch input: LVGL indev registered\n");
+    } else {
+        Serial.printf("[tritium] Touch input: FAILED to register indev\n");
+    }
+
+    if (tritium_shell::init(panel, w, h)) {
+        Serial.printf("[tritium] Shell: initialized %dx%d\n", w, h);
+    } else {
+        Serial.printf("[tritium] Shell: init failed\n");
+    }
+
+    // Register built-in shell apps (Settings, WiFi, Monitor, Mesh, Files, Power)
+    shell_apps::register_all_apps();
+    Serial.printf("[tritium] Shell: %d apps registered\n", tritium_shell::getAppCount());
+
+    // Wire display framebuffer into web server screenshot provider
+#if defined(ENABLE_WEBSERVER)
+    {
+        svc_webserver.setScreenshotProvider(
+            [](int& w, int& h) -> uint16_t* {
+                w = display_get_width();
+                h = display_get_height();
+                return display_get_framebuffer();
+            });
+        Serial.printf("[tritium] Screenshot provider: display framebuffer\n");
+    }
+#endif
+#endif
+
+    Serial.printf("[tritium] Ready.\n");
+}
+
 void loop() {
+#if defined(ENABLE_DIAG)
+    uint32_t loop_start = micros();
+#endif
+
     handleSerialCommands();
-    app->loop(display);
+    ServiceRegistry::tickAll();
+
+#if SHELL_AVAILABLE
+    lvgl_driver::tick();
+    tritium_shell::tick();   // Shell logic (nav bar auto-hide, toast timeouts)
+    updateShellStatus();
+#else
+    app->loop();
+#endif
+
+#if defined(ENABLE_DIAG)
+    hal_diag::report_loop_time(micros() - loop_start);
+#endif
 }

@@ -18,8 +18,9 @@ struct TestEntry {
 class TestApp : public App {
 public:
     const char* name() override { return "HW Test"; }
-    void setup(LGFX& display) override;
-    void loop(LGFX& display) override;
+    void setup(esp_lcd_panel_handle_t panel, int width, int height) override;
+    void loop() override;
+    uint16_t* getFramebuffer(int& width, int& height) override { width = _w; height = _h; return _framebuf; }
 
     // Test runners (public for function pointer table)
     void testFilesystem();
@@ -50,10 +51,14 @@ private:
     int _failCount = 0;
     int _scrollOffset = 0;
 
-    LGFX_Sprite* _canvas = nullptr;
+    esp_lcd_panel_handle_t _panel = nullptr;
     int _w = 0, _h = 0;
+    uint16_t* _framebuf = nullptr;
+    uint16_t* _dma_buf = nullptr;
+    static constexpr int CHUNK_ROWS = 40;
 
     void runNextTest();
     void drawResults();
+    void pushFramebuffer();
     void addResult(const char* name, bool passed, const char* detail, uint32_t ms);
 };

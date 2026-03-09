@@ -11,7 +11,7 @@ Multi-family edge device management platform. ESP32-S3 Waveshare boards are the 
 ## Directory Structure
 
 ```
-esp32-hardware/
+tritium-edge/
   platformio.ini      # Build config with per-board environments
   Makefile            # Build automation (make build/flash/monitor)
   src/                # Main firmware source (main.cpp entry point)

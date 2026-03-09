@@ -17,16 +17,8 @@
 // Display
 #define LV_DEF_REFR_PERIOD 16  // ~60 FPS target
 
-// OS abstraction - tick source
-#define LV_TICK_CUSTOM 1
-#ifdef SIMULATOR
-    #define LV_TICK_CUSTOM_INCLUDE <SDL2/SDL.h>
-    #define LV_TICK_CUSTOM_SYS_TIME_EXPR (SDL_GetTicks())
-#else
-    #define LV_TICK_CUSTOM_INCLUDE "Arduino.h"
-    #define LV_TICK_CUSTOM_SYS_TIME_EXPR (millis())
-#endif
-#define LV_DELAY_TIMER_CUSTOM 0
+// Tick source: registered via lv_tick_set_cb() in lvgl_driver.cpp
+// Note: LV_TICK_CUSTOM macros are not used in LVGL 9.2+
 
 // Logging
 #define LV_USE_LOG 0

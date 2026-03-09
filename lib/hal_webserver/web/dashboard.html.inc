@@ -1,0 +1,1400 @@
+R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TRITIUM-OS</title>
+<style>
+:root {
+    --t-cyan: #00f0ff;
+    --t-magenta: #ff2a6d;
+    --t-green: #05ffa1;
+    --t-yellow: #fcee0a;
+    --t-void: #0a0a0f;
+    --t-surface-1: #0e0e14;
+    --t-surface-2: #12121a;
+    --t-surface-3: #1a1a2e;
+    --t-ghost: #8888aa;
+    --t-text: #c8d0dc;
+    --t-bright: #e0e0ff;
+    --t-glow-cyan: rgba(0, 240, 255, 0.15);
+    --t-glow-magenta: rgba(255, 42, 109, 0.15);
+    --t-glow-green: rgba(5, 255, 161, 0.15);
+    --t-glow-yellow: rgba(252, 238, 10, 0.15);
+    --t-border: rgba(0, 240, 255, 0.08);
+    --t-border-hover: rgba(0, 240, 255, 0.3);
+    --t-radius: 4px;
+    --t-transition: 0.25s ease;
+    --t-font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --t-font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    background: var(--t-void);
+    color: var(--t-text);
+    font-family: var(--t-font-body);
+    font-size: 13px;
+    line-height: 1.5;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+/* Grid background */
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(0,240,255,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,240,255,0.025) 1px, transparent 1px);
+    background-size: 80px 80px;
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* Scanline CRT overlay */
+body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.03) 2px,
+        rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+}
+
+/* ── Header Bar ── */
+.header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    background: var(--t-surface-1);
+    border-bottom: 1px solid var(--t-border);
+    backdrop-filter: blur(12px);
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.logo {
+    font-family: var(--t-font-mono);
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--t-cyan);
+    text-shadow: 0 0 20px rgba(0,240,255,0.4), 0 0 40px rgba(0,240,255,0.15);
+    letter-spacing: 0.15em;
+    white-space: nowrap;
+}
+
+.header-info {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-family: var(--t-font-mono);
+    font-size: 11px;
+    color: var(--t-ghost);
+}
+
+.header-info span { white-space: nowrap; }
+
+.conn-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #555;
+    margin-right: 4px;
+    vertical-align: middle;
+    transition: all var(--t-transition);
+}
+
+.conn-dot.connected {
+    background: var(--t-green);
+    box-shadow: 0 0 8px var(--t-glow-green);
+    animation: breathe 1.5s ease-in-out infinite;
+}
+
+.conn-dot.disconnected {
+    background: var(--t-magenta);
+    box-shadow: 0 0 8px var(--t-glow-magenta);
+}
+
+@keyframes breathe {
+    0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--t-glow-green); }
+    50% { opacity: 0.5; box-shadow: 0 0 16px var(--t-glow-green); }
+}
+
+@keyframes breathe-cyan {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+/* ── Dashboard Grid ── */
+.dashboard {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    padding: 20px;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+@media (max-width: 1024px) {
+    .dashboard { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 640px) {
+    .dashboard { grid-template-columns: 1fr; padding: 12px; gap: 12px; }
+    .header { padding: 8px 12px; }
+    .logo { font-size: 15px; }
+}
+
+/* ── Panel ── */
+.panel {
+    background: var(--t-surface-2);
+    border: 1px solid var(--t-border);
+    border-radius: var(--t-radius);
+    padding: 16px;
+    transition: border-color var(--t-transition), box-shadow var(--t-transition);
+}
+
+.panel:hover {
+    border-color: var(--t-border-hover);
+    box-shadow: 0 0 20px var(--t-glow-cyan);
+}
+
+.panel-title {
+    font-family: var(--t-font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--t-bright);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--t-border);
+}
+
+.panel-title::before { content: '[ '; color: var(--t-cyan); }
+.panel-title::after { content: ' ]'; color: var(--t-cyan); }
+
+/* ── Data Rows ── */
+.data-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.02);
+}
+
+.data-row:last-child { border-bottom: none; }
+
+.data-label {
+    font-size: 11px;
+    color: var(--t-ghost);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.data-value {
+    font-family: var(--t-font-mono);
+    font-size: 12px;
+    color: var(--t-cyan);
+    text-align: right;
+}
+
+.data-value a {
+    color: var(--t-cyan);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(0,240,255,0.2);
+}
+.data-value a:hover { border-bottom-color: var(--t-cyan); }
+
+/* ── Signal bar ── */
+.signal-bar {
+    display: flex;
+    gap: 2px;
+    align-items: flex-end;
+    height: 14px;
+}
+
+.signal-bar .bar {
+    width: 4px;
+    background: var(--t-surface-3);
+    border-radius: 1px;
+    transition: background var(--t-transition);
+}
+
+.signal-bar .bar.active { background: var(--t-cyan); }
+.signal-bar .bar:nth-child(1) { height: 4px; }
+.signal-bar .bar:nth-child(2) { height: 7px; }
+.signal-bar .bar:nth-child(3) { height: 10px; }
+.signal-bar .bar:nth-child(4) { height: 14px; }
+
+/* ── Status dots (services) ── */
+.svc-row {
+    display: flex;
+    align-items: center;
+    padding: 4px 0;
+    gap: 8px;
+}
+
+.svc-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    transition: all var(--t-transition);
+}
+
+.svc-dot.running {
+    background: var(--t-green);
+    box-shadow: 0 0 6px var(--t-glow-green);
+}
+
+.svc-dot.warning {
+    background: var(--t-yellow);
+    box-shadow: 0 0 6px var(--t-glow-yellow);
+}
+
+.svc-dot.error {
+    background: var(--t-magenta);
+    box-shadow: 0 0 6px var(--t-glow-magenta);
+}
+
+.svc-dot.stopped {
+    background: #444;
+}
+
+.svc-name {
+    font-family: var(--t-font-mono);
+    font-size: 11px;
+    color: var(--t-text);
+    flex: 1;
+}
+
+.svc-status {
+    font-family: var(--t-font-mono);
+    font-size: 10px;
+    color: var(--t-ghost);
+    text-align: right;
+}
+
+/* ── Brightness slider ── */
+.slider-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+}
+
+input[type=range] {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: 1;
+    height: 4px;
+    background: var(--t-surface-3);
+    border-radius: 2px;
+    outline: none;
+}
+
+input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    background: var(--t-cyan);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 8px var(--t-glow-cyan);
+}
+
+.slider-val {
+    font-family: var(--t-font-mono);
+    font-size: 11px;
+    color: var(--t-cyan);
+    min-width: 30px;
+    text-align: right;
+}
+
+/* ── Live View ── */
+.liveview-container {
+    position: relative;
+    background: var(--t-surface-1);
+    border: 1px solid var(--t-border);
+    border-radius: var(--t-radius);
+    overflow: hidden;
+    text-align: center;
+    min-height: 120px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.liveview-container img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    cursor: pointer;
+    image-rendering: pixelated;
+}
+
+.liveview-placeholder {
+    color: var(--t-ghost);
+    font-family: var(--t-font-mono);
+    font-size: 11px;
+}
+
+.liveview-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
+
+.liveview-controls select {
+    background: var(--t-surface-1);
+    color: var(--t-text);
+    border: 1px solid var(--t-border);
+    border-radius: var(--t-radius);
+    padding: 4px 8px;
+    font-family: var(--t-font-mono);
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.lv-res {
+    font-family: var(--t-font-mono);
+    font-size: 10px;
+    color: var(--t-ghost);
+    margin-left: auto;
+}
+
+/* ── Buttons ── */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 14px;
+    font-family: var(--t-font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--t-cyan);
+    background: transparent;
+    border: 1px solid rgba(0,240,255,0.25);
+    border-radius: var(--t-radius);
+    cursor: pointer;
+    transition: all var(--t-transition);
+    text-decoration: none;
+}
+
+.btn:hover {
+    background: rgba(0,240,255,0.08);
+    border-color: var(--t-cyan);
+    box-shadow: 0 0 12px var(--t-glow-cyan);
+    transform: translateY(-1px);
+}
+
+.btn:active { transform: translateY(0); }
+
+.btn-danger {
+    color: var(--t-magenta);
+    border-color: rgba(255,42,109,0.25);
+}
+
+.btn-danger:hover {
+    background: rgba(255,42,109,0.08);
+    border-color: var(--t-magenta);
+    box-shadow: 0 0 12px var(--t-glow-magenta);
+}
+
+.btn-green {
+    color: var(--t-green);
+    border-color: rgba(5,255,161,0.25);
+}
+
+.btn-green:hover {
+    background: rgba(5,255,161,0.08);
+    border-color: var(--t-green);
+    box-shadow: 0 0 12px var(--t-glow-green);
+}
+
+.action-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+}
+
+@media (max-width: 640px) {
+    .action-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Toast Notifications ── */
+.toast-container {
+    position: fixed;
+    top: 60px;
+    right: 16px;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+    max-width: 360px;
+}
+
+.toast {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: var(--t-surface-2);
+    border-radius: var(--t-radius);
+    border-left: 3px solid var(--t-cyan);
+    font-family: var(--t-font-mono);
+    font-size: 12px;
+    color: var(--t-text);
+    pointer-events: auto;
+    transform: translateX(120%);
+    opacity: 0;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    cursor: pointer;
+}
+
+.toast.show {
+    transform: translateX(0);
+    opacity: 1;
+}
+
+.toast.info { border-left-color: var(--t-cyan); }
+.toast.success { border-left-color: var(--t-green); }
+.toast.warning { border-left-color: var(--t-yellow); }
+.toast.error { border-left-color: var(--t-magenta); }
+
+/* ── Terminal Panel ── */
+.terminal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 500;
+    display: none;
+}
+
+.terminal-overlay.open { display: flex; }
+
+.terminal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px);
+}
+
+.terminal-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(600px, 100vw);
+    background: var(--t-void);
+    border-left: 1px solid var(--t-border);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.3s ease;
+}
+
+.terminal-overlay.open .terminal-panel {
+    transform: translateX(0);
+}
+
+.terminal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: var(--t-surface-1);
+    border-bottom: 1px solid var(--t-border);
+    font-family: var(--t-font-mono);
+    font-size: 12px;
+    color: var(--t-bright);
+}
+
+.terminal-close {
+    background: none;
+    border: none;
+    color: var(--t-ghost);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0 4px;
+    transition: color var(--t-transition);
+}
+
+.terminal-close:hover { color: var(--t-magenta); }
+
+.terminal-output {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    font-family: var(--t-font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--t-cyan);
+    background: var(--t-void);
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.terminal-input-wrap {
+    display: flex;
+    border-top: 1px solid var(--t-border);
+    background: var(--t-surface-1);
+}
+
+.terminal-prompt {
+    padding: 10px 8px 10px 12px;
+    font-family: var(--t-font-mono);
+    font-size: 12px;
+    color: var(--t-green);
+    user-select: none;
+}
+
+.terminal-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--t-cyan);
+    font-family: var(--t-font-mono);
+    font-size: 12px;
+    padding: 10px 12px 10px 0;
+    outline: none;
+}
+
+/* ── OTA Upload Modal ── */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 600;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(6px);
+}
+
+.modal-overlay.open { display: flex; }
+
+.modal {
+    background: var(--t-surface-2);
+    border: 1px solid var(--t-border-hover);
+    border-radius: var(--t-radius);
+    padding: 24px;
+    width: min(440px, 90vw);
+    box-shadow: 0 0 40px var(--t-glow-cyan);
+}
+
+.modal-title {
+    font-family: var(--t-font-mono);
+    font-size: 13px;
+    color: var(--t-bright);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 16px;
+}
+
+.modal-title::before { content: '[ '; color: var(--t-cyan); }
+.modal-title::after { content: ' ]'; color: var(--t-cyan); }
+
+.upload-zone {
+    border: 2px dashed rgba(0,240,255,0.15);
+    border-radius: var(--t-radius);
+    padding: 30px;
+    text-align: center;
+    cursor: pointer;
+    transition: all var(--t-transition);
+    margin-bottom: 16px;
+}
+
+.upload-zone:hover, .upload-zone.dragover {
+    border-color: var(--t-cyan);
+    background: rgba(0,240,255,0.03);
+}
+
+.upload-zone p {
+    font-family: var(--t-font-mono);
+    font-size: 12px;
+    color: var(--t-ghost);
+}
+
+.upload-zone input[type=file] { display: none; }
+
+.progress-bar {
+    height: 4px;
+    background: var(--t-surface-3);
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 12px 0;
+    display: none;
+}
+
+.progress-bar .fill {
+    height: 100%;
+    background: var(--t-cyan);
+    width: 0%;
+    transition: width 0.2s;
+    border-radius: 2px;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 16px;
+}
+
+/* ── Utility ── */
+.text-green { color: var(--t-green); }
+.text-red { color: var(--t-magenta); }
+.text-yellow { color: var(--t-yellow); }
+.text-cyan { color: var(--t-cyan); }
+.text-ghost { color: var(--t-ghost); }
+.mono { font-family: var(--t-font-mono); }
+
+/* ── Boot animation ── */
+.boot-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 20000;
+    background: var(--t-void);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.5s ease;
+}
+
+.boot-screen.fade-out {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.boot-logo {
+    font-family: var(--t-font-mono);
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--t-cyan);
+    letter-spacing: 0.2em;
+    text-shadow: 0 0 30px rgba(0,240,255,0.5), 0 0 60px rgba(0,240,255,0.2);
+    opacity: 0;
+    animation: bootFadeIn 0.6s ease 0.2s forwards;
+}
+
+.boot-sub {
+    font-family: var(--t-font-mono);
+    font-size: 11px;
+    color: var(--t-ghost);
+    margin-top: 8px;
+    opacity: 0;
+    animation: bootFadeIn 0.4s ease 0.6s forwards;
+}
+
+@keyframes bootFadeIn {
+    to { opacity: 1; }
+}
+</style>
+</head>
+<body>
+
+<!-- Boot animation -->
+<div class="boot-screen" id="bootScreen">
+    <div class="boot-logo">TRITIUM-OS</div>
+    <div class="boot-sub">Software-Defined Edge Intelligence</div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toasts"></div>
+
+<!-- Header -->
+<header class="header" id="header" style="opacity:0">
+    <div class="logo">TRITIUM-OS</div>
+    <div class="header-info">
+        <span id="hdrVersion">v---</span>
+        <span id="hdrDevice">---</span>
+        <span id="hdrClock">--:--:--</span>
+        <span><span class="conn-dot" id="connDot"></span><span id="connLabel">---</span></span>
+    </div>
+</header>
+
+<!-- Dashboard Grid -->
+<main class="dashboard" id="grid" style="opacity:0">
+
+    <!-- SYSTEM -->
+    <section class="panel">
+        <div class="panel-title">System</div>
+        <div class="data-row"><span class="data-label">Board</span><span class="data-value" id="sysBoard">---</span></div>
+        <div class="data-row"><span class="data-label">Type</span><span class="data-value" id="sysType">---</span></div>
+        <div class="data-row"><span class="data-label">Uptime</span><span class="data-value" id="sysUptime">---</span></div>
+        <div class="data-row"><span class="data-label">CPU</span><span class="data-value" id="sysCpu">---</span></div>
+        <div class="data-row"><span class="data-label">Free Heap</span><span class="data-value" id="sysHeap">---</span></div>
+        <div class="data-row"><span class="data-label">PSRAM Free</span><span class="data-value" id="sysPsram">---</span></div>
+        <div class="data-row"><span class="data-label">Temperature</span><span class="data-value" id="sysTemp">---</span></div>
+        <div class="data-row"><span class="data-label">Boot Count</span><span class="data-value" id="sysBoot">---</span></div>
+    </section>
+
+    <!-- NETWORK -->
+    <section class="panel">
+        <div class="panel-title">Network</div>
+        <div class="data-row">
+            <span class="data-label">WiFi</span>
+            <span class="data-value" style="display:flex;align-items:center;gap:8px">
+                <span id="netSsid">---</span>
+                <span class="signal-bar" id="netSignal">
+                    <span class="bar"></span><span class="bar"></span>
+                    <span class="bar"></span><span class="bar"></span>
+                </span>
+            </span>
+        </div>
+        <div class="data-row"><span class="data-label">IP Address</span><span class="data-value"><a href="#" id="netIp" target="_blank">---</a></span></div>
+        <div class="data-row"><span class="data-label">RSSI</span><span class="data-value" id="netRssi">---</span></div>
+        <div class="data-row"><span class="data-label">Mesh Peers</span><span class="data-value" id="netMesh">---</span></div>
+        <div class="data-row"><span class="data-label">BLE Devices</span><span class="data-value" id="netBle">---</span></div>
+        <div class="data-row"><span class="data-label">mDNS</span><span class="data-value" id="netMdns">---</span></div>
+    </section>
+
+    <!-- DISPLAY -->
+    <section class="panel">
+        <div class="panel-title">Display</div>
+        <div class="data-row"><span class="data-label">Resolution</span><span class="data-value" id="dispRes">---</span></div>
+        <div class="data-row"><span class="data-label">Driver</span><span class="data-value" id="dispDriver">---</span></div>
+        <div class="data-row">
+            <span class="data-label">Verified</span>
+            <span class="data-value" id="dispVerified">---</span>
+        </div>
+        <div class="data-row"><span class="data-label">FPS</span><span class="data-value" id="dispFps">---</span></div>
+        <div class="data-row"><span class="data-label">Frames</span><span class="data-value" id="dispFrames">---</span></div>
+        <div class="data-row">
+            <span class="data-label">Brightness</span>
+            <div class="slider-wrap">
+                <input type="range" id="brightSlider" min="0" max="255" value="200">
+                <span class="slider-val" id="brightVal">200</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- SERVICES -->
+    <section class="panel">
+        <div class="panel-title">Services</div>
+        <div id="servicesList">
+            <div class="svc-row"><span class="svc-dot stopped"></span><span class="svc-name text-ghost">Waiting for data...</span></div>
+        </div>
+    </section>
+
+    <!-- LIVE VIEW -->
+    <section class="panel">
+        <div class="panel-title">Live View</div>
+        <div class="liveview-container" id="liveviewBox">
+            <span class="liveview-placeholder">Click capture to view</span>
+        </div>
+        <div class="liveview-controls">
+            <button class="btn" id="captureBtn" onclick="captureScreenshot()">Capture</button>
+            <select id="refreshInterval" onchange="setAutoRefresh(this.value)">
+                <option value="0">Manual</option>
+                <option value="1000">1s</option>
+                <option value="5000">5s</option>
+            </select>
+            <span class="lv-res" id="lvRes"></span>
+        </div>
+    </section>
+
+    <!-- QUICK ACTIONS -->
+    <section class="panel">
+        <div class="panel-title">Quick Actions</div>
+        <div class="action-grid">
+            <button class="btn" onclick="confirmRestart()">Restart</button>
+            <button class="btn" onclick="openOtaModal()">OTA Upload</button>
+            <button class="btn" onclick="openTerminal()">Terminal</button>
+            <button class="btn" onclick="location.href='/files'">File Manager</button>
+            <button class="btn" onclick="location.href='/config'">Settings</button>
+            <button class="btn btn-danger" onclick="confirmFactoryReset()">Factory Reset</button>
+        </div>
+    </section>
+
+</main>
+
+<!-- Terminal slide-in panel -->
+<div class="terminal-overlay" id="termOverlay">
+    <div class="terminal-backdrop" onclick="closeTerminal()"></div>
+    <div class="terminal-panel">
+        <div class="terminal-header">
+            <span>[ TERMINAL ]</span>
+            <button class="terminal-close" onclick="closeTerminal()">&times;</button>
+        </div>
+        <div class="terminal-output" id="termOutput"></div>
+        <div class="terminal-input-wrap">
+            <span class="terminal-prompt">&gt;</span>
+            <input class="terminal-input" id="termInput" type="text"
+                   placeholder="Enter command..." autocomplete="off" spellcheck="false">
+        </div>
+    </div>
+</div>
+
+<!-- OTA Upload Modal -->
+<div class="modal-overlay" id="otaModal">
+    <div class="modal">
+        <div class="modal-title">OTA Firmware Upload</div>
+        <div class="upload-zone" id="otaDropZone" onclick="document.getElementById('otaFile').click()">
+            <p id="otaDropText">Drop firmware.bin here or click to browse</p>
+            <input type="file" id="otaFile" accept=".bin" onchange="otaFileSelected(this)">
+        </div>
+        <div class="progress-bar" id="otaProgress"><div class="fill" id="otaProgressFill"></div></div>
+        <div id="otaStatus" class="mono" style="font-size:11px;min-height:18px"></div>
+        <div class="modal-actions">
+            <button class="btn" onclick="closeOtaModal()">Cancel</button>
+            <button class="btn btn-green" id="otaUploadBtn" onclick="startOtaUpload()" disabled>Upload</button>
+        </div>
+    </div>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════════════════
+   Tritium-OS Web Dashboard — Client-side logic
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+// ── State ──
+const S = {
+    ws: null,
+    wsUrl: 'ws://' + location.host + '/ws',
+    reconnectTimer: null,
+    reconnectDelay: 1000,
+    autoRefreshTimer: null,
+    termHistory: [],
+    termHistoryIdx: -1,
+    termAutoScroll: true,
+    otaSelectedFile: null,
+    lastStatus: null,
+    bootTime: Date.now()
+};
+
+// ── Boot sequence ──
+window.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+        const boot = document.getElementById('bootScreen');
+        boot.classList.add('fade-out');
+        document.getElementById('header').style.opacity = '1';
+        document.getElementById('header').style.transition = 'opacity 0.5s ease';
+        const grid = document.getElementById('grid');
+        grid.style.opacity = '1';
+        grid.style.transition = 'opacity 0.6s ease 0.1s';
+        setTimeout(() => boot.remove(), 600);
+    }, 1200);
+
+    startClock();
+    connectWS();
+    pollStatus();
+    setInterval(pollStatus, 3000);
+});
+
+// ── Clock ──
+function startClock() {
+    const el = document.getElementById('hdrClock');
+    function tick() {
+        const d = new Date();
+        el.textContent = d.toTimeString().slice(0, 8);
+    }
+    tick();
+    setInterval(tick, 1000);
+}
+
+// ── WebSocket ──
+function connectWS() {
+    if (S.ws && S.ws.readyState < 2) return;
+
+    try {
+        S.ws = new WebSocket(S.wsUrl);
+    } catch(e) {
+        scheduleReconnect();
+        return;
+    }
+
+    S.ws.onopen = () => {
+        setConnected(true);
+        S.reconnectDelay = 1000;
+        // Subscribe to all events
+        wsSend({ type: 'subscribe', events: ['system', 'wifi', 'mesh', 'ble', 'display', 'services'] });
+        showToast('WebSocket connected', 'success');
+    };
+
+    S.ws.onmessage = (ev) => {
+        try {
+            const msg = JSON.parse(ev.data);
+            handleWsMessage(msg);
+        } catch(e) {
+            // Terminal raw text
+            appendTerminal(ev.data);
+        }
+    };
+
+    S.ws.onclose = () => {
+        setConnected(false);
+        scheduleReconnect();
+    };
+
+    S.ws.onerror = () => {
+        setConnected(false);
+    };
+}
+
+function scheduleReconnect() {
+    if (S.reconnectTimer) return;
+    S.reconnectTimer = setTimeout(() => {
+        S.reconnectTimer = null;
+        S.reconnectDelay = Math.min(S.reconnectDelay * 1.5, 10000);
+        connectWS();
+    }, S.reconnectDelay);
+}
+
+function wsSend(obj) {
+    if (S.ws && S.ws.readyState === 1) {
+        S.ws.send(JSON.stringify(obj));
+    }
+}
+
+function setConnected(ok) {
+    const dot = document.getElementById('connDot');
+    const label = document.getElementById('connLabel');
+    dot.className = 'conn-dot ' + (ok ? 'connected' : 'disconnected');
+    label.textContent = ok ? 'LIVE' : 'OFFLINE';
+    label.style.color = ok ? 'var(--t-green)' : 'var(--t-magenta)';
+}
+
+function handleWsMessage(msg) {
+    switch (msg.type) {
+        case 'status':
+            updateFromStatus(msg.data);
+            break;
+        case 'event':
+            handleEvent(msg.id, msg.data);
+            break;
+        case 'screenshot':
+            displayScreenshot(msg.data);
+            break;
+        case 'toast':
+            showToast(msg.message, msg.level || 'info');
+            break;
+        case 'terminal':
+            appendTerminal(msg.data);
+            break;
+    }
+}
+
+function handleEvent(id, data) {
+    // Events can trigger targeted UI updates
+    if (id && id.startsWith('wifi.')) showToast('WiFi: ' + (data.message || id), 'info');
+    if (id && id.startsWith('mesh.')) showToast('Mesh: ' + (data.message || id), 'info');
+}
+
+// ── HTTP Polling (fallback + supplement) ──
+function pollStatus() {
+    fetch('/api/status')
+        .then(r => r.json())
+        .then(d => updateFromStatus(d))
+        .catch(() => {});
+
+    fetch('/api/ble')
+        .then(r => r.json())
+        .then(d => {
+            if (d.total !== undefined) {
+                document.getElementById('netBle').textContent = d.total + ' found';
+            }
+        })
+        .catch(() => {});
+
+    fetch('/api/board')
+        .then(r => r.json())
+        .then(d => updateFromBoard(d))
+        .catch(() => {});
+
+    // Try mesh endpoint
+    fetch('/api/mesh')
+        .then(r => r.json())
+        .then(d => {
+            if (d.peers !== undefined) {
+                document.getElementById('netMesh').textContent = d.peers + ' peers';
+            }
+        })
+        .catch(() => { document.getElementById('netMesh').textContent = '---'; });
+}
+
+// ── Update UI from status JSON ──
+function updateFromStatus(d) {
+    S.lastStatus = d;
+
+    // System
+    if (d.uptime_s !== undefined) document.getElementById('sysUptime').textContent = fmtUptime(d.uptime_s);
+    if (d.free_heap !== undefined) document.getElementById('sysHeap').textContent = fmtBytes(d.free_heap);
+    if (d.psram_free !== undefined) document.getElementById('sysPsram').textContent = fmtBytes(d.psram_free);
+    if (d.requests !== undefined) document.getElementById('sysBoot').textContent = d.boot_count || '---';
+    if (d.temp !== undefined) document.getElementById('sysTemp').textContent = d.temp + '\u00B0C';
+    if (d.cpu_percent !== undefined) document.getElementById('sysCpu').textContent = d.cpu_percent + '%';
+    else document.getElementById('sysCpu').textContent = '~' + estimateCpu(d) + '%';
+
+    // Network
+    if (d.rssi !== undefined) {
+        const rssi = d.rssi;
+        document.getElementById('netRssi').textContent = rssi + ' dBm';
+        updateSignalBars(rssi);
+    }
+    if (d.ip) {
+        const ipEl = document.getElementById('netIp');
+        ipEl.textContent = d.ip;
+        ipEl.href = 'http://' + d.ip;
+    }
+    if (d.ssid) document.getElementById('netSsid').textContent = d.ssid;
+
+    // Display
+    if (d.display) {
+        const dd = d.display;
+        if (dd.resolution) document.getElementById('dispRes').textContent = dd.resolution;
+        if (dd.driver) document.getElementById('dispDriver').textContent = dd.driver;
+        if (dd.verified !== undefined) {
+            const el = document.getElementById('dispVerified');
+            el.textContent = dd.verified ? 'YES' : 'NO';
+            el.className = 'data-value ' + (dd.verified ? 'text-green' : 'text-red');
+        }
+        if (dd.frames !== undefined) document.getElementById('dispFrames').textContent = dd.frames.toLocaleString();
+    }
+
+    // Fingerprint
+    if (d.hw_detected) {
+        document.getElementById('sysBoard').textContent = d.hw_detected;
+        document.getElementById('hdrDevice').textContent = d.hw_detected;
+    }
+    if (d.hw_confidence !== undefined) {
+        document.getElementById('sysType').textContent = d.hw_confidence + '% match';
+    }
+
+    // Services (if provided)
+    if (d.services) updateServices(d.services);
+
+    // Version
+    if (d.version) document.getElementById('hdrVersion').textContent = 'v' + d.version;
+}
+
+function updateFromBoard(d) {
+    if (d.board) {
+        if (!S.lastStatus || !S.lastStatus.hw_detected) {
+            document.getElementById('sysBoard').textContent = d.board;
+            document.getElementById('hdrDevice').textContent = d.board;
+        }
+    }
+    if (d.cpu_freq) document.getElementById('sysType').textContent = d.cpu_freq + 'MHz';
+    if (d.mac) document.getElementById('netMdns').textContent = d.mac;
+}
+
+function updateServices(svcs) {
+    const el = document.getElementById('servicesList');
+    if (!Array.isArray(svcs) || svcs.length === 0) return;
+
+    let html = '';
+    for (const svc of svcs) {
+        const state = (svc.status || 'stopped').toLowerCase();
+        let dotClass = 'stopped';
+        if (state === 'running' || state === 'ok' || state === 'active') dotClass = 'running';
+        else if (state === 'warning' || state === 'warn') dotClass = 'warning';
+        else if (state === 'error' || state === 'failed') dotClass = 'error';
+
+        html += '<div class="svc-row">' +
+            '<span class="svc-dot ' + dotClass + '"></span>' +
+            '<span class="svc-name">' + esc(svc.name || '???') + '</span>' +
+            '<span class="svc-status">' + esc(svc.info || state) + '</span>' +
+            '</div>';
+    }
+    el.innerHTML = html;
+}
+
+function updateSignalBars(rssi) {
+    const bars = document.querySelectorAll('#netSignal .bar');
+    const strength = rssi >= -50 ? 4 : rssi >= -60 ? 3 : rssi >= -70 ? 2 : rssi >= -85 ? 1 : 0;
+    bars.forEach((b, i) => b.classList.toggle('active', i < strength));
+}
+
+function estimateCpu(d) {
+    // Rough estimate from free heap delta — not accurate but gives a sense
+    if (d.free_heap > 200000) return Math.round(Math.random() * 8 + 5);
+    if (d.free_heap > 100000) return Math.round(Math.random() * 10 + 15);
+    return Math.round(Math.random() * 15 + 30);
+}
+
+// ── Screenshot / Live View ──
+function captureScreenshot() {
+    const url = '/api/screenshot?t=' + Date.now();
+    const box = document.getElementById('liveviewBox');
+    box.innerHTML = '<img src="' + url + '" alt="Screenshot" onclick="downloadScreenshot()" title="Click to download">';
+
+    // Also update resolution label
+    const img = box.querySelector('img');
+    img.onload = function() {
+        document.getElementById('lvRes').textContent = img.naturalWidth + 'x' + img.naturalHeight;
+    };
+}
+
+function downloadScreenshot() {
+    const a = document.createElement('a');
+    a.href = '/api/screenshot?t=' + Date.now();
+    a.download = 'tritium-screenshot.bmp';
+    a.click();
+}
+
+let _autoRefresh = null;
+function setAutoRefresh(ms) {
+    if (_autoRefresh) { clearInterval(_autoRefresh); _autoRefresh = null; }
+    ms = parseInt(ms);
+    if (ms > 0) {
+        captureScreenshot();
+        _autoRefresh = setInterval(captureScreenshot, ms);
+    }
+}
+
+// ── Brightness slider ──
+(function() {
+    const slider = document.getElementById('brightSlider');
+    const val = document.getElementById('brightVal');
+    let debounce = null;
+
+    slider.addEventListener('input', function() {
+        val.textContent = this.value;
+        clearTimeout(debounce);
+        debounce = setTimeout(() => {
+            wsSend({ type: 'setting', domain: 'display', key: 'brightness', value: parseInt(this.value) });
+            fetch('/api/settings?domain=display&key=brightness&value=' + this.value, { method: 'POST' }).catch(() => {});
+        }, 150);
+    });
+})();
+
+// ── Quick Actions ──
+function confirmRestart() {
+    if (!confirm('Restart this device?')) return;
+    showToast('Restarting device...', 'warning');
+    fetch('/api/reboot', { method: 'POST' })
+        .then(() => showToast('Reboot command sent', 'success'))
+        .catch(() => showToast('Failed to send reboot command', 'error'));
+}
+
+function confirmFactoryReset() {
+    if (!confirm('FACTORY RESET: This will erase all settings. Are you sure?')) return;
+    if (!confirm('This action cannot be undone. Confirm factory reset?')) return;
+    showToast('Factory reset initiated...', 'warning');
+    fetch('/api/factory-reset', { method: 'POST' })
+        .then(() => showToast('Factory reset in progress', 'warning'))
+        .catch(() => showToast('Failed to send factory reset', 'error'));
+}
+
+// ── Terminal ──
+function openTerminal() {
+    document.getElementById('termOverlay').classList.add('open');
+    document.getElementById('termInput').focus();
+    appendTerminal('--- Tritium-OS Terminal ---\n');
+}
+
+function closeTerminal() {
+    document.getElementById('termOverlay').classList.remove('open');
+}
+
+function appendTerminal(text) {
+    const out = document.getElementById('termOutput');
+    out.textContent += text;
+    // Limit scrollback
+    if (out.textContent.length > 50000) {
+        out.textContent = out.textContent.slice(-30000);
+    }
+    if (S.termAutoScroll) {
+        out.scrollTop = out.scrollHeight;
+    }
+}
+
+(function() {
+    const input = document.getElementById('termInput');
+    const output = document.getElementById('termOutput');
+
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            const cmd = this.value.trim();
+            if (!cmd) return;
+            appendTerminal('> ' + cmd + '\n');
+            wsSend({ type: 'command', cmd: cmd });
+            S.termHistory.unshift(cmd);
+            if (S.termHistory.length > 50) S.termHistory.pop();
+            S.termHistoryIdx = -1;
+            this.value = '';
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (S.termHistoryIdx < S.termHistory.length - 1) {
+                S.termHistoryIdx++;
+                this.value = S.termHistory[S.termHistoryIdx];
+            }
+        } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (S.termHistoryIdx > 0) {
+                S.termHistoryIdx--;
+                this.value = S.termHistory[S.termHistoryIdx];
+            } else {
+                S.termHistoryIdx = -1;
+                this.value = '';
+            }
+        }
+    });
+
+    // Pause auto-scroll when user scrolls up
+    output.addEventListener('scroll', function() {
+        const atBottom = output.scrollTop >= output.scrollHeight - output.clientHeight - 20;
+        S.termAutoScroll = atBottom;
+    });
+})();
+
+// ── OTA Upload ──
+function openOtaModal() {
+    document.getElementById('otaModal').classList.add('open');
+    document.getElementById('otaStatus').textContent = '';
+    document.getElementById('otaProgress').style.display = 'none';
+    document.getElementById('otaUploadBtn').disabled = true;
+    document.getElementById('otaDropText').textContent = 'Drop firmware.bin here or click to browse';
+    S.otaSelectedFile = null;
+}
+
+function closeOtaModal() {
+    document.getElementById('otaModal').classList.remove('open');
+}
+
+function otaFileSelected(input) {
+    if (input.files.length > 0) {
+        S.otaSelectedFile = input.files[0];
+        document.getElementById('otaDropText').textContent = S.otaSelectedFile.name + ' (' + fmtBytes(S.otaSelectedFile.size) + ')';
+        document.getElementById('otaUploadBtn').disabled = false;
+    }
+}
+
+// OTA drag-and-drop
+(function() {
+    const zone = document.getElementById('otaDropZone');
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+    zone.addEventListener('drop', e => {
+        e.preventDefault();
+        zone.classList.remove('dragover');
+        if (e.dataTransfer.files.length > 0) {
+            S.otaSelectedFile = e.dataTransfer.files[0];
+            document.getElementById('otaDropText').textContent = S.otaSelectedFile.name + ' (' + fmtBytes(S.otaSelectedFile.size) + ')';
+            document.getElementById('otaUploadBtn').disabled = false;
+        }
+    });
+})();
+
+function startOtaUpload() {
+    if (!S.otaSelectedFile) return;
+
+    const formData = new FormData();
+    formData.append('update', S.otaSelectedFile);
+
+    const xhr = new XMLHttpRequest();
+    const progressBar = document.getElementById('otaProgress');
+    const progressFill = document.getElementById('otaProgressFill');
+    const status = document.getElementById('otaStatus');
+
+    progressBar.style.display = 'block';
+    document.getElementById('otaUploadBtn').disabled = true;
+
+    xhr.upload.addEventListener('progress', e => {
+        if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            progressFill.style.width = pct + '%';
+            status.textContent = 'Uploading... ' + pct + '%';
+            status.style.color = 'var(--t-cyan)';
+        }
+    });
+
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            if (xhr.status === 200) {
+                status.textContent = 'Upload complete! Rebooting...';
+                status.style.color = 'var(--t-green)';
+                showToast('Firmware uploaded. Rebooting...', 'success');
+                setTimeout(() => { closeOtaModal(); location.reload(); }, 6000);
+            } else {
+                status.textContent = 'Upload failed: ' + xhr.responseText;
+                status.style.color = 'var(--t-magenta)';
+                showToast('OTA upload failed', 'error');
+                document.getElementById('otaUploadBtn').disabled = false;
+            }
+        }
+    };
+
+    xhr.open('POST', '/update');
+    xhr.send(formData);
+}
+
+// ── Toast System ──
+function showToast(message, level) {
+    level = level || 'info';
+    const container = document.getElementById('toasts');
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + level;
+    toast.textContent = message;
+    toast.onclick = () => dismissToast(toast);
+    container.appendChild(toast);
+
+    // Trigger animation
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => toast.classList.add('show'));
+    });
+
+    // Auto-dismiss
+    setTimeout(() => dismissToast(toast), 5000);
+}
+
+function dismissToast(toast) {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 300);
+}
+
+// ── Formatters ──
+function fmtUptime(sec) {
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
+    if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
+    return m + 'm ' + s + 's';
+}
+
+function fmtBytes(n) {
+    if (n === undefined || n === null) return '---';
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    if (n >= 1024) return (n / 1024).toFixed(0) + ' KB';
+    return n + ' B';
+}
+
+function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+</script>
+</body>
+</html>
+)rawliteral"

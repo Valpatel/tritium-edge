@@ -12,6 +12,7 @@ static constexpr const char* TAG = "ota";
 #ifndef SIMULATOR
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <Update.h>
 #include <WebServer.h>
 #include <HTTPClient.h>

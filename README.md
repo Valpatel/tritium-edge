@@ -1,6 +1,6 @@
-# ESP32 Hardware
+# Tritium-Edge — Software Defined IoT
 
-Multi-board ESP32-S3 display firmware targeting 6 Waveshare development boards. Supports AMOLED (QSPI), IPS LCD (QSPI), and IPS LCD (RGB parallel) display technologies through a unified app architecture.
+Multi-board ESP32-S3 fleet firmware targeting 6 Waveshare development boards. Supports AMOLED (QSPI), IPS LCD (QSPI), and IPS LCD (RGB parallel) displays through a unified app architecture with ServiceRegistry-based HAL management, fleet heartbeat, remote diagnostics, ESP-NOW mesh, BLE scanning, OTA updates, and an embedded web server.
 
 ## Supported Boards
 
@@ -46,7 +46,7 @@ pio run -e touch-lcd-35bc-camera -t upload
 Each directory has its own README.md with mermaid diagrams — click through on GitHub for details.
 
 ```
-esp32-hardware/
+tritium-edge/
 ├── src/                      Firmware entry point (main.cpp)
 ├── include/                  Shared headers (app.h, display_init.h, lv_conf.h)
 │   └── boards/               Per-board pin definitions (one .h per board)
@@ -81,15 +81,16 @@ graph TB
         WIFI[WiFi Setup]
     end
 
-    subgraph "Core (include/)"
+    subgraph "Core (include/ + src/)"
         APP[App Interface<br>setup / loop]
-        DI[Display Init<br>Board-specific LGFX]
+        SR[ServiceRegistry<br>Priority init, tick, dispatch]
+        DI[Display HAL<br>esp_lcd + DMA]
     end
 
     subgraph "Libraries (lib/)"
-        HAL[HAL Libraries<br>IMU, Audio, Camera,<br>WiFi, MQTT, Power, ...]
-        DRV[Display Drivers<br>Panel_AXS15231B]
-        LVGL[hal_ui<br>LVGL Framework]
+        HAL[HAL Services<br>WiFi, BLE, Heartbeat,<br>Diag, ESP-NOW, LoRa, ...]
+        DRV[Display Drivers<br>AXS15231B, SH8601, ST7262]
+        WEB[Web Server<br>Screenshot, Status, OTA]
     end
 
     subgraph "Hardware"
@@ -103,15 +104,18 @@ graph TB
 
     SF & CAM & SYS & UI & WIFI --> APP
     APP --> DI
-    UI & WIFI --> LVGL
-    SYS & CAM --> HAL
+    APP --> SR
+    SR --> HAL
+    SR --> WEB
+    UI & WIFI --> HAL
     DI --> DRV
     DI --> B1 & B2 & B3 & B4 & B5 & B6
 ```
 
-- **Board selection**: Compile-time via `-DBOARD_*` flag. `display_init.h` instantiates the correct LovyanGFX `LGFX` class for that board's display panel, bus, and pins.
+- **Board selection**: Compile-time via `-DBOARD_*` flag. Board-specific display configs in `lib/display/boards/` select the correct esp_lcd panel driver, SPI pins, and init sequence.
 - **App selection**: Compile-time via `-DAPP_*` flag. `main.cpp` instantiates the selected app. Reusable `[app_*]` sections in `platformio.ini` define what gets compiled.
-- **App interface**: All apps inherit from `App` with virtual `setup(LGFX&)` and `loop(LGFX&)`. Apps can draw directly with LovyanGFX or use LVGL for widget UIs.
+- **App interface**: All apps inherit from `App` with virtual `setup(esp_lcd_panel_handle_t, w, h)` and `loop()`. Apps render to a PSRAM framebuffer and push via DMA.
+- **Service architecture**: HALs are wrapped as `ServiceInterface` adapters, managed by `ServiceRegistry`. Priority-ordered init, tick dispatch, serial command routing, JSON status.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 

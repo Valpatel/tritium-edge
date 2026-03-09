@@ -1,54 +1,44 @@
 #pragma once
 #include "app.h"
 #include "StarField.h"
-#include "hal_power.h"
-#include "hal_imu.h"
-#include "battery_monitor.h"
-#include "battery_widget.h"
 
 class StarfieldApp : public App {
 public:
     const char* name() override { return "Starfield"; }
-    void setup(LGFX& display) override;
-    void loop(LGFX& display) override;
+    void setup(esp_lcd_panel_handle_t panel, int width, int height) override;
+    void loop() override;
+
+    // Status overlay text (set from main.cpp for commissioning info)
+    void setOverlayText(const char* line1, const char* line2 = nullptr, const char* line3 = nullptr);
+    uint16_t* getFramebuffer(int& width, int& height) override { width = _w; height = _h; return _framebuf; }
 
 private:
+    static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b);
     static uint16_t tintedColor(float brightness, StarTint tint);
-    void drawSplash(LGFX& display);
     float currentSpeed() const;
+    void pushFramebuffer();
+    void drawChar(int x, int y, char c, uint16_t color);
+    void drawString(int x, int y, const char* str, uint16_t color);
 
-    LGFX_Sprite* _canvas = nullptr;
-    LGFX_Sprite* _overlay = nullptr;
-    uint16_t* _line_buf = nullptr;
+    esp_lcd_panel_handle_t _panel = nullptr;
+    int _w = 0;
+    int _h = 0;
+
+    uint16_t* _framebuf = nullptr;
+    uint16_t* _dma_buf = nullptr;
     StarField* _starfield = nullptr;
-    int _render_scale = 1;  // 1=native, 2=half-res scaled up
 
-    // Profiling (serial only, no on-screen FPS)
+    static constexpr int CHUNK_ROWS = 64;
+
+    // FPS tracking
     uint32_t _frame_count = 0;
     uint32_t _fps_timer = 0;
-    float _fps = 0.0f;
-    uint32_t _render_ms = 0;
-    uint32_t _push_ms = 0;
 
-    // Splash screen
-    uint32_t _start_time = 0;
-    bool _splash_done = false;
-
-    // Warp
+    // Warp speed cycling
     uint32_t _warp_timer = 0;
     bool _warping = false;
+    uint32_t _warp_cycle_timer = 0;
 
-    // Battery + IMU
-    PowerHAL _power;
-    IMUHAL _imu;
-    BatteryMonitor _battery;
-    BatteryWidget _battWidget;
-    bool _power_ok = false;
-    bool _imu_ok = false;
-    uint32_t _bat_timer = 0;
-
-    // UI visibility — show on touch/motion, hide after timeout
-    bool _ui_visible = false;
-    uint32_t _ui_show_time = 0;
-    static constexpr uint32_t UI_TIMEOUT_MS = 4000;
+    // Status overlay
+    char _overlay[3][48] = {};
 };

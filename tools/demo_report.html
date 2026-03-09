@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TRITIUM-OS TEST REPORT</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --void: #0a0a0f;
+    --surface-1: #0e0e14;
+    --surface-2: #12121a;
+    --surface-3: #1a1a2e;
+    --cyan: #00f0ff;
+    --magenta: #ff2a6d;
+    --green: #05ffa1;
+    --yellow: #fcee0a;
+    --text: #c8d0dc;
+    --text-bright: #e0e0ff;
+    --border: rgba(0, 240, 255, 0.2);
+    --glow: rgba(0, 240, 255, 0.15);
+  }
+
+  body {
+    background: var(--void);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+  /* Header */
+  .header {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 24px;
+    margin-bottom: 16px;
+    box-shadow: 0 0 10px var(--glow);
+  }
+  .header-top {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 8px;
+  }
+  .header-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--cyan);
+    box-shadow: 0 0 8px var(--cyan);
+  }
+  .header-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 18px; font-weight: 600;
+    color: var(--text-bright);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+  }
+  .header-meta {
+    display: flex; gap: 24px; flex-wrap: wrap;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; color: var(--text);
+  }
+  .header-meta span { opacity: 0.7; }
+  .header-meta .val { color: var(--cyan); opacity: 1; }
+
+  /* Controls */
+  .controls {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 24px;
+    margin-bottom: 16px;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .controls label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; text-transform: uppercase;
+    color: var(--text); letter-spacing: 1px;
+  }
+  .controls input[type="text"] {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--cyan);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    padding: 8px 12px;
+    width: 180px;
+    outline: none;
+  }
+  .controls input[type="text"]:focus {
+    border-color: var(--cyan);
+    box-shadow: 0 0 8px var(--glow);
+  }
+  .btn {
+    background: transparent;
+    border: 1px solid var(--cyan);
+    color: var(--cyan);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .btn:hover:not(:disabled) {
+    background: rgba(0, 240, 255, 0.1);
+    box-shadow: 0 0 12px var(--glow);
+  }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .btn-run { border-color: var(--green); color: var(--green); }
+  .btn-run:hover:not(:disabled) {
+    background: rgba(5, 255, 161, 0.1);
+    box-shadow: 0 0 12px rgba(5, 255, 161, 0.15);
+  }
+  .btn-save { border-color: var(--yellow); color: var(--yellow); }
+  .btn-save:hover:not(:disabled) {
+    background: rgba(252, 238, 10, 0.1);
+    box-shadow: 0 0 12px rgba(252, 238, 10, 0.15);
+  }
+  .spacer { flex: 1; }
+
+  /* Progress */
+  .progress-bar {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 24px;
+    margin-bottom: 16px;
+    display: none;
+  }
+  .progress-bar.active { display: block; }
+  .progress-status {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; margin-bottom: 8px;
+    color: var(--text);
+  }
+  .progress-status .step { color: var(--cyan); }
+  .progress-track {
+    background: var(--surface-1);
+    border-radius: 4px;
+    height: 6px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--cyan), var(--green));
+    border-radius: 4px;
+    transition: width 0.3s ease;
+    width: 0%;
+  }
+
+  /* Sections */
+  .section {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .section-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text-bright);
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-1);
+  }
+  .section-body { padding: 16px 24px; }
+
+  /* Card grid */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .card:hover {
+    border-color: var(--cyan);
+    box-shadow: 0 0 12px var(--glow);
+  }
+  .card-img {
+    width: 100%;
+    aspect-ratio: 5/3;
+    background: var(--void);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+  }
+  .card-img img {
+    width: 100%; height: 100%;
+    object-fit: contain;
+  }
+  .card-img .placeholder {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; color: rgba(200,208,220,0.3);
+    text-transform: uppercase;
+  }
+  .card-info {
+    padding: 8px 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .card-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .card-status {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 500;
+  }
+  .status-ok { color: var(--green); }
+  .status-err { color: var(--magenta); }
+  .status-wait { color: rgba(200,208,220,0.3); }
+  .status-run { color: var(--yellow); }
+
+  /* System info grid */
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 8px;
+  }
+  .info-item {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+  }
+  .info-item .label { color: var(--text); opacity: 0.6; }
+  .info-item .value { color: var(--cyan); }
+
+  /* Lightbox */
+  .lightbox {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(10,10,15,0.92);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .lightbox.active { display: flex; }
+  .lightbox img {
+    max-width: 90vw;
+    max-height: 85vh;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: 0 0 30px var(--glow);
+  }
+  .lightbox-caption {
+    position: fixed; bottom: 24px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px; color: var(--text-bright);
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+
+  /* Log area */
+  .log-area {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.8;
+    margin-top: 12px;
+  }
+  .log-area .log-line { color: var(--text); opacity: 0.7; }
+  .log-area .log-ok { color: var(--green); }
+  .log-area .log-err { color: var(--magenta); }
+  .log-area .log-info { color: var(--cyan); }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-top">
+      <div class="header-dot"></div>
+      <div class="header-title">TRITIUM-OS TEST REPORT</div>
+    </div>
+    <div class="header-meta" id="headerMeta">
+      <div>Device: <span class="val" id="metaIp">--</span></div>
+      <div>Board: <span class="val" id="metaBoard">--</span></div>
+      <div>Resolution: <span class="val" id="metaRes">--</span></div>
+      <div>Uptime: <span class="val" id="metaUptime">--</span></div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <label>IP:</label>
+    <input type="text" id="ipInput" placeholder="192.168.1.x" value="">
+    <button class="btn" id="btnConnect" onclick="doConnect()">Connect</button>
+    <button class="btn btn-run" id="btnRun" onclick="doRun()" disabled>Run Demo</button>
+    <div class="spacer"></div>
+    <button class="btn btn-save" id="btnSave" onclick="doSave()" disabled>Save Report</button>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress-bar" id="progressBar">
+    <div class="progress-status">
+      Status: <span class="step" id="progressText">Idle</span>
+    </div>
+    <div class="progress-track">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+  </div>
+
+  <!-- Device Shell Apps -->
+  <div class="section" id="sectionShell" style="display:none;">
+    <div class="section-title">DEVICE SHELL APPS</div>
+    <div class="section-body">
+      <div class="card-grid" id="gridShell"></div>
+    </div>
+  </div>
+
+  <!-- Web Pages -->
+  <div class="section" id="sectionWeb" style="display:none;">
+    <div class="section-title">WEB PAGES</div>
+    <div class="section-body">
+      <div class="card-grid" id="gridWeb"></div>
+    </div>
+  </div>
+
+  <!-- System Info -->
+  <div class="section" id="sectionInfo" style="display:none;">
+    <div class="section-title">SYSTEM INFO</div>
+    <div class="section-body">
+      <div class="info-grid" id="infoGrid"></div>
+      <div class="log-area" id="logArea"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <img id="lightboxImg" src="" alt="">
+  <div class="lightbox-caption" id="lightboxCaption"></div>
+</div>
+
+<script>
+// ── State ───────────────────────────────────────────────────────────────────
+let baseUrl = '';
+let deviceInfo = null;
+let statusInfo = null;
+let shellApps = [];
+let screenshots = {};  // name -> {url, blob, timestamp}
+let webResults = {};    // path -> {ok, status, timestamp}
+let testStart = 0;
+let testEnd = 0;
+let totalSteps = 0;
+let currentStep = 0;
+
+const WEB_PAGES = [
+  { path: '/', name: 'Dashboard' },
+  { path: '/wifi', name: 'WiFi Config' },
+  { path: '/files', name: 'File Manager' },
+  { path: '/ota', name: 'OTA Updates' },
+  { path: '/mesh', name: 'Mesh Network' },
+  { path: '/terminal', name: 'Web Terminal' },
+  { path: '/remote', name: 'Remote Control' },
+  { path: '/logs', name: 'Log Viewer' },
+  { path: '/system', name: 'System Info' },
+];
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+function $(id) { return document.getElementById(id); }
+
+function formatUptime(s) {
+  if (!s && s !== 0) return '--';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return h + 'h ' + m + 'm';
+  return m + 'm ' + (s % 60) + 's';
+}
+
+function formatBytes(b) {
+  if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB';
+  if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+  return b + ' B';
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function log(msg, cls) {
+  const el = $('logArea');
+  const d = document.createElement('div');
+  d.className = 'log-line' + (cls ? ' log-' + cls : '');
+  const ts = new Date().toLocaleTimeString();
+  d.textContent = '[' + ts + '] ' + msg;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setProgress(step, total, text) {
+  currentStep = step;
+  totalSteps = total;
+  $('progressText').textContent =
+    'Step ' + step + '/' + total + ' — ' + text;
+  $('progressFill').style.width = Math.round((step / total) * 100) + '%';
+}
+
+async function apiFetch(path, opts) {
+  const url = baseUrl + path;
+  const resp = await fetch(url, Object.assign({ mode: 'cors' }, opts || {}));
+  return resp;
+}
+
+async function apiJson(path) {
+  const resp = await apiFetch(path);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.json();
+}
+
+// ── Lightbox ────────────────────────────────────────────────────────────────
+function openLightbox(src, caption) {
+  $('lightboxImg').src = src;
+  $('lightboxCaption').textContent = caption || '';
+  $('lightbox').classList.add('active');
+}
+
+function closeLightbox() {
+  $('lightbox').classList.remove('active');
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeLightbox();
+});
+
+// ── Card creation ───────────────────────────────────────────────────────────
+function createCard(name, container, type) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.id = 'card-' + type + '-' + name.replace(/[^a-zA-Z0-9]/g, '_');
+
+  const imgDiv = document.createElement('div');
+  imgDiv.className = 'card-img';
+  const ph = document.createElement('div');
+  ph.className = 'placeholder';
+  ph.textContent = 'WAITING';
+  imgDiv.appendChild(ph);
+
+  const info = document.createElement('div');
+  info.className = 'card-info';
+  const nameEl = document.createElement('div');
+  nameEl.className = 'card-name';
+  nameEl.textContent = name;
+  const statusEl = document.createElement('div');
+  statusEl.className = 'card-status status-wait';
+  statusEl.textContent = '--';
+
+  info.appendChild(nameEl);
+  info.appendChild(statusEl);
+  card.appendChild(imgDiv);
+  card.appendChild(info);
+  container.appendChild(card);
+  return card;
+}
+
+function updateCardImage(card, blobUrl, name) {
+  const imgDiv = card.querySelector('.card-img');
+  imgDiv.innerHTML = '';
+  const img = document.createElement('img');
+  img.src = blobUrl;
+  img.alt = name;
+  imgDiv.appendChild(img);
+
+  card.onclick = function() { openLightbox(blobUrl, name); };
+
+  const st = card.querySelector('.card-status');
+  st.textContent = 'OK';
+  st.className = 'card-status status-ok';
+}
+
+function updateCardStatus(card, ok, statusText) {
+  const st = card.querySelector('.card-status');
+  if (ok) {
+    st.textContent = statusText || 'OK';
+    st.className = 'card-status status-ok';
+  } else {
+    st.textContent = statusText || 'ERR';
+    st.className = 'card-status status-err';
+  }
+}
+
+function updateCardRunning(card) {
+  const st = card.querySelector('.card-status');
+  st.textContent = '...';
+  st.className = 'card-status status-run';
+  const ph = card.querySelector('.placeholder');
+  if (ph) ph.textContent = 'CAPTURING';
+}
+
+function updateCardWebLink(card, path) {
+  const imgDiv = card.querySelector('.card-img');
+  imgDiv.innerHTML = '';
+  const link = document.createElement('a');
+  link.href = baseUrl + path;
+  link.target = '_blank';
+  link.style.cssText =
+    'color:var(--cyan);font-family:JetBrains Mono,monospace;font-size:11px;' +
+    'text-decoration:none;text-transform:uppercase;letter-spacing:1px;';
+  link.textContent = 'Open Page';
+  imgDiv.appendChild(link);
+  card.onclick = function(e) {
+    if (e.target !== link) window.open(baseUrl + path, '_blank');
+  };
+}
+
+// ── Connect ─────────────────────────────────────────────────────────────────
+async function doConnect() {
+  const ip = $('ipInput').value.trim();
+  if (!ip) { alert('Enter device IP address'); return; }
+
+  baseUrl = 'http://' + ip;
+  $('btnConnect').disabled = true;
+  $('btnConnect').textContent = '...';
+
+  try {
+    deviceInfo = await apiJson('/api/remote/info');
+    log('Connected to device at ' + ip, 'ok');
+    log('Display: ' + deviceInfo.width + 'x' + deviceInfo.height +
+        ' | Shell: ' + deviceInfo.shell + ' | Touch: ' + deviceInfo.touch, 'info');
+
+    $('metaIp').textContent = ip;
+    $('metaRes').textContent = deviceInfo.width + 'x' + deviceInfo.height;
+    $('metaUptime').textContent = formatUptime(deviceInfo.uptime_s);
+
+    try {
+      statusInfo = await apiJson('/api/status');
+      if (statusInfo.display) {
+        $('metaBoard').textContent = statusInfo.display.board || '--';
+      }
+    } catch (e) {
+      log('Could not fetch /api/status: ' + e.message, 'err');
+    }
+
+    $('btnRun').disabled = false;
+    $('sectionInfo').style.display = '';
+    updateSysInfo();
+  } catch (e) {
+    log('Connection failed: ' + e.message, 'err');
+    alert('Cannot connect to ' + baseUrl + '\n\n' + e.message +
+          '\n\nMake sure the device is on the same network and CORS is enabled.');
+  }
+
+  $('btnConnect').disabled = false;
+  $('btnConnect').textContent = 'Connect';
+}
+
+// ── Run Demo ────────────────────────────────────────────────────────────────
+async function doRun() {
+  $('btnRun').disabled = true;
+  $('btnSave').disabled = true;
+  $('progressBar').classList.add('active');
+  testStart = Date.now();
+
+  // Determine total steps
+  let shellCount = 0;
+  if (deviceInfo.shell) {
+    try {
+      const appsData = await apiJson('/api/shell/apps');
+      shellApps = appsData.apps || [];
+      shellCount = shellApps.length + 1; // +1 for launcher
+    } catch (e) {
+      log('Shell apps API not available: ' + e.message, 'err');
+      shellApps = [];
+    }
+  }
+  totalSteps = shellCount + WEB_PAGES.length + 1; // +1 for sys info
+
+  // Build shell cards
+  if (shellCount > 0) {
+    $('sectionShell').style.display = '';
+    $('gridShell').innerHTML = '';
+    createCard('Launcher', $('gridShell'), 'shell');
+    for (const app of shellApps) {
+      createCard(app.name, $('gridShell'), 'shell');
+    }
+  }
+
+  // Build web cards
+  $('sectionWeb').style.display = '';
+  $('gridWeb').innerHTML = '';
+  for (const wp of WEB_PAGES) {
+    createCard(wp.name, $('gridWeb'), 'web');
+  }
+
+  let step = 0;
+
+  // ── Shell screenshots ───────────────────────────────────────────────────
+  if (shellCount > 0) {
+    // Go home first
+    step++;
+    setProgress(step, totalSteps, 'Launcher');
+    try {
+      await apiFetch('/api/shell/home', { method: 'POST' });
+      await sleep(800);
+      const launcherCard = document.querySelector('#card-shell-Launcher');
+      if (launcherCard) updateCardRunning(launcherCard);
+      const blob = await captureScreenshot();
+      const url = URL.createObjectURL(blob);
+      screenshots['Launcher'] = { url: url, blob: blob, timestamp: new Date().toISOString() };
+      if (launcherCard) updateCardImage(launcherCard, url, 'Launcher');
+      log('Captured: Launcher', 'ok');
+    } catch (e) {
+      log('Failed to capture Launcher: ' + e.message, 'err');
+      const c = document.querySelector('#card-shell-Launcher');
+      if (c) updateCardStatus(c, false, 'ERR');
+    }
+
+    // Each app
+    for (let i = 0; i < shellApps.length; i++) {
+      const app = shellApps[i];
+      step++;
+      setProgress(step, totalSteps, app.name);
+      const cardId = '#card-shell-' + app.name.replace(/[^a-zA-Z0-9]/g, '_');
+      const card = document.querySelector(cardId);
+
+      try {
+        if (card) updateCardRunning(card);
+        await apiFetch('/api/shell/launch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ index: app.index })
+        });
+        await sleep(1200);
+        const blob = await captureScreenshot();
+        const url = URL.createObjectURL(blob);
+        screenshots[app.name] = { url: url, blob: blob, timestamp: new Date().toISOString() };
+        if (card) updateCardImage(card, url, app.name);
+        log('Captured: ' + app.name, 'ok');
+      } catch (e) {
+        log('Failed: ' + app.name + ' — ' + e.message, 'err');
+        if (card) updateCardStatus(card, false, 'ERR');
+      }
+    }
+
+    // Return home
+    try {
+      await apiFetch('/api/shell/home', { method: 'POST' });
+    } catch (e) { /* ok */ }
+  }
+
+  // ── Web page checks ──────────────────────────────────────────────────────
+  for (let i = 0; i < WEB_PAGES.length; i++) {
+    const wp = WEB_PAGES[i];
+    step++;
+    setProgress(step, totalSteps, wp.name + ' (web)');
+    const cardId = '#card-web-' + wp.name.replace(/[^a-zA-Z0-9]/g, '_');
+    const card = document.querySelector(cardId);
+    if (card) updateCardRunning(card);
+
+    try {
+      const resp = await apiFetch(wp.path);
+      const ok = resp.ok;
+      webResults[wp.path] = {
+        ok: ok,
+        status: resp.status,
+        timestamp: new Date().toISOString()
+      };
+      if (card) {
+        updateCardStatus(card, ok, ok ? resp.status + ' OK' : resp.status + ' ERR');
+        updateCardWebLink(card, wp.path);
+      }
+      log('Web ' + wp.path + ': ' + resp.status, ok ? 'ok' : 'err');
+    } catch (e) {
+      webResults[wp.path] = {
+        ok: false,
+        status: 0,
+        timestamp: new Date().toISOString()
+      };
+      if (card) updateCardStatus(card, false, 'FAIL');
+      log('Web ' + wp.path + ': ' + e.message, 'err');
+    }
+  }
+
+  // ── Final sys info refresh ────────────────────────────────────────────────
+  step++;
+  setProgress(step, totalSteps, 'System Info');
+  try {
+    deviceInfo = await apiJson('/api/remote/info');
+    statusInfo = await apiJson('/api/status');
+    updateSysInfo();
+    log('System info updated', 'ok');
+  } catch (e) {
+    log('System info refresh failed: ' + e.message, 'err');
+  }
+
+  // Done
+  testEnd = Date.now();
+  const dur = ((testEnd - testStart) / 1000).toFixed(1);
+  setProgress(totalSteps, totalSteps, 'Complete (' + dur + 's)');
+  log('Test complete in ' + dur + ' seconds', 'info');
+
+  $('btnRun').disabled = false;
+  $('btnSave').disabled = false;
+}
+
+async function captureScreenshot() {
+  const resp = await apiFetch('/api/screenshot?t=' + Date.now());
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.blob();
+}
+
+// ── System Info Panel ───────────────────────────────────────────────────────
+function updateSysInfo() {
+  const grid = $('infoGrid');
+  grid.innerHTML = '';
+
+  const items = [];
+  if (deviceInfo) {
+    items.push(['Heap Free', formatBytes(deviceInfo.free_heap)]);
+    items.push(['PSRAM Free', formatBytes(deviceInfo.psram_free)]);
+    items.push(['WiFi RSSI', deviceInfo.rssi + ' dBm']);
+    items.push(['Uptime', formatUptime(deviceInfo.uptime_s)]);
+    items.push(['Display', deviceInfo.width + 'x' + deviceInfo.height]);
+    items.push(['Touch', deviceInfo.touch ? 'Yes' : 'No']);
+    items.push(['Shell', deviceInfo.shell ? 'Yes' : 'No']);
+    items.push(['Screenshot', deviceInfo.screenshot ? 'Yes' : 'No']);
+  }
+  if (statusInfo) {
+    items.push(['Requests', statusInfo.requests]);
+    if (statusInfo.display) {
+      items.push(['Board', statusInfo.display.board]);
+      items.push(['Driver', statusInfo.display.driver]);
+      items.push(['Verified', statusInfo.display.verified ? 'Yes' : 'No']);
+      items.push(['Frames', statusInfo.display.frames]);
+    }
+  }
+  if (testEnd > 0) {
+    items.push(['Test Duration', ((testEnd - testStart) / 1000).toFixed(1) + 's']);
+    items.push(['Shell Apps', shellApps.length]);
+    items.push(['Web Pages', WEB_PAGES.length]);
+    items.push(['Timestamp', new Date(testEnd).toISOString()]);
+  }
+
+  for (const [label, value] of items) {
+    const el = document.createElement('div');
+    el.className = 'info-item';
+    el.innerHTML =
+      '<span class="label">' + label + ': </span>' +
+      '<span class="value">' + (value != null ? value : '--') + '</span>';
+    grid.appendChild(el);
+  }
+}
+
+// ── Save Report ─────────────────────────────────────────────────────────────
+async function doSave() {
+  $('btnSave').disabled = true;
+  log('Generating self-contained report...', 'info');
+
+  // Convert all screenshot blobs to base64
+  const screenshotData = {};
+  for (const [name, entry] of Object.entries(screenshots)) {
+    if (entry.blob) {
+      const b64 = await blobToBase64(entry.blob);
+      screenshotData[name] = {
+        base64: b64,
+        timestamp: entry.timestamp
+      };
+    }
+  }
+
+  // Build a standalone HTML report
+  const html = buildExportHtml(screenshotData);
+  const blob = new Blob([html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  const date = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  a.download = 'tritium-report-' + date + '.html';
+  a.href = url;
+  a.click();
+
+  URL.revokeObjectURL(url);
+  log('Report saved: ' + a.download, 'ok');
+  $('btnSave').disabled = false;
+}
+
+function blobToBase64(blob) {
+  return new Promise(function(resolve) {
+    const reader = new FileReader();
+    reader.onloadend = function() { resolve(reader.result); };
+    reader.readAsDataURL(blob);
+  });
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function buildExportHtml(screenshotData) {
+  const ip = $('metaIp').textContent;
+  const board = $('metaBoard').textContent;
+  const dur = testEnd > 0 ? ((testEnd - testStart) / 1000).toFixed(1) + 's' : '--';
+  const ts = testEnd > 0 ? new Date(testEnd).toISOString() : new Date().toISOString();
+
+  let imgHtml = '';
+  for (const [name, data] of Object.entries(screenshotData)) {
+    imgHtml +=
+      '<div style="display:inline-block;margin:8px;text-align:center;">' +
+      '<img src="' + data.base64 + '" style="max-width:300px;border:1px solid #333;border-radius:4px;">' +
+      '<div style="font-size:12px;margin-top:4px;color:#00f0ff;">' + esc(name) + '</div>' +
+      '<div style="font-size:10px;color:#888;">' + esc(data.timestamp) + '</div>' +
+      '</div>';
+  }
+
+  let webHtml = '';
+  for (const wp of WEB_PAGES) {
+    const r = webResults[wp.path];
+    const ok = r && r.ok;
+    const color = ok ? '#05ffa1' : '#ff2a6d';
+    const label = r ? (r.status + (ok ? ' OK' : ' ERR')) : 'N/A';
+    webHtml +=
+      '<div style="display:inline-block;margin:8px;padding:8px 16px;' +
+      'background:#12121a;border:1px solid #333;border-radius:4px;">' +
+      '<div style="font-size:13px;color:#c8d0dc;">' + esc(wp.name) + '</div>' +
+      '<div style="font-size:12px;color:' + color + ';">' + esc(label) + '</div>' +
+      '</div>';
+  }
+
+  let infoHtml = '';
+  if (deviceInfo) {
+    const pairs = [
+      ['Heap', formatBytes(deviceInfo.free_heap)],
+      ['PSRAM', formatBytes(deviceInfo.psram_free)],
+      ['RSSI', deviceInfo.rssi + ' dBm'],
+      ['Uptime', formatUptime(deviceInfo.uptime_s)],
+      ['Display', deviceInfo.width + 'x' + deviceInfo.height],
+    ];
+    if (statusInfo && statusInfo.display) {
+      pairs.push(['Driver', statusInfo.display.driver]);
+    }
+    pairs.push(['Duration', dur]);
+    for (const [l, v] of pairs) {
+      infoHtml += '<span style="margin-right:24px;"><span style="color:#888;">' +
+        esc(l) + ':</span> <span style="color:#00f0ff;">' + esc(v) + '</span></span>';
+    }
+  }
+
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+    '<title>Tritium-OS Report ' + esc(ts) + '</title>' +
+    '<style>body{background:#0a0a0f;color:#c8d0dc;font-family:monospace;padding:24px;}</style>' +
+    '</head><body>' +
+    '<h2 style="color:#e0e0ff;letter-spacing:2px;">TRITIUM-OS TEST REPORT</h2>' +
+    '<p style="color:#888;">Device: <span style="color:#00f0ff;">' + esc(ip) + '</span>' +
+    ' | Board: <span style="color:#00f0ff;">' + esc(board) + '</span>' +
+    ' | Generated: <span style="color:#00f0ff;">' + esc(ts) + '</span></p>' +
+    '<hr style="border-color:#1a1a2e;margin:16px 0;">' +
+    '<h3 style="color:#e0e0ff;letter-spacing:1px;">DEVICE SHELL APPS</h3>' +
+    '<div>' + (imgHtml || '<p style="color:#888;">No screenshots captured</p>') + '</div>' +
+    '<hr style="border-color:#1a1a2e;margin:16px 0;">' +
+    '<h3 style="color:#e0e0ff;letter-spacing:1px;">WEB PAGES</h3>' +
+    '<div>' + webHtml + '</div>' +
+    '<hr style="border-color:#1a1a2e;margin:16px 0;">' +
+    '<h3 style="color:#e0e0ff;letter-spacing:1px;">SYSTEM INFO</h3>' +
+    '<p style="font-size:13px;">' + infoHtml + '</p>' +
+    '</body></html>';
+}
+
+// ── Init ────────────────────────────────────────────────────────────────────
+// Try to restore IP from localStorage
+(function() {
+  const saved = localStorage.getItem('tritium-demo-ip');
+  if (saved) $('ipInput').value = saved;
+
+  $('ipInput').addEventListener('change', function() {
+    localStorage.setItem('tritium-demo-ip', this.value.trim());
+  });
+
+  // Allow Enter key in IP input
+  $('ipInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') doConnect();
+  });
+})();
+</script>
+</body>
+</html>

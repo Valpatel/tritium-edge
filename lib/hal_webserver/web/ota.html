@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tritium-OS // OTA Update</title>
+<style>
+:root {
+    --t-cyan: #00f0ff;
+    --t-magenta: #ff2a6d;
+    --t-green: #05ffa1;
+    --t-yellow: #fcee0a;
+    --t-void: #0a0a0f;
+    --t-surface-1: #0e0e14;
+    --t-surface-2: #12121a;
+    --t-surface-3: #1a1a2e;
+    --t-ghost: #8888aa;
+    --t-text: #c8d0dc;
+    --t-bright: #e0e0ff;
+    --t-glow-cyan: rgba(0, 240, 255, 0.15);
+    --t-glow-magenta: rgba(255, 42, 109, 0.15);
+    --t-glow-green: rgba(5, 255, 161, 0.15);
+    --t-glow-yellow: rgba(252, 238, 10, 0.15);
+    --t-border: rgba(0, 240, 255, 0.08);
+    --t-border-hover: rgba(0, 240, 255, 0.3);
+    --t-radius: 4px;
+    --t-transition: 0.25s ease;
+    --t-font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: var(--t-void); color: var(--t-text); font-family: var(--t-font-mono);
+    font-size: 13px; line-height: 1.5; min-height: 100vh; overflow-x: hidden;
+}
+body::before {
+    content: ''; position: fixed; inset: 0;
+    background-image: linear-gradient(rgba(0,240,255,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,240,255,0.025) 1px, transparent 1px);
+    background-size: 80px 80px; pointer-events: none; z-index: 0;
+}
+body::after {
+    content: ''; position: fixed; inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+    pointer-events: none; z-index: 9999;
+}
+
+/* ── Header ── */
+.header {
+    position: sticky; top: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 20px; background: var(--t-surface-1);
+    border-bottom: 1px solid var(--t-border); backdrop-filter: blur(12px);
+    gap: 12px; flex-wrap: wrap;
+}
+.logo {
+    font-size: 16px; font-weight: 700; color: var(--t-cyan);
+    text-shadow: 0 0 20px rgba(0,240,255,0.4); letter-spacing: 0.12em; white-space: nowrap;
+}
+.nav { display: flex; gap: 4px; flex-wrap: wrap; }
+.nav a {
+    color: var(--t-ghost); text-decoration: none; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; padding: 5px 12px; border: 1px solid rgba(0,240,255,0.1);
+    border-radius: var(--t-radius); transition: all var(--t-transition);
+}
+.nav a:hover, .nav a.active {
+    color: var(--t-cyan); border-color: var(--t-border-hover); background: rgba(0,240,255,0.05);
+}
+.nav a.active { box-shadow: 0 0 8px var(--t-glow-cyan); }
+
+/* ── Layout ── */
+.shell { position: relative; z-index: 1; max-width: 1000px; margin: 0 auto; padding: 20px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 700px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    .header { padding: 8px 12px; }
+    .shell { padding: 12px; }
+}
+
+/* ── Panel ── */
+.panel {
+    background: var(--t-surface-2); border: 1px solid var(--t-border);
+    border-radius: var(--t-radius); padding: 16px; margin-bottom: 16px;
+    transition: border-color var(--t-transition), box-shadow var(--t-transition);
+}
+.panel:hover { border-color: var(--t-border-hover); box-shadow: 0 0 20px var(--t-glow-cyan); }
+.panel.danger-zone { border-color: rgba(255,42,109,0.12); }
+.panel.danger-zone:hover { border-color: rgba(255,42,109,0.3); box-shadow: 0 0 20px var(--t-glow-magenta); }
+.panel-title {
+    font-size: 11px; font-weight: 600; color: var(--t-bright); letter-spacing: 0.12em;
+    text-transform: uppercase; margin-bottom: 14px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--t-border);
+}
+.panel-title::before { content: '[ '; color: var(--t-cyan); }
+.panel-title::after { content: ' ]'; color: var(--t-cyan); }
+.panel-title.mag::before, .panel-title.mag::after { color: var(--t-magenta); }
+
+/* ── Data rows ── */
+.data-row {
+    display: flex; justify-content: space-between; align-items: center; padding: 5px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.02);
+}
+.data-row .label { color: var(--t-ghost); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.data-row .value { color: var(--t-bright); font-size: 12px; text-align: right; }
+.cyan { color: var(--t-cyan) !important; }
+.green { color: var(--t-green) !important; }
+.yellow { color: var(--t-yellow) !important; }
+.mag { color: var(--t-magenta) !important; }
+
+/* ── Buttons ── */
+.btn {
+    background: transparent; border: 1px solid var(--t-border-hover); color: var(--t-cyan);
+    padding: 7px 16px; border-radius: var(--t-radius); cursor: pointer; font-family: inherit;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    transition: all var(--t-transition); white-space: nowrap;
+}
+.btn:hover {
+    background: rgba(0,240,255,0.1); border-color: var(--t-cyan);
+    box-shadow: 0 0 12px var(--t-glow-cyan); transform: translateY(-1px);
+}
+.btn.danger { border-color: rgba(255,42,109,0.3); color: var(--t-magenta); }
+.btn.danger:hover { background: rgba(255,42,109,0.1); border-color: var(--t-magenta); box-shadow: 0 0 12px var(--t-glow-magenta); }
+.btn.green { border-color: rgba(5,255,161,0.3); color: var(--t-green); }
+.btn.green:hover { background: rgba(5,255,161,0.1); border-color: var(--t-green); box-shadow: 0 0 12px var(--t-glow-green); }
+.btn:disabled { opacity: 0.3; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
+.btn-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+/* ── Drop zone ── */
+.dropzone {
+    border: 2px dashed rgba(0,240,255,0.2); background: var(--t-surface-1); padding: 36px 16px;
+    text-align: center; border-radius: 6px; cursor: pointer; transition: all var(--t-transition);
+    position: relative; margin-bottom: 12px;
+}
+.dropzone:hover, .dropzone.dragover {
+    border-color: var(--t-cyan); background: rgba(0,240,255,0.03);
+    box-shadow: 0 0 20px var(--t-glow-cyan);
+}
+.dropzone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.dropzone .dz-icon { font-size: 28px; color: var(--t-cyan); margin-bottom: 8px; }
+.dropzone .dz-label { color: var(--t-ghost); font-size: 13px; }
+.dropzone .dz-label span { color: var(--t-cyan); }
+.dropzone .dz-hint { color: rgba(0,240,255,0.35); font-size: 11px; margin-top: 4px; }
+.file-info { margin-top: 8px; font-size: 11px; color: var(--t-ghost); display: none; }
+.file-info.show { display: block; }
+
+/* ── URL input ── */
+.url-row { display: flex; gap: 8px; }
+.url-row input {
+    flex: 1; background: var(--t-surface-3); border: 1px solid rgba(0,240,255,0.15);
+    color: var(--t-text); padding: 8px 12px; border-radius: var(--t-radius);
+    font-family: inherit; font-size: 12px; outline: none;
+}
+.url-row input:focus { border-color: var(--t-cyan); box-shadow: 0 0 8px var(--t-glow-cyan); }
+.url-row input::placeholder { color: var(--t-ghost); opacity: 0.5; }
+
+/* ── Progress bar ── */
+.progress-wrap { margin: 14px 0; display: none; }
+.progress-wrap.show { display: block; }
+.progress-bar {
+    height: 20px; background: var(--t-surface-3); border-radius: 3px; overflow: hidden;
+    border: 1px solid rgba(0,240,255,0.1);
+}
+.progress-fill {
+    height: 100%; width: 0%; border-radius: 3px;
+    background: linear-gradient(90deg, rgba(0,240,255,0.6), var(--t-cyan));
+    transition: width 0.3s; position: relative;
+}
+.progress-fill::after {
+    content: ''; position: absolute; inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+    animation: shimmer 1.5s infinite;
+}
+.progress-fill.done { background: linear-gradient(90deg, rgba(5,255,161,0.6), var(--t-green)); }
+.progress-fill.error { background: linear-gradient(90deg, rgba(255,42,109,0.6), var(--t-magenta)); }
+@keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+.progress-text { text-align: center; font-size: 12px; margin-top: 4px; color: var(--t-cyan); }
+
+/* ── Status message ── */
+.status-msg { padding: 8px 12px; border-radius: var(--t-radius); font-size: 12px; margin: 10px 0; display: none; }
+.status-msg.show { display: block; }
+.status-msg.ok { background: rgba(5,255,161,0.08); border: 1px solid rgba(5,255,161,0.2); color: var(--t-green); }
+.status-msg.err { background: rgba(255,42,109,0.08); border: 1px solid rgba(255,42,109,0.2); color: var(--t-magenta); }
+.status-msg.info { background: rgba(0,240,255,0.06); border: 1px solid rgba(0,240,255,0.2); color: var(--t-cyan); }
+
+/* ── State label ── */
+.state-label {
+    display: inline-block; padding: 2px 8px; border-radius: 2px; font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.1em;
+}
+.state-idle { background: rgba(136,136,170,0.15); color: var(--t-ghost); }
+.state-active { background: rgba(0,240,255,0.15); color: var(--t-cyan); animation: breathe 1.5s ease-in-out infinite; }
+.state-ok { background: rgba(5,255,161,0.15); color: var(--t-green); }
+.state-err { background: rgba(255,42,109,0.15); color: var(--t-magenta); }
+@keyframes breathe { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+/* ── Table ── */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th {
+    text-align: left; color: var(--t-ghost); font-weight: normal; font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.1em; padding: 6px 8px;
+    border-bottom: 1px solid rgba(0,240,255,0.1);
+}
+td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.02); color: var(--t-text); }
+tr:hover td { background: var(--t-surface-3); }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+.dot.ok { background: var(--t-green); box-shadow: 0 0 6px rgba(5,255,161,0.4); }
+.dot.fail { background: var(--t-magenta); box-shadow: 0 0 6px rgba(255,42,109,0.4); }
+.empty-row { color: var(--t-ghost); text-align: center; padding: 20px 8px !important; }
+.mesh-count { font-size: 22px; color: var(--t-cyan); font-weight: bold; }
+
+/* ── Modal ── */
+.modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(6px);
+    display: none; align-items: center; justify-content: center; z-index: 200;
+}
+.modal-bg.show { display: flex; }
+.modal {
+    background: var(--t-surface-2); border: 1px solid rgba(0,240,255,0.2); border-radius: 6px;
+    padding: 20px; max-width: 380px; width: 90%; text-align: center;
+    box-shadow: 0 0 30px var(--t-glow-cyan); animation: modalIn 0.25s ease;
+}
+@keyframes modalIn { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }
+.modal h3 { color: var(--t-bright); font-size: 13px; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.1em; }
+.modal p { color: var(--t-ghost); font-size: 12px; margin-bottom: 16px; line-height: 1.6; }
+.modal .btn-row { justify-content: center; }
+
+/* ── Toast ── */
+.toast {
+    position: fixed; bottom: 20px; right: 20px; z-index: 300; padding: 10px 18px;
+    border-radius: var(--t-radius); font-size: 12px; animation: toastIn 0.3s ease; pointer-events: none;
+    border: 1px solid rgba(5,255,161,0.3); background: rgba(5,255,161,0.08); color: var(--t-green);
+}
+.toast.error { border-color: rgba(255,42,109,0.3); background: rgba(255,42,109,0.08); color: var(--t-magenta); }
+@keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <span class="logo">TRITIUM-OS</span>
+    <div class="nav">
+        <a href="dashboard.html">Dashboard</a>
+        <a href="files.html">Files</a>
+        <a href="ota.html" class="active">OTA</a>
+        <a href="wifi.html">WiFi</a>
+        <a href="mesh.html">Mesh</a>
+        <a href="terminal.html">Terminal</a>
+    </div>
+</div>
+
+<div class="shell">
+
+<div class="grid-2">
+    <!-- Firmware Info -->
+    <div class="panel">
+        <div class="panel-title">Firmware Info</div>
+        <div class="data-row"><span class="label">Version</span><span class="value cyan" id="cur-ver">---</span></div>
+        <div class="data-row"><span class="label">Build Date</span><span class="value" id="build-date">---</span></div>
+        <div class="data-row"><span class="label">Active Partition</span><span class="value green" id="cur-part">---</span></div>
+        <div class="data-row"><span class="label">Partition Size</span><span class="value" id="part-size">---</span></div>
+        <div class="data-row"><span class="label">Board</span><span class="value" id="board-name">---</span></div>
+        <div class="data-row"><span class="label">State</span><span class="value" id="ota-state"><span class="state-label state-idle">IDLE</span></span></div>
+        <div class="data-row"><span class="label">Uptime</span><span class="value" id="uptime">---</span></div>
+    </div>
+
+    <!-- Rollback Info -->
+    <div class="panel">
+        <div class="panel-title">Rollback Partition</div>
+        <div class="data-row"><span class="label">Next Partition</span><span class="value" id="next-part">---</span></div>
+        <div class="data-row"><span class="label">Previous Version</span><span class="value" id="prev-ver">---</span></div>
+        <div class="data-row"><span class="label">Validated</span><span class="value" id="validated">---</span></div>
+        <div class="data-row"><span class="label">Boot Count</span><span class="value" id="boot-count">---</span></div>
+        <div class="data-row"><span class="label">Last Rollback</span><span class="value" id="last-rollback">---</span></div>
+        <div class="data-row"><span class="label">IDF Version</span><span class="value" id="idf-ver">---</span></div>
+    </div>
+</div>
+
+<!-- Firmware Upload -->
+<div class="panel">
+    <div class="panel-title">Firmware Upload</div>
+    <div class="dropzone" id="drop-zone">
+        <input type="file" id="fw-file" accept=".bin,.ota">
+        <div class="dz-icon">&#x2B06;</div>
+        <div class="dz-label">Drop <span>firmware.bin</span> here or click to browse</div>
+        <div class="dz-hint">Accepted: .bin / .ota files</div>
+    </div>
+    <div class="file-info" id="file-info">Selected: <span id="file-name"></span> &mdash; <span id="file-size"></span></div>
+    <div class="progress-wrap" id="progress-wrap">
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <div class="progress-text" id="progress-text">0%</div>
+    </div>
+    <div id="upload-msg" class="status-msg"></div>
+    <div class="btn-row">
+        <button class="btn" id="btn-upload" disabled>Upload &amp; Flash</button>
+    </div>
+</div>
+
+<!-- URL Update -->
+<div class="panel">
+    <div class="panel-title">Update from URL</div>
+    <div class="url-row">
+        <input type="text" id="url-input" placeholder="https://example.com/firmware.bin">
+        <button class="btn" id="btn-url">Pull Update</button>
+    </div>
+</div>
+
+<!-- Mesh Distribution -->
+<div class="panel">
+    <div class="panel-title">Mesh Distribution</div>
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:10px">
+        <div><span class="mesh-count" id="mesh-peers">--</span> <span style="color:var(--t-ghost);font-size:11px">MESH PEERS ONLINE</span></div>
+        <div style="font-size:11px;color:var(--t-ghost)">Push current firmware to all connected mesh nodes simultaneously</div>
+    </div>
+    <div class="btn-row">
+        <button class="btn green" id="btn-mesh">Distribute to Fleet</button>
+    </div>
+</div>
+
+<!-- Update History -->
+<div class="panel">
+    <div class="panel-title">Update History</div>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Version</th><th>Time</th><th>Source</th><th>Size</th><th>Duration</th><th>Status</th></tr></thead>
+            <tbody id="history-body"><tr><td colspan="6" class="empty-row">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Danger Zone -->
+<div class="panel danger-zone">
+    <div class="panel-title mag">Danger Zone</div>
+    <div class="btn-row">
+        <button class="btn danger" id="btn-rollback">Rollback Firmware</button>
+        <button class="btn danger" id="btn-reboot">Reboot Now</button>
+    </div>
+</div>
+
+</div>
+
+<!-- Confirmation Modal -->
+<div class="modal-bg" id="modal">
+    <div class="modal">
+        <h3 id="modal-title">Confirm</h3>
+        <p id="modal-text">Are you sure?</p>
+        <div class="btn-row">
+            <button class="btn" id="modal-cancel">Cancel</button>
+            <button class="btn danger" id="modal-confirm">Confirm</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+var $ = function(s){ return document.getElementById(s); };
+var api = function(p){ return fetch('/api/ota/' + p); };
+var post = function(p, b){
+    return fetch('/api/ota/' + p, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: b ? JSON.stringify(b) : undefined
+    });
+};
+
+var STATES = ['IDLE','CHECKING','DOWNLOADING','WRITING','VERIFYING','READY_REBOOT','FAILED'];
+var STATE_CLASS = ['state-idle','state-active','state-active','state-active','state-active','state-ok','state-err'];
+
+function fmtBytes(b) {
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB';
+    if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+    return b + ' B';
+}
+
+function fmtTime(s) {
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+    return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+}
+
+function fmtDate(ts) {
+    if (!ts) return '--';
+    var d = new Date(typeof ts === 'number' ? ts * 1000 : ts);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+function toast(msg, err) {
+    var el = document.createElement('div');
+    el.className = 'toast' + (err ? ' error' : '');
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(function(){ el.remove(); }, 3000);
+}
+
+function showMsg(id, cls, msg) {
+    var el = $(id);
+    el.className = 'status-msg show ' + cls;
+    el.textContent = msg;
+}
+
+/* ---- Status Polling ---- */
+var pollTimer = null;
+
+function refreshStatus() {
+    api('status').then(function(r){ return r.json(); }).then(function(d) {
+        $('cur-ver').textContent = d.current_version || '---';
+        $('build-date').textContent = d.build_date || '---';
+        $('cur-part').textContent = d.active_partition || '---';
+        $('next-part').textContent = d.next_partition || '---';
+        $('part-size').textContent = fmtBytes(d.partition_size || 0);
+        $('board-name').textContent = d.board || '---';
+        $('uptime').textContent = fmtTime(d.uptime || 0);
+        $('idf-ver').textContent = d.idf_version || '---';
+        $('prev-ver').textContent = d.prev_version || '---';
+        $('boot-count').textContent = d.boot_count != null ? d.boot_count : '---';
+        $('last-rollback').textContent = fmtDate(d.last_rollback);
+
+        var validated = d.validated;
+        $('validated').textContent = validated ? 'YES' : 'NO';
+        $('validated').className = 'value ' + (validated ? 'green' : 'yellow');
+
+        var si = d.state || 0;
+        var sn = STATES[si] || 'UNKNOWN';
+        var sc = STATE_CLASS[si] || 'state-idle';
+        $('ota-state').innerHTML = '<span class="state-label ' + sc + '">' + sn + '</span>';
+
+        if (si >= 2 && si <= 4) {
+            $('progress-wrap').classList.add('show');
+            var pct = d.progress || 0;
+            $('progress-fill').style.width = pct + '%';
+            $('progress-text').textContent = pct + '% \u2014 ' + fmtBytes(d.bytes_written || 0) + ' / ' + fmtBytes(d.total_bytes || 0);
+        }
+        if (si === 5) { showMsg('upload-msg', 'ok', 'Firmware ready. Reboot to apply.'); stopPoll(); }
+        if (si === 6) { showMsg('upload-msg', 'err', 'Error: ' + (d.error || 'unknown')); $('progress-fill').className = 'progress-fill error'; stopPoll(); }
+
+        $('mesh-peers').textContent = d.mesh_peers != null ? d.mesh_peers : '--';
+    }).catch(function(){});
+}
+
+function startPoll() { if (!pollTimer) pollTimer = setInterval(refreshStatus, 1500); }
+function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+/* ---- File Selection ---- */
+var selectedFile = null;
+var dz = $('drop-zone');
+var fi = $('fw-file');
+
+fi.addEventListener('change', function() { if (fi.files.length) selectFile(fi.files[0]); });
+dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('dragover'); });
+dz.addEventListener('dragleave', function() { dz.classList.remove('dragover'); });
+dz.addEventListener('drop', function(e) {
+    e.preventDefault(); dz.classList.remove('dragover');
+    if (e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]);
+});
+
+function selectFile(f) {
+    selectedFile = f;
+    $('file-name').textContent = f.name;
+    $('file-size').textContent = fmtBytes(f.size);
+    $('file-info').classList.add('show');
+    $('btn-upload').disabled = false;
+    $('upload-msg').className = 'status-msg';
+}
+
+/* ---- Upload ---- */
+$('btn-upload').addEventListener('click', function() {
+    if (!selectedFile) return;
+    var btn = this; btn.disabled = true;
+    $('progress-wrap').classList.add('show');
+    $('progress-fill').style.width = '0%';
+    $('progress-fill').className = 'progress-fill';
+    $('progress-text').textContent = '0%';
+    $('upload-msg').className = 'status-msg';
+
+    var fd = new FormData();
+    fd.append('firmware', selectedFile);
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/ota/upload', true);
+    xhr.upload.addEventListener('progress', function(e) {
+        if (e.lengthComputable) {
+            var pct = Math.round(e.loaded / e.total * 100);
+            $('progress-fill').style.width = pct + '%';
+            $('progress-text').textContent = pct + '% \u2014 ' + fmtBytes(e.loaded) + ' / ' + fmtBytes(e.total);
+        }
+    });
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            if (xhr.status === 200) {
+                $('progress-fill').className = 'progress-fill done';
+                $('progress-fill').style.width = '100%';
+                $('progress-text').textContent = '100% \u2014 Complete';
+                showMsg('upload-msg', 'ok', 'Upload complete. Flashing...');
+            } else {
+                var msg = 'Upload failed';
+                try { msg = JSON.parse(xhr.responseText).msg || msg; } catch(ex) {}
+                showMsg('upload-msg', 'err', msg);
+                $('progress-fill').className = 'progress-fill error';
+            }
+            btn.disabled = false;
+            refreshStatus();
+        }
+    };
+    xhr.send(fd);
+    startPoll();
+});
+
+/* ---- URL Update ---- */
+$('btn-url').addEventListener('click', function() {
+    var url = $('url-input').value.trim();
+    if (!url) { $('url-input').focus(); return; }
+    this.disabled = true;
+    $('progress-wrap').classList.add('show');
+    $('progress-fill').style.width = '0%';
+    $('progress-fill').className = 'progress-fill';
+    startPoll();
+    var self = this;
+    post('url', { url: url }).then(function(r){ return r.json(); }).then(function(d) {
+        if (d.ok) showMsg('upload-msg', 'ok', d.msg || 'Download started');
+        else showMsg('upload-msg', 'err', d.msg || 'Failed');
+        self.disabled = false; refreshStatus();
+    }).catch(function() { showMsg('upload-msg', 'err', 'Request failed'); self.disabled = false; });
+});
+
+/* ---- History ---- */
+function loadHistory() {
+    api('history').then(function(r){ return r.json(); }).then(function(entries) {
+        var tb = $('history-body');
+        var rows = Array.isArray(entries) ? entries : (entries.history || []);
+        if (!rows.length) { tb.innerHTML = '<tr><td colspan="6" class="empty-row">No update history</td></tr>'; return; }
+        tb.innerHTML = rows.map(function(e) {
+            var dotCls = e.success ? 'ok' : 'fail';
+            return '<tr><td class="cyan">' + (e.version || '--') + '</td><td>' + fmtDate(e.timestamp) + '</td>' +
+                '<td>' + (e.source || '--') + '</td><td>' + fmtBytes(e.size || 0) + '</td>' +
+                '<td>' + (e.duration ? e.duration + 's' : '--') + '</td>' +
+                '<td><span class="dot ' + dotCls + '"></span>' + (e.success ? 'OK' : 'FAILED') + '</td></tr>';
+        }).join('');
+    }).catch(function() { $('history-body').innerHTML = '<tr><td colspan="6" class="empty-row">Failed to load</td></tr>'; });
+}
+
+/* ---- Mesh Distribution ---- */
+$('btn-mesh').addEventListener('click', function() {
+    confirmAction('Distribute Firmware', 'Push current firmware to all mesh peers? This will interrupt running firmware on all nodes.', function() {
+        post('mesh-push').then(function(r){ return r.json(); }).then(function(d) {
+            if (d.ok) showMsg('upload-msg', 'ok', 'Mesh distribution started');
+            else showMsg('upload-msg', 'err', d.msg || 'Failed');
+        }).catch(function() { showMsg('upload-msg', 'err', 'Request failed'); });
+    });
+});
+
+/* ---- Rollback & Reboot ---- */
+$('btn-rollback').addEventListener('click', function() {
+    confirmAction('Rollback Firmware', 'Revert to previous firmware partition? The device will reboot to apply.', function() {
+        post('rollback').then(function(r){ return r.json(); }).then(function(d) {
+            if (d.ok) showMsg('upload-msg', 'ok', d.msg || 'Rolling back...');
+            else showMsg('upload-msg', 'err', d.msg || 'Failed');
+            refreshStatus();
+        }).catch(function() { showMsg('upload-msg', 'err', 'Request failed'); });
+    });
+});
+
+$('btn-reboot').addEventListener('click', function() {
+    confirmAction('Reboot Device', 'Reboot now? Active connections will be lost.', function() {
+        post('reboot').then(function() {
+            showMsg('upload-msg', 'info', 'Rebooting... page will reload in 10s');
+            setTimeout(function() { location.reload(); }, 10000);
+        }).catch(function() { showMsg('upload-msg', 'err', 'Request failed'); });
+    });
+});
+
+/* ---- Confirmation Modal ---- */
+var modalCb = null;
+function confirmAction(title, text, cb) {
+    $('modal-title').textContent = title;
+    $('modal-text').textContent = text;
+    $('modal').classList.add('show');
+    modalCb = cb;
+}
+$('modal-cancel').addEventListener('click', function() { $('modal').classList.remove('show'); modalCb = null; });
+$('modal-confirm').addEventListener('click', function() { $('modal').classList.remove('show'); if (modalCb) modalCb(); modalCb = null; });
+$('modal').addEventListener('click', function(e) { if (e.target === $('modal')) { $('modal').classList.remove('show'); modalCb = null; } });
+
+/* ---- WebSocket ---- */
+function connectWs() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var ws = new WebSocket(proto + '//' + location.host + '/ws');
+    ws.onmessage = function(e) {
+        var msg;
+        try { msg = JSON.parse(e.data); } catch(err) { return; }
+        if (msg.type === 'ota_progress' || msg.type === 'ota_status') refreshStatus();
+        if (msg.type === 'ota_complete') {
+            $('progress-fill').className = 'progress-fill done';
+            $('progress-fill').style.width = '100%';
+            $('progress-text').textContent = '100% \u2014 Complete';
+            showMsg('upload-msg', 'ok', 'Firmware updated. Rebooting...');
+            stopPoll(); toast('OTA update complete');
+            setTimeout(function() { loadHistory(); refreshStatus(); }, 3000);
+        }
+        if (msg.type === 'ota_error') {
+            $('progress-fill').className = 'progress-fill error';
+            showMsg('upload-msg', 'err', msg.error || 'OTA update failed');
+            stopPoll(); toast('OTA update failed', true);
+        }
+    };
+    ws.onclose = function() { setTimeout(connectWs, 3000); };
+    ws.onerror = function() { ws.close(); };
+}
+
+/* ---- Init ---- */
+refreshStatus();
+loadHistory();
+connectWs();
+setInterval(refreshStatus, 5000);
+
+})();
+</script>
+</body>
+</html>

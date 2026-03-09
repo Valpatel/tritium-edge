@@ -33,6 +33,10 @@ public:
     uint8_t getPoints(TouchPoint *points, uint8_t maxPoints);
     TouchDriver getDriver() const { return _driver; }
     bool available() const { return _driver != NONE; }
+    uint8_t getAddr() const { return _addr; }
+
+    /// Dump GT911 diagnostic registers into a JSON buffer. Returns bytes written.
+    int dumpDiag(char* buf, size_t size);
 
 private:
     TouchDriver _driver = NONE;

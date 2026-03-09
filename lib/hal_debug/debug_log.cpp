@@ -171,7 +171,7 @@ void DebugLog::log(uint8_t level, const char* tag, const char* fmt, ...) {
 }
 
 // Weak BLE bridge — override in app or hal_ble if BLE debug is desired
-extern "C" __attribute__((weak)) void debug_ble_send(const char* data, size_t len) {
+__attribute__((weak)) void debug_ble_send(const char* data, size_t len) {
     (void)data; (void)len;
 }
 
