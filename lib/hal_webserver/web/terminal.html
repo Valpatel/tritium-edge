@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Tritium-Os // Terminal</title>
+<style>
+:root {
+    --t-cyan: #00f0ff;
+    --t-magenta: #ff2a6d;
+    --t-green: #05ffa1;
+    --t-yellow: #fcee0a;
+    --t-void: #0a0a0f;
+    --t-surface-1: #0e0e14;
+    --t-surface-2: #12121a;
+    --t-surface-3: #1a1a2e;
+    --t-ghost: #8888aa;
+    --t-text: #c8d0dc;
+    --t-bright: #e0e0ff;
+    --t-glow-cyan: rgba(0, 240, 255, 0.15);
+    --t-glow-magenta: rgba(255, 42, 109, 0.15);
+    --t-glow-green: rgba(5, 255, 161, 0.15);
+    --t-border: rgba(0, 240, 255, 0.08);
+    --t-border-hover: rgba(0, 240, 255, 0.3);
+    --t-radius: 4px;
+    --t-transition: 0.25s ease;
+    --t-font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: var(--t-void); color: var(--t-text); font-family: var(--t-font-mono);
+    font-size: 13px; line-height: 1.6; height: 100vh; display: flex; flex-direction: column;
+    overflow: hidden;
+}
+/* Scanline overlay */
+body::after {
+    content: ''; position: fixed; inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,240,255,0.008) 2px, rgba(0,240,255,0.008) 4px);
+    pointer-events: none; z-index: 9999;
+}
+
+/* ── Header ── */
+.header {
+    display: flex; align-items: center; padding: 8px 16px;
+    background: var(--t-surface-1); border-bottom: 1px solid var(--t-border);
+    gap: 12px; flex-shrink: 0; z-index: 10; flex-wrap: wrap;
+}
+.header .title {
+    font-size: 14px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--t-cyan); text-shadow: 0 0 10px rgba(0,240,255,0.3);
+}
+.conn-dot {
+    width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px;
+    vertical-align: middle; transition: all var(--t-transition);
+}
+.conn-dot.on { background: var(--t-green); box-shadow: 0 0 6px rgba(5,255,161,0.6); animation: pulse 2s infinite; }
+.conn-dot.off { background: #444; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+.status-text { color: var(--t-ghost); font-size: 11px; }
+.spacer { flex: 1; }
+
+/* Header buttons */
+.hdr-btn {
+    background: transparent; border: 1px solid rgba(0,240,255,0.2); color: var(--t-cyan);
+    padding: 4px 12px; font-family: inherit; font-size: 11px; cursor: pointer;
+    border-radius: var(--t-radius); text-transform: uppercase; letter-spacing: 0.05em;
+    transition: all var(--t-transition);
+}
+.hdr-btn:hover { border-color: var(--t-cyan); background: rgba(0,240,255,0.08); box-shadow: 0 0 8px var(--t-glow-cyan); }
+.hdr-btn.active { background: rgba(0,240,255,0.1); border-color: var(--t-cyan); color: var(--t-cyan); }
+.hdr-btn.close { border-color: rgba(255,42,109,0.3); color: var(--t-magenta); }
+.hdr-btn.close:hover { border-color: var(--t-magenta); background: rgba(255,42,109,0.08); box-shadow: 0 0 8px var(--t-glow-magenta); }
+
+/* Filter buttons */
+.filter-group { display: flex; gap: 2px; }
+.filter-btn {
+    background: transparent; border: 1px solid rgba(0,240,255,0.1); color: var(--t-ghost);
+    padding: 3px 8px; font-family: inherit; font-size: 10px; cursor: pointer;
+    text-transform: uppercase; letter-spacing: 0.05em; transition: all var(--t-transition);
+}
+.filter-btn:first-child { border-radius: var(--t-radius) 0 0 var(--t-radius); }
+.filter-btn:last-child { border-radius: 0 var(--t-radius) var(--t-radius) 0; }
+.filter-btn.active { background: rgba(0,240,255,0.1); border-color: var(--t-cyan); color: var(--t-cyan); }
+.filter-btn:hover { border-color: rgba(0,240,255,0.4); color: var(--t-text); }
+
+/* ── Output area ── */
+#output {
+    flex: 1; overflow-y: auto; padding: 8px 12px;
+    scrollbar-width: thin; scrollbar-color: rgba(0,240,255,0.2) transparent;
+}
+#output::-webkit-scrollbar { width: 6px; }
+#output::-webkit-scrollbar-track { background: transparent; }
+#output::-webkit-scrollbar-thumb { background: rgba(0,240,255,0.2); border-radius: 3px; }
+#output::-webkit-scrollbar-thumb:hover { background: rgba(0,240,255,0.4); }
+
+/* ── Lines ── */
+.line { word-wrap: break-word; white-space: pre-wrap; cursor: pointer; padding: 0 4px; border-radius: 2px; transition: background 0.15s; }
+.line:hover { background: rgba(0,240,255,0.03); }
+/* ANSI colors */
+.ansi-black { color: #555; }
+.ansi-red { color: var(--t-magenta); }
+.ansi-green { color: var(--t-green); }
+.ansi-yellow { color: var(--t-yellow); }
+.ansi-blue { color: #5599ff; }
+.ansi-magenta { color: #b388ff; }
+.ansi-cyan { color: var(--t-cyan); }
+.ansi-white { color: var(--t-bright); }
+.ansi-bold { font-weight: 700; }
+.ansi-dim { opacity: 0.6; }
+/* Tag-based colors */
+.tag-tritium { color: var(--t-cyan); }
+.tag-error, .tag-E { color: var(--t-magenta); }
+.tag-W, .tag-warn { color: var(--t-yellow); }
+.tag-wifi, .tag-web { color: var(--t-green); }
+.tag-svc, .tag-event { color: var(--t-yellow); }
+.tag-cmd { color: var(--t-ghost); }
+.tag-ble { color: #b388ff; }
+.tag-mesh, .tag-espnow { color: #ff9800; }
+.tag-diag { color: var(--t-yellow); }
+.tag-sd { color: var(--t-ghost); }
+.tag-heartbeat { color: var(--t-green); }
+.tag-info { color: var(--t-cyan); }
+.prompt-char { color: var(--t-magenta); }
+
+/* ── Input row ── */
+#input-row {
+    display: flex; align-items: center; padding: 6px 12px;
+    border-top: 1px solid var(--t-border); background: var(--t-surface-1); flex-shrink: 0;
+}
+#prompt { color: var(--t-magenta); margin-right: 8px; font-size: 14px; user-select: none; }
+#cmd {
+    flex: 1; background: transparent; border: none; color: var(--t-cyan);
+    font-family: inherit; font-size: 13px; outline: none; caret-color: var(--t-cyan);
+}
+#cmd::placeholder { color: rgba(0,240,255,0.2); }
+
+/* ── Pause indicator ── */
+.pause-indicator {
+    position: fixed; bottom: 40px; right: 16px; padding: 4px 10px;
+    background: rgba(255,42,109,0.1); border: 1px solid rgba(255,42,109,0.3);
+    color: var(--t-magenta); font-size: 10px; text-transform: uppercase;
+    border-radius: var(--t-radius); display: none; z-index: 10;
+}
+.pause-indicator.show { display: block; }
+
+/* ── Tab hint ── */
+#tab-hint {
+    position: fixed; bottom: 40px; left: 12px; color: var(--t-ghost); font-size: 11px;
+    opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 10;
+}
+
+/* ── Toast ── */
+.toast {
+    position: fixed; top: 50px; right: 20px; padding: 8px 16px; border-radius: var(--t-radius);
+    font-size: 12px; z-index: 1000; animation: toastIn 0.3s ease; max-width: 300px;
+}
+.toast.info { background: rgba(0,240,255,0.1); border: 1px solid rgba(0,240,255,0.3); color: var(--t-cyan); }
+.toast.error { background: rgba(255,42,109,0.1); border: 1px solid rgba(255,42,109,0.3); color: var(--t-magenta); }
+.toast.success { background: rgba(5,255,161,0.1); border: 1px solid rgba(5,255,161,0.3); color: var(--t-green); }
+@keyframes toastIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
+
+/* Nav link in header */
+.nav-link {
+    color: var(--t-ghost); text-decoration: none; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; padding: 4px 10px; border: 1px solid rgba(0,240,255,0.1);
+    border-radius: var(--t-radius); transition: all var(--t-transition);
+}
+.nav-link:hover { color: var(--t-cyan); border-color: var(--t-border-hover); background: rgba(0,240,255,0.05); }
+
+@media (max-width: 600px) {
+    .header { padding: 6px 10px; gap: 6px; }
+    .filter-group { display: none; }
+    .nav-link { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <span class="title">[ Tritium Terminal ]</span>
+    <span class="conn-dot off" id="dot"></span>
+    <span class="status-text" id="status-text">Disconnected</span>
+    <span class="spacer"></span>
+    <div class="filter-group">
+        <button class="filter-btn active" data-level="all" onclick="setFilter('all')">All</button>
+        <button class="filter-btn" data-level="info" onclick="setFilter('info')">Info</button>
+        <button class="filter-btn" data-level="warn" onclick="setFilter('warn')">Warn</button>
+        <button class="filter-btn" data-level="error" onclick="setFilter('error')">Error</button>
+    </div>
+    <button class="hdr-btn" id="btn-pause" onclick="togglePause()">Pause</button>
+    <button class="hdr-btn" onclick="clearOutput()">Clear</button>
+    <a href="dashboard.html" class="nav-link">Dashboard</a>
+    <button class="hdr-btn close" onclick="window.close();history.back()">Close</button>
+</div>
+
+<div id="output"></div>
+
+<div id="input-row">
+    <span id="prompt">&gt;</span>
+    <input id="cmd" type="text" placeholder="Type a command..." autocomplete="off" spellcheck="false">
+</div>
+
+<div class="pause-indicator" id="pause-indicator">PAUSED</div>
+<div id="tab-hint"></div>
+
+<script>
+(function(){
+"use strict";
+
+var ws = null;
+var output = document.getElementById('output');
+var cmd = document.getElementById('cmd');
+var dot = document.getElementById('dot');
+var statusText = document.getElementById('status-text');
+var tabHint = document.getElementById('tab-hint');
+
+var MAX_LINES = 500;
+var autoScroll = true;
+var paused = false;
+var pauseBuffer = [];
+var history = [];
+var histIdx = -1;
+var histDraft = '';
+var currentFilter = 'all';
+
+var CMDS = ['IDENTIFY','SERVICES','WIFI_SCAN','WIFI_STATUS','WIFI_LIST','BLE_SCAN',
+    'BLE_STATUS','SET','GET','REBOOT','OTA_STATUS','SD_FORMAT','MESH_STATUS','MESH_PEERS',
+    'DIAG','DIAG_HEALTH','DIAG_EVENTS','HELP'];
+
+// Load history from localStorage
+try {
+    var sh = localStorage.getItem('tritium_cmd_history');
+    if (sh) history = JSON.parse(sh).slice(-100);
+} catch(e) {}
+
+function saveHistory() {
+    try { localStorage.setItem('tritium_cmd_history', JSON.stringify(history.slice(-100))); } catch(e) {}
+}
+
+/* ---- ANSI color parsing ---- */
+var ANSI_COLORS = { 30: 'black', 31: 'red', 32: 'green', 33: 'yellow', 34: 'blue', 35: 'magenta', 36: 'cyan', 37: 'white' };
+
+function parseAnsi(text) {
+    // Replace ANSI escape sequences with spans
+    var result = '';
+    var openSpans = 0;
+    var parts = text.split(/\x1b\[/);
+    result += escHtml(parts[0]);
+    for (var i = 1; i < parts.length; i++) {
+        var match = parts[i].match(/^(\d+(?:;\d+)*)m([\s\S]*)/);
+        if (match) {
+            var codes = match[1].split(';').map(Number);
+            var content = match[2];
+            var classes = [];
+            for (var c = 0; c < codes.length; c++) {
+                var code = codes[c];
+                if (code === 0) {
+                    // Reset: close all open spans
+                    for (var s = 0; s < openSpans; s++) result += '</span>';
+                    openSpans = 0;
+                } else if (code === 1) { classes.push('ansi-bold'); }
+                else if (code === 2) { classes.push('ansi-dim'); }
+                else if (ANSI_COLORS[code]) { classes.push('ansi-' + ANSI_COLORS[code]); }
+            }
+            if (classes.length > 0) {
+                result += '<span class="' + classes.join(' ') + '">';
+                openSpans++;
+            }
+            result += escHtml(content);
+        } else {
+            result += escHtml(parts[i]);
+        }
+    }
+    for (var s2 = 0; s2 < openSpans; s2++) result += '</span>';
+    return result;
+}
+
+/* ---- Tag-based coloring ---- */
+function colorize(text) {
+    // Check for ANSI sequences first
+    if (text.indexOf('\x1b[') !== -1) {
+        return parseAnsi(text);
+    }
+
+    var plain = escHtml(text);
+
+    // Tag-based coloring: [tag] prefix
+    var m = text.match(/^\[([^\]]+)\]/);
+    if (m) {
+        var tag = m[1].toLowerCase();
+        var cls = '';
+        if (tag === 'e' || tag === 'error') cls = 'tag-error';
+        else if (tag === 'w' || tag === 'warn' || tag === 'warning') cls = 'tag-W';
+        else if (tag === 'i' || tag === 'info') cls = 'tag-info';
+        else if (tag === 'tritium' || tag === 'terminal') cls = 'tag-tritium';
+        else if (tag === 'wifi' || tag === 'web' || tag === 'webserver') cls = 'tag-wifi';
+        else if (tag === 'svc') cls = 'tag-svc';
+        else if (tag === 'cmd') cls = 'tag-cmd';
+        else if (tag === 'ble' || tag === 'ble_scanner') cls = 'tag-ble';
+        else if (tag === 'mesh' || tag === 'espnow') cls = 'tag-mesh';
+        else if (tag === 'diag') cls = 'tag-diag';
+        else if (tag === 'sd') cls = 'tag-sd';
+        else if (tag === 'heartbeat') cls = 'tag-heartbeat';
+        else if (tag === 'event') cls = 'tag-event';
+        if (cls) {
+            var prefix = escHtml(text.substring(0, m[0].length));
+            var rest = escHtml(text.substring(m[0].length));
+            return '<span class="' + cls + '">' + prefix + '</span>' + rest;
+        }
+    }
+
+    // Prompt echo
+    if (text.charAt(0) === '>' && text.charAt(1) === ' ') {
+        return '<span class="prompt-char">&gt;</span>' + plain.substring(4);
+    }
+
+    return plain;
+}
+
+function escHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/* ---- Line level detection ---- */
+function getLineLevel(text) {
+    var lower = text.toLowerCase();
+    if (lower.match(/^\[(e|error)\]/) || lower.indexOf('error') !== -1) return 'error';
+    if (lower.match(/^\[(w|warn|warning)\]/) || lower.indexOf('warn') !== -1) return 'warn';
+    if (lower.match(/^\[(i|info)\]/) || lower.indexOf('[tritium]') !== -1 || lower.indexOf('[terminal]') !== -1) return 'info';
+    return 'all';
+}
+
+function shouldShow(level) {
+    if (currentFilter === 'all') return true;
+    if (currentFilter === 'error') return level === 'error';
+    if (currentFilter === 'warn') return level === 'warn' || level === 'error';
+    if (currentFilter === 'info') return level === 'info' || level === 'warn' || level === 'error';
+    return true;
+}
+
+/* ---- Add line ---- */
+function addLine(text, cls) {
+    if (paused) {
+        pauseBuffer.push({ text: text, cls: cls });
+        return;
+    }
+
+    var level = cls ? 'all' : getLineLevel(text);
+
+    var div = document.createElement('div');
+    div.className = 'line';
+    if (cls) div.className += ' ' + cls;
+    div.dataset.level = level;
+
+    if (!cls) div.innerHTML = colorize(text);
+    else div.textContent = text;
+
+    if (!shouldShow(level)) div.style.display = 'none';
+
+    div.addEventListener('click', function() {
+        navigator.clipboard.writeText(this.textContent).then(function() {
+            showToast('Copied to clipboard', 'info');
+        }).catch(function(){});
+    });
+
+    output.appendChild(div);
+
+    // Trim scrollback
+    while (output.children.length > MAX_LINES) output.removeChild(output.firstChild);
+    if (autoScroll) output.scrollTop = output.scrollHeight;
+}
+
+/* ---- Filter ---- */
+function setFilter(level) {
+    currentFilter = level;
+    document.querySelectorAll('.filter-btn').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.level === level);
+    });
+    // Re-filter existing lines
+    var lines = output.querySelectorAll('.line');
+    lines.forEach(function(line) {
+        var ll = line.dataset.level || 'all';
+        line.style.display = shouldShow(ll) ? '' : 'none';
+    });
+    if (autoScroll) output.scrollTop = output.scrollHeight;
+}
+window.setFilter = setFilter;
+
+/* ---- Pause ---- */
+function togglePause() {
+    paused = !paused;
+    var btn = document.getElementById('btn-pause');
+    var indicator = document.getElementById('pause-indicator');
+    if (paused) {
+        btn.classList.add('active');
+        btn.textContent = 'Resume';
+        indicator.classList.add('show');
+    } else {
+        btn.classList.remove('active');
+        btn.textContent = 'Pause';
+        indicator.classList.remove('show');
+        // Flush buffer
+        pauseBuffer.forEach(function(item) { addLine(item.text, item.cls); });
+        pauseBuffer = [];
+    }
+}
+window.togglePause = togglePause;
+
+/* ---- Clear ---- */
+function clearOutput() {
+    while (output.firstChild) output.removeChild(output.firstChild);
+}
+window.clearOutput = clearOutput;
+
+/* ---- WebSocket ---- */
+function connect() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var url = proto + '//' + location.host + '/ws';
+    ws = new WebSocket(url);
+
+    ws.onopen = function() {
+        dot.className = 'conn-dot on';
+        statusText.textContent = 'Connected';
+        ws.send(JSON.stringify({ type: 'subscribe', channels: ['serial', 'events', 'status'] }));
+        addLine('[terminal] Connected to ' + location.host, 'tag-tritium');
+    };
+
+    ws.onclose = function() {
+        dot.className = 'conn-dot off';
+        statusText.textContent = 'Disconnected';
+        addLine('[terminal] Connection lost. Reconnecting...', 'tag-error');
+        setTimeout(connect, 2000);
+    };
+
+    ws.onerror = function() { ws.close(); };
+
+    ws.onmessage = function(e) {
+        var msg;
+        try { msg = JSON.parse(e.data); } catch(ex) { return; }
+
+        if (msg.type === 'serial') {
+            var text = msg.data || '';
+            text = text.replace(/\n$/, '');
+            if (text) addLine(text);
+        } else if (msg.type === 'event') {
+            addLine('[event] ' + msg.name + (msg.data ? ' ' + JSON.stringify(msg.data) : ''), 'tag-event');
+        } else if (msg.type === 'toast') {
+            showToast(msg.message, msg.level || 'info');
+        } else if (msg.type === 'pong') {
+            addLine('[pong] server time: ' + msg.time, 'tag-cmd');
+        } else if (msg.type === 'error') {
+            addLine('[error] ' + msg.message, 'tag-error');
+        }
+    };
+}
+
+/* ---- Send command ---- */
+function sendCmd(c) {
+    if (!ws || ws.readyState !== 1) { addLine('[terminal] Not connected', 'tag-error'); return; }
+    ws.send(JSON.stringify({ type: 'serial', data: c + '\n' }));
+    if (c && (history.length === 0 || history[history.length - 1] !== c)) {
+        history.push(c);
+        saveHistory();
+    }
+    histIdx = -1;
+    histDraft = '';
+}
+
+/* ---- Scroll detection ---- */
+output.addEventListener('scroll', function() {
+    var atBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 30;
+    autoScroll = atBottom;
+});
+
+/* ---- Tab completion ---- */
+function tabComplete(val) {
+    var upper = val.toUpperCase();
+    return CMDS.filter(function(c) { return c.indexOf(upper) === 0; });
+}
+
+/* ---- Input handling ---- */
+cmd.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+        var v = cmd.value.trim();
+        if (v) sendCmd(v);
+        cmd.value = '';
+        tabHint.style.opacity = '0';
+    } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (history.length === 0) return;
+        if (histIdx === -1) { histDraft = cmd.value; histIdx = history.length - 1; }
+        else if (histIdx > 0) histIdx--;
+        cmd.value = history[histIdx];
+    } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (histIdx === -1) return;
+        if (histIdx < history.length - 1) { histIdx++; cmd.value = history[histIdx]; }
+        else { histIdx = -1; cmd.value = histDraft; }
+    } else if (e.key === 'Tab') {
+        e.preventDefault();
+        var v2 = cmd.value.trim();
+        if (!v2) return;
+        var matches = tabComplete(v2);
+        if (matches.length === 1) { cmd.value = matches[0]; tabHint.style.opacity = '0'; }
+        else if (matches.length > 1) {
+            tabHint.textContent = matches.join('  ');
+            tabHint.style.opacity = '1';
+            setTimeout(function() { tabHint.style.opacity = '0'; }, 3000);
+        }
+    } else if (e.key === 'c' && e.ctrlKey) {
+        e.preventDefault();
+        sendCmd('\x03');
+        addLine('^C', 'tag-cmd');
+        cmd.value = '';
+    } else if (e.key === 'l' && e.ctrlKey) {
+        e.preventDefault();
+        clearOutput();
+    }
+});
+
+cmd.addEventListener('input', function() { tabHint.style.opacity = '0'; });
+
+/* ---- Toast ---- */
+function showToast(msg, level) {
+    var t = document.createElement('div');
+    t.className = 'toast ' + (level || 'info');
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(function() {
+        t.style.opacity = '0';
+        t.style.transition = 'opacity 0.3s';
+        setTimeout(function() { t.remove(); }, 300);
+    }, 3000);
+}
+
+/* ---- Focus input on click ---- */
+document.body.addEventListener('click', function(e) {
+    if (!window.getSelection().toString() && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A' && e.target.tagName !== 'INPUT') {
+        cmd.focus();
+    }
+});
+
+/* ---- Init ---- */
+cmd.focus();
+addLine('[terminal] Tritium-OS Web Terminal', 'tag-tritium');
+addLine('[terminal] Connecting...', 'tag-tritium');
+connect();
+
+})();
+</script>
+</body>
+</html>

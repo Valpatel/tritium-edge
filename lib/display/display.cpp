@@ -286,6 +286,64 @@ SemaphoreHandle_t display_get_flush_semaphore(void)
     return s_flush_done;
 }
 
+bool display_is_rgb(void)
+{
+#if BOARD_LCD_QSPI == 0
+    return true;
+#else
+    return false;
+#endif
+}
+
+display_health_t display_get_health(void)
+{
+    display_health_t h = {};
+#ifdef DISPLAY_DRIVER
+    h.driver = DISPLAY_DRIVER;
+#else
+    h.driver = "unknown";
+#endif
+#ifdef BOARD_TOUCH_LCD_43C_BOX
+    h.board_name = "ESP32-S3-Touch-LCD-4.3C-BOX";
+#elif defined(BOARD_TOUCH_LCD_349)
+    h.board_name = "ESP32-S3-Touch-LCD-3.49";
+#elif defined(BOARD_TOUCH_LCD_35BC)
+    h.board_name = "ESP32-S3-Touch-LCD-3.5B-C";
+#elif defined(BOARD_TOUCH_AMOLED_241B)
+    h.board_name = "ESP32-S3-Touch-AMOLED-2.41-B";
+#elif defined(BOARD_TOUCH_AMOLED_18)
+    h.board_name = "ESP32-S3-Touch-AMOLED-1.8";
+#elif defined(BOARD_AMOLED_191M)
+    h.board_name = "ESP32-S3-AMOLED-1.91-M";
+#else
+    h.board_name = "unknown";
+#endif
+    return h;
+}
+
+bool display_get_rgb_framebuffers(void** fb0, void** fb1)
+{
+#if defined(DISPLAY_DRIVER_RGB)
+    if (!s_panel || !fb0 || !fb1) return false;
+    esp_err_t ret = esp_lcd_rgb_panel_get_frame_buffer(s_panel, 2, fb0, fb1);
+    return (ret == ESP_OK);
+#else
+    (void)fb0;
+    (void)fb1;
+    return false;
+#endif
+}
+
+void* display_get_sem_gui_ready(void)
+{
+    return nullptr;
+}
+
+void* display_get_sem_vsync_end(void)
+{
+    return nullptr;
+}
+
 void display_set_brightness(uint8_t brightness)
 {
 #if BOARD_LCD_BL_GPIO >= 0

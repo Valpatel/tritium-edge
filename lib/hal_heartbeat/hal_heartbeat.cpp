@@ -44,6 +44,7 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #include <esp_ota_ops.h>
 #include <esp_app_format.h>
 #include <esp_partition.h>
+#include <esp_heap_caps.h>
 #include <mbedtls/sha256.h>
 #include "hal_provision.h"
 
@@ -303,9 +304,14 @@ bool send_now() {
     const esp_partition_t* running = esp_ota_get_running_partition();
     if (running) partition = running->label;
 
-    // Build base JSON payload (3KB for BLE device list)
-    static char body[3072];
-    int pos = snprintf(body, sizeof(body),
+    // Build base JSON payload — reuses PSRAM buffer
+    static char* body = nullptr;
+    static constexpr size_t BODY_SIZE = 3072;
+    if (!body) {
+        body = (char*)heap_caps_malloc(BODY_SIZE, MALLOC_CAP_SPIRAM);
+        if (!body) body = (char*)malloc(BODY_SIZE);
+    }
+    int pos = snprintf(body, BODY_SIZE,
              "{\"version\":\"%s\",\"board\":\"%s\",\"partition\":\"%s\","
              "\"ip\":\"%s\",\"mac\":\"%s\",\"uptime_s\":%lu,\"free_heap\":%u,"
              "\"rssi\":%d,\"fw_hash\":\"%s\","
@@ -332,34 +338,34 @@ bool send_now() {
     if (hal_ble_scanner::is_active()) {
         char ble_json[128];
         hal_ble_scanner::get_summary_json(ble_json, sizeof(ble_json));
-        pos += snprintf(body + pos, sizeof(body) - pos, ",\"sensors\":%s", ble_json);
+        pos += snprintf(body + pos, BODY_SIZE - pos, ",\"sensors\":%s", ble_json);
         // Append per-device list if space permits
-        if (pos < (int)sizeof(body) - 200) {
-            static char devs_json[2048];
+        if (pos < (int)BODY_SIZE - 200) {
+            char devs_json[2048];  // stack — only used briefly
             hal_ble_scanner::get_devices_json(devs_json, sizeof(devs_json));
-            pos += snprintf(body + pos, sizeof(body) - pos, ",\"ble_devices\":%s", devs_json);
+            pos += snprintf(body + pos, BODY_SIZE - pos, ",\"ble_devices\":%s", devs_json);
         }
     }
 #endif
 
     // Append persistent diagnostic log counts if available
 #if HAS_DIAGLOG
-    pos += snprintf(body + pos, sizeof(body) - pos,
+    pos += snprintf(body + pos, BODY_SIZE - pos,
                     ",\"diag_event_count\":%d,\"diag_boot_count\":%u",
                     diaglog_count(), (unsigned)diaglog_boot_count());
 #endif
 
     // Append transport status array — lists all available communication channels
-    pos += snprintf(body + pos, sizeof(body) - pos,
+    pos += snprintf(body + pos, BODY_SIZE - pos,
                     ",\"transports\":[{\"type\":\"wifi\",\"state\":\"available\",\"rssi\":%d}",
                     WiFi.RSSI());
 #if HAS_ESPNOW
-    pos += snprintf(body + pos, sizeof(body) - pos,
+    pos += snprintf(body + pos, BODY_SIZE - pos,
                     ",{\"type\":\"esp_now\",\"state\":\"available\"}");
 #endif
 #if HAS_BLE_SCANNER
     if (hal_ble_scanner::is_active()) {
-        pos += snprintf(body + pos, sizeof(body) - pos,
+        pos += snprintf(body + pos, BODY_SIZE - pos,
                         ",{\"type\":\"ble\",\"state\":\"available\"}");
     }
 #endif
@@ -367,14 +373,14 @@ bool send_now() {
     if (hal_lora::is_active()) {
         const char* mode = hal_lora::get_mode();
         int lora_rssi = hal_lora::get_last_rssi();
-        pos += snprintf(body + pos, sizeof(body) - pos,
+        pos += snprintf(body + pos, BODY_SIZE - pos,
                         ",{\"type\":\"lora\",\"state\":\"available\",\"rssi\":%d}", lora_rssi);
     }
 #endif
-    pos += snprintf(body + pos, sizeof(body) - pos, "]");
+    pos += snprintf(body + pos, BODY_SIZE - pos, "]");
 
     // Close JSON object
-    if (pos < (int)sizeof(body) - 1) {
+    if (pos < (int)BODY_SIZE - 1) {
         body[pos++] = '}';
         body[pos] = '\0';
     }
@@ -449,8 +455,10 @@ bool send_now() {
     // Piggyback diagnostic report upload on heartbeat tick
 #if HAS_DIAG
     if (code == 200) {
-        static char diag_buf[4096];
-        int diag_len = hal_diag::full_report_json(diag_buf, sizeof(diag_buf));
+        static char* diag_buf = nullptr;
+        if (!diag_buf) diag_buf = (char*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+        if (!diag_buf) return false;
+        int diag_len = hal_diag::full_report_json(diag_buf, 4096);
         if (diag_len > 0) {
             char diag_url[320];
             snprintf(diag_url, sizeof(diag_url), "%s/api/devices/%s/diag",
@@ -474,15 +482,17 @@ bool send_now() {
 #if HAS_DIAGLOG
     if (code == 200 && diaglog_count() > 0) {
         // Upload events as JSON batch: {"events":[...],"boot_count":N}
-        static char dl_buf[4096];
+        static char* dl_buf = nullptr;
+        static char* dl_post = nullptr;
+        if (!dl_buf) dl_buf = (char*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+        if (!dl_post) dl_post = (char*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+        if (dl_buf && dl_post) {
         int offset = 0;
         int batch_size = 50;  // Upload up to 50 events per heartbeat
-        int ev_len = diaglog_get_json(dl_buf + 128, sizeof(dl_buf) - 128,
+        int ev_len = diaglog_get_json(dl_buf + 128, 4096 - 128,
                                        offset, batch_size);
         if (ev_len > 0) {
-            // Build the wrapper JSON
-            static char dl_post[4096];
-            int plen = snprintf(dl_post, sizeof(dl_post),
+            int plen = snprintf(dl_post, 4096,
                 "{\"events\":%s,\"boot_count\":%u}",
                 dl_buf + 128, (unsigned)diaglog_boot_count());
 
@@ -501,6 +511,7 @@ bool send_now() {
             }
             dl_http.end();
         }
+        } // dl_buf && dl_post
     }
 #endif
 

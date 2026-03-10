@@ -1,0 +1,774 @@
+R"rawliteral(
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tritium-OS File Manager</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --cyan:#00f0ff;--mag:#ff2a6d;--green:#05ffa1;--yellow:#fcee0a;
+  --void:#0a0a0f;--s1:#0e0e14;--s2:#12121a;--s3:#1a1a2e;
+  --ghost:#8888aa;--text:#c8d0dc;--bright:#e0e0ff;
+  --glow-c:rgba(0,240,255,0.15);--glow-m:rgba(255,42,109,0.15);
+  --glow-g:rgba(5,255,161,0.15);
+}
+body{background:var(--void);color:var(--text);font-family:'JetBrains Mono','Fira Code','Courier New',monospace;font-size:13px;padding:0;min-height:100vh;
+  background-image:
+    linear-gradient(rgba(0,240,255,0.025) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(0,240,255,0.025) 1px,transparent 1px);
+  background-size:80px 80px}
+.scanline{position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:999;
+  background:repeating-linear-gradient(transparent,transparent 2px,rgba(0,240,255,0.008) 2px,rgba(0,240,255,0.008) 4px)}
+.shell{max-width:960px;margin:0 auto;padding:16px}
+/* Header */
+.hdr{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;
+  border:1px solid rgba(0,240,255,0.08);background:var(--s1);margin-bottom:12px;
+  box-shadow:0 0 12px var(--glow-c)}
+.hdr h1{color:var(--cyan);font-size:15px;letter-spacing:0.1em;text-transform:uppercase;
+  text-shadow:0 0 10px var(--glow-c)}
+.tabs{display:flex;gap:2px}
+.tab{padding:6px 16px;background:transparent;border:1px solid rgba(0,240,255,0.15);color:var(--ghost);
+  cursor:pointer;font-family:inherit;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;
+  transition:all 0.25s ease}
+.tab:first-child{border-radius:4px 0 0 4px}.tab:last-child{border-radius:0 4px 4px 0}
+.tab:hover{border-color:rgba(0,240,255,0.4);color:var(--text)}
+.tab.active{background:rgba(0,240,255,0.1);border-color:var(--cyan);color:var(--cyan);
+  box-shadow:0 0 8px var(--glow-c)}
+/* Toolbar */
+.toolbar{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;
+  border:1px solid rgba(0,240,255,0.08);background:var(--s1);margin-bottom:1px;gap:8px}
+.breadcrumb{display:flex;align-items:center;gap:4px;flex:1;overflow-x:auto;white-space:nowrap;min-width:0}
+.breadcrumb span{color:var(--ghost);cursor:pointer;padding:2px 4px;border-radius:3px;transition:all 0.2s}
+.breadcrumb span:hover{color:var(--cyan);background:rgba(0,240,255,0.08)}
+.breadcrumb span.sep{color:rgba(0,240,255,0.3);cursor:default;padding:0 1px}
+.breadcrumb span.sep:hover{background:transparent;color:rgba(0,240,255,0.3)}
+.actions{display:flex;gap:6px;flex-shrink:0}
+/* Buttons */
+.btn{background:transparent;border:1px solid rgba(0,240,255,0.3);color:var(--cyan);padding:5px 14px;
+  border-radius:4px;cursor:pointer;font-family:inherit;font-size:11px;text-transform:uppercase;
+  letter-spacing:0.05em;transition:all 0.25s ease;white-space:nowrap}
+.btn:hover{background:rgba(0,240,255,0.1);border-color:var(--cyan);box-shadow:0 0 12px var(--glow-c);
+  transform:translateY(-1px)}
+.btn.danger{border-color:rgba(255,42,109,0.3);color:var(--mag)}
+.btn.danger:hover{background:rgba(255,42,109,0.1);border-color:var(--mag);box-shadow:0 0 12px var(--glow-m)}
+.btn.sm{padding:3px 10px;font-size:10px}
+.btn:disabled{opacity:0.3;cursor:default;transform:none;box-shadow:none}
+/* File list panel */
+.panel{border:1px solid rgba(0,240,255,0.08);background:var(--s1);
+  box-shadow:0 0 12px var(--glow-c);transition:box-shadow 0.25s}
+.panel:hover{box-shadow:0 0 20px rgba(0,240,255,0.2)}
+/* Sort header */
+.sort-hdr{display:flex;padding:8px 16px;border-bottom:1px solid rgba(0,240,255,0.06);
+  color:var(--ghost);font-size:11px;text-transform:uppercase;letter-spacing:0.08em;user-select:none}
+.sort-hdr>div{cursor:pointer;padding:2px 0;transition:color 0.2s}
+.sort-hdr>div:hover{color:var(--cyan)}
+.sort-hdr>div.active{color:var(--cyan)}
+.sort-hdr>div.active::after{content:" \25B2";font-size:9px}
+.sort-hdr>div.active.desc::after{content:" \25BC"}
+.col-check{width:32px;flex-shrink:0}
+.col-icon{width:28px;flex-shrink:0}
+.col-name{flex:1;min-width:0}
+.col-size{width:90px;text-align:right;flex-shrink:0}
+.col-date{width:100px;text-align:right;flex-shrink:0}
+/* File rows */
+.file-list{max-height:calc(100vh - 310px);overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(0,240,255,0.2) transparent}
+.file-list::-webkit-scrollbar{width:6px}
+.file-list::-webkit-scrollbar-track{background:transparent}
+.file-list::-webkit-scrollbar-thumb{background:rgba(0,240,255,0.2);border-radius:3px}
+.row{display:flex;align-items:center;padding:7px 16px;border-bottom:1px solid rgba(255,255,255,0.02);
+  cursor:pointer;transition:all 0.15s ease}
+.row:hover{background:var(--s2)}
+.row.selected{background:var(--s3);border-left:2px solid var(--cyan);padding-left:14px}
+.row .chk{width:14px;height:14px;accent-color:var(--cyan);cursor:pointer}
+.row .icon{font-size:16px;width:28px;text-align:center;flex-shrink:0}
+.row .icon.dir{color:var(--cyan)}
+.row .icon.file{color:var(--ghost)}
+.row .fname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.row .fname.dir-name{color:var(--bright)}
+.row .fsize{width:90px;text-align:right;color:var(--ghost);font-size:12px;flex-shrink:0}
+.row .fdate{width:100px;text-align:right;color:var(--ghost);font-size:12px;flex-shrink:0}
+.row .children{color:rgba(0,240,255,0.5);font-size:11px;margin-left:6px}
+.empty{padding:40px;text-align:center;color:var(--ghost)}
+/* Drop zone */
+.dropzone{border:2px dashed rgba(0,240,255,0.3);background:rgba(0,240,255,0.03);padding:32px;
+  text-align:center;margin:12px 0;border-radius:6px;transition:all 0.25s;display:none}
+.dropzone.active{display:block}
+.dropzone.dragover{border-color:var(--cyan);background:rgba(0,240,255,0.08);
+  box-shadow:0 0 20px var(--glow-c)}
+.dropzone .label{color:var(--ghost);font-size:13px;margin-bottom:8px}
+.dropzone .hint{color:rgba(0,240,255,0.4);font-size:11px}
+/* Progress */
+.progress{display:none;margin:8px 16px 12px;height:4px;background:var(--s3);border-radius:2px;overflow:hidden}
+.progress.active{display:block}
+.progress .fill{height:100%;background:var(--cyan);border-radius:2px;width:0%;
+  transition:width 0.3s;box-shadow:0 0 8px var(--glow-c)}
+/* Storage bar */
+.storage-bar{display:flex;align-items:center;padding:10px 16px;
+  border:1px solid rgba(0,240,255,0.08);background:var(--s1);margin-top:12px;gap:12px;font-size:12px}
+.storage-bar .label{color:var(--ghost);white-space:nowrap}
+.storage-bar .bar{flex:1;height:10px;background:var(--s3);border-radius:5px;overflow:hidden}
+.storage-bar .fill{height:100%;border-radius:5px;transition:width 0.5s}
+.storage-bar .pct{color:var(--ghost);min-width:36px;text-align:right}
+/* Context menu */
+.ctx-menu{position:fixed;z-index:100;background:var(--s2);border:1px solid rgba(0,240,255,0.2);
+  border-radius:4px;box-shadow:0 4px 20px rgba(0,0,0,0.5),0 0 12px var(--glow-c);
+  padding:4px 0;display:none;min-width:160px}
+.ctx-menu .item{padding:7px 16px;cursor:pointer;font-size:12px;color:var(--text);transition:all 0.15s;
+  display:flex;align-items:center;gap:8px}
+.ctx-menu .item:hover{background:rgba(0,240,255,0.08);color:var(--cyan)}
+.ctx-menu .item.danger{color:var(--mag)}
+.ctx-menu .item.danger:hover{background:rgba(255,42,109,0.08)}
+.ctx-menu .sep{height:1px;background:rgba(0,240,255,0.06);margin:4px 0}
+/* Editor panel */
+.editor-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);
+  backdrop-filter:blur(8px);z-index:50;display:none;justify-content:center;align-items:center}
+.editor-overlay.active{display:flex}
+.editor{width:90%;max-width:800px;max-height:90vh;background:var(--s1);
+  border:1px solid rgba(0,240,255,0.2);border-radius:6px;box-shadow:0 0 30px var(--glow-c);
+  display:flex;flex-direction:column;animation:editorIn 0.25s ease}
+@keyframes editorIn{from{opacity:0;transform:scale(0.92)}to{opacity:1;transform:scale(1)}}
+.editor-hdr{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;
+  border-bottom:1px solid rgba(0,240,255,0.1)}
+.editor-hdr .title{color:var(--cyan);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.editor-hdr .btns{display:flex;gap:6px}
+.editor-body{flex:1;position:relative;overflow:hidden;display:flex;min-height:0}
+.line-nums{padding:12px 8px 12px 12px;background:var(--s2);color:rgba(0,240,255,0.3);font-size:12px;
+  line-height:1.5;text-align:right;user-select:none;overflow:hidden;min-width:40px;white-space:pre}
+.editor-body textarea{flex:1;background:transparent;color:var(--text);border:none;padding:12px;
+  font-family:inherit;font-size:12px;line-height:1.5;resize:none;outline:none;
+  tab-size:2;white-space:pre;overflow:auto}
+.editor-status{padding:6px 16px;border-top:1px solid rgba(0,240,255,0.1);font-size:11px;
+  color:var(--ghost);display:flex;justify-content:space-between}
+/* Dialog */
+.dialog-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);
+  backdrop-filter:blur(4px);z-index:60;display:none;justify-content:center;align-items:center}
+.dialog-overlay.active{display:flex}
+.dialog{background:var(--s1);border:1px solid rgba(0,240,255,0.2);border-radius:6px;
+  padding:20px;min-width:320px;box-shadow:0 0 20px var(--glow-c);animation:editorIn 0.2s ease}
+.dialog h3{color:var(--cyan);font-size:13px;margin-bottom:12px;text-transform:uppercase;letter-spacing:0.05em}
+.dialog input{width:100%;background:var(--s2);border:1px solid rgba(0,240,255,0.15);color:var(--text);
+  padding:8px 12px;border-radius:4px;font-family:inherit;font-size:13px;outline:none;margin-bottom:12px}
+.dialog input:focus{border-color:var(--cyan);box-shadow:0 0 8px var(--glow-c)}
+.dialog .btns{display:flex;justify-content:flex-end;gap:8px}
+/* Toast */
+.toast{position:fixed;bottom:20px;right:20px;z-index:200;padding:10px 18px;border-radius:4px;
+  font-size:12px;animation:toastIn 0.3s ease;pointer-events:none;
+  border:1px solid rgba(5,255,161,0.3);background:rgba(5,255,161,0.08);color:var(--green)}
+.toast.error{border-color:rgba(255,42,109,0.3);background:rgba(255,42,109,0.08);color:var(--mag)}
+@keyframes toastIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+/* Upload input hidden */
+#upload-input{display:none}
+/* Checkbox header */
+.chk-all{accent-color:var(--cyan);cursor:pointer}
+/* Multi-select bar */
+.multi-bar{display:none;padding:8px 16px;background:var(--s3);border-bottom:1px solid rgba(0,240,255,0.1);
+  align-items:center;gap:12px;font-size:12px;color:var(--ghost)}
+.multi-bar.active{display:flex}
+.multi-bar .count{color:var(--cyan)}
+</style>
+</head><body>
+<div class="scanline"></div>
+<div class="shell">
+<!-- Header -->
+<div class="hdr">
+  <h1>[ File Manager ]</h1>
+  <div class="tabs">
+    <button class="tab active" data-storage="littlefs" onclick="switchStorage('littlefs')">LittleFS</button>
+    <button class="tab" data-storage="sdcard" onclick="switchStorage('sdcard')">SD Card</button>
+  </div>
+</div>
+
+<!-- Toolbar -->
+<div class="toolbar">
+  <div class="breadcrumb" id="breadcrumb"></div>
+  <div class="actions">
+    <button class="btn" onclick="showUploadZone()" title="Upload files">Upload</button>
+    <button class="btn" onclick="promptNewFile()" title="New file">+ File</button>
+    <button class="btn" onclick="promptNewDir()" title="New folder">+ Dir</button>
+  </div>
+</div>
+
+<!-- Upload drop zone -->
+<div class="dropzone" id="dropzone">
+  <div class="label">Drop files here or click to browse</div>
+  <div class="hint">Max: 1 MB (LittleFS) / 100 MB (SD Card)</div>
+  <input type="file" id="upload-input" multiple>
+</div>
+<div class="progress" id="progress"><div class="fill" id="progress-fill"></div></div>
+
+<!-- Multi-select bar -->
+<div class="multi-bar" id="multi-bar">
+  <span class="count" id="sel-count">0</span> selected
+  <button class="btn sm danger" onclick="deleteSelected()">Delete Selected</button>
+  <button class="btn sm" onclick="clearSelection()">Clear</button>
+</div>
+
+<!-- File list -->
+<div class="panel">
+  <div class="sort-hdr">
+    <div class="col-check"><input type="checkbox" class="chk-all" onchange="toggleAll(this)"></div>
+    <div class="col-icon"></div>
+    <div class="col-name active" data-sort="name" onclick="setSort('name')">Name</div>
+    <div class="col-size" data-sort="size" onclick="setSort('size')">Size</div>
+    <div class="col-date" data-sort="date" onclick="setSort('date')">Modified</div>
+  </div>
+  <div class="file-list" id="file-list"></div>
+</div>
+
+<!-- Storage bar -->
+<div class="storage-bar" id="storage-bar">
+  <span class="label" id="storage-label">Used: -- / --</span>
+  <div class="bar"><div class="fill" id="bar-fill" style="width:0%"></div></div>
+  <span class="pct" id="bar-pct">--%</span>
+</div>
+</div>
+
+<!-- Context menu -->
+<div class="ctx-menu" id="ctx-menu">
+  <div class="item" onclick="ctxOpen()">Open</div>
+  <div class="item" onclick="ctxDownload()">Download</div>
+  <div class="sep"></div>
+  <div class="item" onclick="ctxRename()">Rename</div>
+  <div class="item" onclick="ctxCopyPath()">Copy Path</div>
+  <div class="sep"></div>
+  <div class="item danger" onclick="ctxDelete()">Delete</div>
+</div>
+
+<!-- Editor overlay -->
+<div class="editor-overlay" id="editor-overlay">
+  <div class="editor">
+    <div class="editor-hdr">
+      <span class="title" id="editor-title"></span>
+      <div class="btns">
+        <button class="btn sm" onclick="editorRevert()">Revert</button>
+        <button class="btn sm" onclick="editorSave()">Save</button>
+        <button class="btn sm" onclick="editorClose()">Close</button>
+      </div>
+    </div>
+    <div class="editor-body">
+      <div class="line-nums" id="line-nums"></div>
+      <textarea id="editor-content" spellcheck="false"></textarea>
+    </div>
+    <div class="editor-status">
+      <span id="editor-size"></span>
+      <span id="editor-hint">Ctrl+S to save</span>
+    </div>
+  </div>
+</div>
+
+<!-- Dialog overlay -->
+<div class="dialog-overlay" id="dialog-overlay">
+  <div class="dialog">
+    <h3 id="dialog-title"></h3>
+    <input id="dialog-input" autocomplete="off">
+    <div class="btns">
+      <button class="btn sm" onclick="dialogCancel()">Cancel</button>
+      <button class="btn sm" id="dialog-ok" onclick="dialogOk()">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+// State
+let S = {
+  storage: 'littlefs',
+  path: '/',
+  entries: [],
+  selected: new Set(),
+  sort: 'name',
+  sortDesc: false,
+  ctxEntry: null,
+  editorPath: '',
+  editorOriginal: '',
+  dialogCb: null
+};
+
+// Helpers
+const $ = id => document.getElementById(id);
+const api = (ep, opts) => fetch('/api/fs/' + ep, opts).then(r => {
+  if (!r.ok) return r.json().then(j => { throw new Error(j.error || r.statusText); });
+  return r;
+});
+
+function fmtSize(b) {
+  if (b === undefined || b === null) return '';
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+  if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+  return (b / 1073741824).toFixed(1) + ' GB';
+}
+
+function fmtDate(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return mon[d.getMonth()] + ' ' + String(d.getDate()).padStart(2,'0');
+}
+
+function fileIcon(entry) {
+  if (entry.type === 'dir') return '\u{1F4C1}';
+  const n = entry.name.toLowerCase();
+  if (n.endsWith('.json')) return '\u{1F4CB}';
+  if (n.endsWith('.log') || n.endsWith('.txt')) return '\u{1F4C4}';
+  if (n.endsWith('.bin') || n.endsWith('.gz') || n.endsWith('.zip')) return '\u{1F4E6}';
+  if (n.endsWith('.csv')) return '\u{1F4CA}';
+  if (n.endsWith('.html') || n.endsWith('.css') || n.endsWith('.js')) return '\u{1F310}';
+  return '\u{1F4C4}';
+}
+
+function isText(name) {
+  const t = ['.txt','.json','.csv','.log','.xml','.html','.htm','.css','.js','.ini','.cfg','.conf','.yaml','.yml','.md','.sh'];
+  const n = name.toLowerCase();
+  return t.some(e => n.endsWith(e));
+}
+
+function toast(msg, err) {
+  const el = document.createElement('div');
+  el.className = 'toast' + (err ? ' error' : '');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// Navigation
+function navigate(path) {
+  S.path = path || '/';
+  S.selected.clear();
+  updateMultiBar();
+  loadDir();
+}
+window.navigate = navigate;
+
+function switchStorage(st) {
+  S.storage = st;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.storage === st));
+  navigate('/');
+}
+window.switchStorage = switchStorage;
+
+function buildBreadcrumb() {
+  const bc = $('breadcrumb');
+  bc.innerHTML = '';
+  const parts = S.path.split('/').filter(Boolean);
+  const span = (text, path) => {
+    const s = document.createElement('span');
+    s.textContent = text;
+    s.onclick = () => navigate(path);
+    return s;
+  };
+  const sep = () => { const s = document.createElement('span'); s.className = 'sep'; s.textContent = '/'; return s; };
+  bc.appendChild(span('/', '/'));
+  let cur = '';
+  parts.forEach((p, i) => {
+    cur += '/' + p;
+    bc.appendChild(sep());
+    bc.appendChild(span(p, cur));
+  });
+}
+
+// Load directory listing
+function loadDir() {
+  buildBreadcrumb();
+  const list = $('file-list');
+  list.innerHTML = '<div class="empty">Loading...</div>';
+
+  api('list?path=' + encodeURIComponent(S.path) + '&storage=' + S.storage)
+    .then(r => r.json())
+    .then(data => {
+      S.entries = data.entries || [];
+      renderList();
+      updateStorageBar(data);
+    })
+    .catch(e => {
+      list.innerHTML = '<div class="empty">Error: ' + e.message + '</div>';
+    });
+}
+
+// Sorting
+function sortEntries(entries) {
+  const cmp = (a, b) => {
+    // Dirs always first
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    let v = 0;
+    if (S.sort === 'name') v = a.name.localeCompare(b.name);
+    else if (S.sort === 'size') v = (a.size || 0) - (b.size || 0);
+    else if (S.sort === 'date') v = (a.modified || 0) - (b.modified || 0);
+    return S.sortDesc ? -v : v;
+  };
+  return [...entries].sort(cmp);
+}
+
+function setSort(col) {
+  if (S.sort === col) S.sortDesc = !S.sortDesc;
+  else { S.sort = col; S.sortDesc = false; }
+  document.querySelectorAll('.sort-hdr>div[data-sort]').forEach(d => {
+    d.classList.toggle('active', d.dataset.sort === S.sort);
+    d.classList.toggle('desc', d.dataset.sort === S.sort && S.sortDesc);
+  });
+  renderList();
+}
+window.setSort = setSort;
+
+// Render file list
+function renderList() {
+  const list = $('file-list');
+  const sorted = sortEntries(S.entries);
+  if (sorted.length === 0) {
+    list.innerHTML = '<div class="empty">Empty directory</div>';
+    return;
+  }
+  list.innerHTML = '';
+  sorted.forEach(entry => {
+    const row = document.createElement('div');
+    row.className = 'row' + (S.selected.has(entry.name) ? ' selected' : '');
+    row.dataset.name = entry.name;
+    row.dataset.type = entry.type;
+
+    const fullPath = S.path + (S.path.endsWith('/') ? '' : '/') + entry.name;
+
+    row.innerHTML =
+      '<input type="checkbox" class="chk"' + (S.selected.has(entry.name) ? ' checked' : '') + '>' +
+      '<div class="icon ' + entry.type + '">' + fileIcon(entry) + '</div>' +
+      '<div class="fname ' + (entry.type === 'dir' ? 'dir-name' : '') + '">' +
+        escHtml(entry.name) +
+        (entry.type === 'dir' && entry.children !== undefined ? '<span class="children">' + entry.children + ' items</span>' : '') +
+      '</div>' +
+      '<div class="fsize">' + (entry.type === 'file' ? fmtSize(entry.size) : '') + '</div>' +
+      '<div class="fdate">' + fmtDate(entry.modified) + '</div>';
+
+    // Click handlers
+    row.querySelector('.chk').onchange = function(e) {
+      e.stopPropagation();
+      if (this.checked) S.selected.add(entry.name); else S.selected.delete(entry.name);
+      row.classList.toggle('selected', this.checked);
+      updateMultiBar();
+    };
+
+    row.onclick = function(e) {
+      if (e.target.classList.contains('chk')) return;
+      if (entry.type === 'dir') navigate(fullPath);
+      else if (isText(entry.name)) openEditor(fullPath);
+    };
+
+    row.oncontextmenu = function(e) {
+      e.preventDefault();
+      S.ctxEntry = { ...entry, fullPath };
+      showCtxMenu(e.clientX, e.clientY);
+    };
+
+    list.appendChild(row);
+  });
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Multi-select
+function toggleAll(el) {
+  S.selected.clear();
+  if (el.checked) S.entries.forEach(e => S.selected.add(e.name));
+  renderList();
+  updateMultiBar();
+}
+window.toggleAll = toggleAll;
+
+function updateMultiBar() {
+  const bar = $('multi-bar');
+  const cnt = $('sel-count');
+  if (S.selected.size > 0) {
+    bar.classList.add('active');
+    cnt.textContent = S.selected.size;
+  } else {
+    bar.classList.remove('active');
+  }
+  document.querySelector('.chk-all').checked = S.selected.size > 0 && S.selected.size === S.entries.length;
+}
+
+function clearSelection() { S.selected.clear(); renderList(); updateMultiBar(); }
+window.clearSelection = clearSelection;
+
+function deleteSelected() {
+  if (S.selected.size === 0) return;
+  if (!confirm('Delete ' + S.selected.size + ' item(s)?')) return;
+  const promises = [];
+  S.selected.forEach(name => {
+    const path = S.path + (S.path.endsWith('/') ? '' : '/') + name;
+    promises.push(api('delete?path=' + encodeURIComponent(path) + '&storage=' + S.storage, { method: 'DELETE' }));
+  });
+  Promise.all(promises).then(() => { toast('Deleted ' + promises.length + ' item(s)'); loadDir(); })
+    .catch(e => toast('Delete error: ' + e.message, true));
+}
+window.deleteSelected = deleteSelected;
+
+// Storage bar
+function updateStorageBar(data) {
+  const total = data.total_bytes || 0;
+  const used = data.used_bytes || 0;
+  const free = data.free_bytes || 0;
+  const pct = total > 0 ? Math.round(used / total * 100) : 0;
+  $('storage-label').textContent = 'Used: ' + fmtSize(used) + ' / ' + fmtSize(total);
+  $('bar-pct').textContent = pct + '%';
+  const fill = $('bar-fill');
+  fill.style.width = pct + '%';
+  // Color gradient: green -> yellow -> magenta
+  if (pct < 60) fill.style.background = 'var(--green)';
+  else if (pct < 85) fill.style.background = 'var(--yellow)';
+  else fill.style.background = 'var(--mag)';
+  fill.style.boxShadow = '0 0 8px ' + (pct < 60 ? 'var(--glow-g)' : pct < 85 ? 'rgba(252,238,10,0.15)' : 'var(--glow-m)');
+}
+
+// Context menu
+function showCtxMenu(x, y) {
+  const m = $('ctx-menu');
+  m.style.display = 'block';
+  m.style.left = Math.min(x, window.innerWidth - 180) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - 200) + 'px';
+}
+
+function hideCtxMenu() { $('ctx-menu').style.display = 'none'; }
+
+document.addEventListener('click', hideCtxMenu);
+document.addEventListener('contextmenu', function(e) {
+  if (!e.target.closest('.row')) hideCtxMenu();
+});
+
+function ctxOpen() {
+  hideCtxMenu();
+  if (!S.ctxEntry) return;
+  if (S.ctxEntry.type === 'dir') navigate(S.ctxEntry.fullPath);
+  else if (isText(S.ctxEntry.name)) openEditor(S.ctxEntry.fullPath);
+  else ctxDownload();
+}
+window.ctxOpen = ctxOpen;
+
+function ctxDownload() {
+  hideCtxMenu();
+  if (!S.ctxEntry) return;
+  window.open('/api/fs/download?path=' + encodeURIComponent(S.ctxEntry.fullPath) + '&storage=' + S.storage, '_blank');
+}
+window.ctxDownload = ctxDownload;
+
+function ctxRename() {
+  hideCtxMenu();
+  if (!S.ctxEntry) return;
+  showDialog('Rename', S.ctxEntry.name, function(newName) {
+    if (!newName || newName === S.ctxEntry.name) return;
+    const newPath = S.path + (S.path.endsWith('/') ? '' : '/') + newName;
+    api('rename?from=' + encodeURIComponent(S.ctxEntry.fullPath) + '&to=' + encodeURIComponent(newPath) + '&storage=' + S.storage, { method: 'POST' })
+      .then(() => { toast('Renamed'); loadDir(); })
+      .catch(e => toast('Rename error: ' + e.message, true));
+  });
+}
+window.ctxRename = ctxRename;
+
+function ctxCopyPath() {
+  hideCtxMenu();
+  if (!S.ctxEntry) return;
+  navigator.clipboard.writeText(S.ctxEntry.fullPath).then(() => toast('Path copied'));
+}
+window.ctxCopyPath = ctxCopyPath;
+
+function ctxDelete() {
+  hideCtxMenu();
+  if (!S.ctxEntry) return;
+  if (!confirm('Delete ' + S.ctxEntry.name + '?')) return;
+  api('delete?path=' + encodeURIComponent(S.ctxEntry.fullPath) + '&storage=' + S.storage, { method: 'DELETE' })
+    .then(() => { toast('Deleted'); loadDir(); })
+    .catch(e => toast('Delete error: ' + e.message, true));
+}
+window.ctxDelete = ctxDelete;
+
+// Upload
+function showUploadZone() {
+  const dz = $('dropzone');
+  dz.classList.toggle('active');
+  if (dz.classList.contains('active')) $('upload-input').click();
+}
+window.showUploadZone = showUploadZone;
+
+$('upload-input').addEventListener('change', function() {
+  if (this.files.length > 0) uploadFiles(this.files);
+  this.value = '';
+});
+
+// Drag-and-drop on the entire panel
+document.addEventListener('dragover', function(e) { e.preventDefault(); $('dropzone').classList.add('active','dragover'); });
+document.addEventListener('dragleave', function(e) {
+  if (!e.relatedTarget || !document.contains(e.relatedTarget)) $('dropzone').classList.remove('dragover');
+});
+document.addEventListener('drop', function(e) {
+  e.preventDefault();
+  $('dropzone').classList.remove('dragover');
+  if (e.dataTransfer.files.length > 0) uploadFiles(e.dataTransfer.files);
+});
+
+function uploadFiles(files) {
+  const prog = $('progress');
+  const fill = $('progress-fill');
+  prog.classList.add('active');
+  let done = 0;
+  const total = files.length;
+
+  Array.from(files).forEach(file => {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/fs/upload?path=' + encodeURIComponent(S.path) + '&storage=' + S.storage);
+    xhr.upload.onprogress = function(e) {
+      if (e.lengthComputable) {
+        const pct = Math.round((done / total + (e.loaded / e.total) / total) * 100);
+        fill.style.width = pct + '%';
+      }
+    };
+    xhr.onload = function() {
+      done++;
+      fill.style.width = Math.round(done / total * 100) + '%';
+      if (done === total) {
+        setTimeout(() => { prog.classList.remove('active'); fill.style.width = '0%'; }, 800);
+        $('dropzone').classList.remove('active');
+        toast(total + ' file(s) uploaded');
+        loadDir();
+      }
+    };
+    xhr.onerror = function() { toast('Upload failed: ' + file.name, true); };
+    xhr.send(form);
+  });
+}
+
+// New file / dir
+function promptNewFile() {
+  showDialog('New File', '', function(name) {
+    if (!name) return;
+    const path = S.path + (S.path.endsWith('/') ? '' : '/') + name;
+    api('write?path=' + encodeURIComponent(path) + '&storage=' + S.storage, {
+      method: 'POST', body: ''
+    }).then(() => { toast('Created ' + name); loadDir(); })
+      .catch(e => toast('Error: ' + e.message, true));
+  });
+}
+window.promptNewFile = promptNewFile;
+
+function promptNewDir() {
+  showDialog('New Folder', '', function(name) {
+    if (!name) return;
+    const path = S.path + (S.path.endsWith('/') ? '' : '/') + name;
+    api('mkdir?path=' + encodeURIComponent(path) + '&storage=' + S.storage, { method: 'POST' })
+      .then(() => { toast('Created ' + name + '/'); loadDir(); })
+      .catch(e => toast('Error: ' + e.message, true));
+  });
+}
+window.promptNewDir = promptNewDir;
+
+// Dialog
+function showDialog(title, value, cb) {
+  $('dialog-title').textContent = title;
+  $('dialog-input').value = value;
+  S.dialogCb = cb;
+  $('dialog-overlay').classList.add('active');
+  setTimeout(() => $('dialog-input').focus(), 50);
+}
+
+function dialogOk() {
+  $('dialog-overlay').classList.remove('active');
+  if (S.dialogCb) S.dialogCb($('dialog-input').value);
+  S.dialogCb = null;
+}
+window.dialogOk = dialogOk;
+
+function dialogCancel() {
+  $('dialog-overlay').classList.remove('active');
+  S.dialogCb = null;
+}
+window.dialogCancel = dialogCancel;
+
+$('dialog-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') dialogOk();
+  if (e.key === 'Escape') dialogCancel();
+});
+
+// Editor
+function openEditor(path) {
+  S.editorPath = path;
+  $('editor-title').textContent = path;
+  $('editor-content').value = 'Loading...';
+  $('editor-overlay').classList.add('active');
+
+  api('read?path=' + encodeURIComponent(path) + '&storage=' + S.storage)
+    .then(r => r.text())
+    .then(text => {
+      S.editorOriginal = text;
+      $('editor-content').value = text;
+      $('editor-size').textContent = fmtSize(text.length);
+      updateLineNums();
+    })
+    .catch(e => {
+      $('editor-content').value = 'Error: ' + e.message;
+    });
+}
+
+function editorClose() {
+  const cur = $('editor-content').value;
+  if (cur !== S.editorOriginal) {
+    if (!confirm('Discard unsaved changes?')) return;
+  }
+  $('editor-overlay').classList.remove('active');
+}
+window.editorClose = editorClose;
+
+function editorRevert() {
+  $('editor-content').value = S.editorOriginal;
+  updateLineNums();
+  toast('Reverted');
+}
+window.editorRevert = editorRevert;
+
+function editorSave() {
+  const content = $('editor-content').value;
+  api('write?path=' + encodeURIComponent(S.editorPath) + '&storage=' + S.storage, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: content
+  }).then(() => {
+    S.editorOriginal = content;
+    $('editor-size').textContent = fmtSize(content.length);
+    toast('Saved');
+    loadDir();
+  }).catch(e => toast('Save error: ' + e.message, true));
+}
+window.editorSave = editorSave;
+
+function updateLineNums() {
+  const ta = $('editor-content');
+  const lines = ta.value.split('\n').length;
+  let nums = '';
+  for (let i = 1; i <= lines; i++) nums += i + '\n';
+  $('line-nums').textContent = nums;
+}
+
+$('editor-content').addEventListener('input', updateLineNums);
+$('editor-content').addEventListener('scroll', function() {
+  $('line-nums').scrollTop = this.scrollTop;
+});
+
+// Ctrl+S global save
+document.addEventListener('keydown', function(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    if ($('editor-overlay').classList.contains('active')) editorSave();
+  }
+  if (e.key === 'Escape') {
+    if ($('editor-overlay').classList.contains('active')) editorClose();
+    else if ($('dialog-overlay').classList.contains('active')) dialogCancel();
+  }
+});
+
+// Init
+loadDir();
+
+})();
+</script>
+</body></html>
+)rawliteral"

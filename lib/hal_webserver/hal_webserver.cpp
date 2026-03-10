@@ -58,7 +58,20 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include <esp_partition.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <esp_heap_caps.h>
 #include <cstring>
+
+// Shared API response buffer — allocated in PSRAM on first use.
+// Safe because WebServer is single-threaded (one request at a time).
+static const size_t API_BUF_SIZE = 8192;
+static char* _apiBuf = nullptr;
+static char* api_buf() {
+    if (!_apiBuf) {
+        _apiBuf = (char*)heap_caps_malloc(API_BUF_SIZE, MALLOC_CAP_SPIRAM);
+        if (!_apiBuf) _apiBuf = (char*)malloc(API_BUF_SIZE);  // fallback
+    }
+    return _apiBuf;
+}
 
 // Persistent diagnostic log — optional
 #if __has_include("hal_diaglog.h")
@@ -871,8 +884,8 @@ void WebServerHAL::addApiEndpoints() {
         uint8_t mac[6];
         WiFi.macAddress(mac);
 
-        static char buf[768];
-        int pos = snprintf(buf, sizeof(buf),
+        char* buf = api_buf();
+        int pos = snprintf(buf, API_BUF_SIZE,
             "{\"tritium\":true,\"version\":\"1.0\","
             "\"device_id\":\"%02X%02X%02X%02X%02X%02X\","
             "\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
@@ -899,11 +912,11 @@ void WebServerHAL::addApiEndpoints() {
             (unsigned long)self->_requestCount);
 
         // Capabilities list based on build flags
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "\"capabilities\":[");
+        pos += snprintf(buf + pos, API_BUF_SIZE - pos, "\"capabilities\":[");
         bool first = true;
         auto addCap = [&](const char* name) {
             if (!first) buf[pos++] = ',';
-            pos += snprintf(buf + pos, sizeof(buf) - pos, "\"%s\"", name);
+            pos += snprintf(buf + pos, API_BUF_SIZE - pos, "\"%s\"", name);
             first = false;
         };
         addCap("webserver");
@@ -941,7 +954,7 @@ void WebServerHAL::addApiEndpoints() {
 #if defined(ENABLE_ESPNOW)
         addCap("espnow_mesh");
 #endif
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "]}");
+        pos += snprintf(buf + pos, API_BUF_SIZE - pos, "]}");
         _server->send(200, "application/json", buf);
     });
 
@@ -949,8 +962,8 @@ void WebServerHAL::addApiEndpoints() {
     _server->on("/api/mesh", HTTP_GET, [self]() {
         self->_requestCount++;
         if (self->_meshProvider) {
-            static char buf[2048];
-            int len = self->_meshProvider(buf, sizeof(buf));
+            char* buf = api_buf();
+            int len = self->_meshProvider(buf, API_BUF_SIZE);
             if (len > 0) {
                 _server->send(200, "application/json", buf);
                 return;
@@ -964,8 +977,8 @@ void WebServerHAL::addApiEndpoints() {
     _server->on("/api/diag", HTTP_GET, [self]() {
         self->_requestCount++;
         if (self->_diagProvider) {
-            static char buf[4096];
-            int len = self->_diagProvider(buf, sizeof(buf));
+            char* buf = api_buf();
+            int len = self->_diagProvider(buf, API_BUF_SIZE);
             if (len > 0) {
                 _server->send(200, "application/json", buf);
                 return;
@@ -979,8 +992,8 @@ void WebServerHAL::addApiEndpoints() {
     _server->on("/api/diag/health", HTTP_GET, [self]() {
         self->_requestCount++;
         if (self->_diagHealthProvider) {
-            static char buf[2048];
-            int len = self->_diagHealthProvider(buf, sizeof(buf));
+            char* buf = api_buf();
+            int len = self->_diagHealthProvider(buf, API_BUF_SIZE);
             if (len > 0) {
                 _server->send(200, "application/json", buf);
                 return;
@@ -994,8 +1007,8 @@ void WebServerHAL::addApiEndpoints() {
     _server->on("/api/diag/events", HTTP_GET, [self]() {
         self->_requestCount++;
         if (self->_diagEventsProvider) {
-            static char buf[4096];
-            int len = self->_diagEventsProvider(buf, sizeof(buf));
+            char* buf = api_buf();
+            int len = self->_diagEventsProvider(buf, API_BUF_SIZE);
             if (len > 0) {
                 _server->send(200, "application/json", buf);
                 return;
@@ -1009,8 +1022,8 @@ void WebServerHAL::addApiEndpoints() {
     _server->on("/api/diag/anomalies", HTTP_GET, [self]() {
         self->_requestCount++;
         if (self->_diagAnomaliesProvider) {
-            static char buf[2048];
-            int len = self->_diagAnomaliesProvider(buf, sizeof(buf));
+            char* buf = api_buf();
+            int len = self->_diagAnomaliesProvider(buf, API_BUF_SIZE);
             if (len > 0) {
                 _server->send(200, "application/json", buf);
                 return;
@@ -1034,8 +1047,8 @@ void WebServerHAL::addApiEndpoints() {
             if (count < 1) count = 1;
             if (count > 200) count = 200;
         }
-        static char buf[8192];
-        int len = diaglog_get_json(buf, sizeof(buf), offset, count);
+        char* buf = api_buf();
+        int len = diaglog_get_json(buf, API_BUF_SIZE, offset, count);
         if (len > 0) {
             _server->send(200, "application/json", buf);
         } else {
@@ -1054,8 +1067,8 @@ void WebServerHAL::addApiEndpoints() {
     // GET /api/logs — recent log entries
     _server->on("/api/logs", HTTP_GET, [self]() {
         self->_requestCount++;
-        static char buf[4096];
-        int len = WebServerHAL::getLogJson(buf, sizeof(buf));
+        char* buf = api_buf();
+        int len = WebServerHAL::getLogJson(buf, API_BUF_SIZE);
         if (len > 0) {
             _server->send(200, "application/json", buf);
         } else {
@@ -1308,8 +1321,8 @@ void WebServerHAL::addBleViewer() {
         self->_requestCount++;
 
         if (self->_bleProvider) {
-            static char buf[2048];
-            int len = self->_bleProvider(buf, sizeof(buf));
+            char* buf = api_buf();
+            int len = self->_bleProvider(buf, API_BUF_SIZE);
             if (len > 0) {
                 _server->send(200, "application/json", buf);
                 return;
@@ -1731,16 +1744,25 @@ void WebServerHAL::addCommissionPage() {
 
 // ── Log ring buffer ──────────────────────────────────────────────────────
 
-static const int LOG_RING_SIZE = 200;       // Number of lines to keep
-static const int LOG_LINE_MAX  = 160;       // Max chars per line
-static char  _logRing[LOG_RING_SIZE][LOG_LINE_MAX];
+static const int LOG_RING_SIZE = 128;       // Number of lines to keep
+static const int LOG_LINE_MAX  = 128;       // Max chars per line
+static char (*_logRing)[LOG_LINE_MAX] = nullptr;  // PSRAM-allocated on first use
 static int   _logHead = 0;                  // Next write position
 static int   _logCount = 0;                 // Total lines stored (up to LOG_RING_SIZE)
 static SemaphoreHandle_t _logMutex = nullptr;
 
+static void _logRingInit() {
+    if (_logRing) return;
+    _logRing = (char(*)[LOG_LINE_MAX])heap_caps_calloc(
+        LOG_RING_SIZE, LOG_LINE_MAX, MALLOC_CAP_SPIRAM);
+    if (!_logRing) _logRing = (char(*)[LOG_LINE_MAX])calloc(LOG_RING_SIZE, LOG_LINE_MAX);
+}
+
 void WebServerHAL::captureLog(const char* line) {
     if (!line || !line[0]) return;
     if (!_logMutex) _logMutex = xSemaphoreCreateMutex();
+    _logRingInit();
+    if (!_logRing) return;
     if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         strncpy(_logRing[_logHead], line, LOG_LINE_MAX - 1);
         _logRing[_logHead][LOG_LINE_MAX - 1] = '\0';
@@ -1755,6 +1777,7 @@ void WebServerHAL::captureLog(const char* line) {
 }
 
 int WebServerHAL::getLogJson(char* buf, size_t size) {
+    if (!_logRing) return snprintf(buf, size, "{\"count\":0,\"lines\":[]}");
     if (!_logMutex) _logMutex = xSemaphoreCreateMutex();
     if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(50)) != pdTRUE) return 0;
 
@@ -2199,8 +2222,8 @@ void WebServerHAL::addMapPage() {
         self->_requestCount++;
 
         if (self->_gisLayerProvider) {
-            static char buf[2048];
-            int len = self->_gisLayerProvider(buf, sizeof(buf));
+            char* buf = api_buf();
+            int len = self->_gisLayerProvider(buf, API_BUF_SIZE);
             if (len > 0) {
                 _server->send(200, "application/json", buf);
                 return;

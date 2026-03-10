@@ -24,3 +24,9 @@ keys/ota_signing_key.pem
 node_modules/
 playwright-report/
 test-results/
+
+# ESP-IDF managed components (downloaded by build)
+managed_components/
+
+# WiFi credentials (sensitive)
+wifi_credentials.ini

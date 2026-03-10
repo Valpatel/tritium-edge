@@ -1,7 +1,26 @@
 #include <Arduino.h>
+#include <ctime>
 #include "display.h"
 #include "tritium_splash.h"
+#include "boot_sequence.h"
 #include "app.h"
+
+// Tritium-OS Shell — LVGL window manager with status bar, launcher, touch
+#if defined(ENABLE_SHELL) && __has_include("os_shell.h")
+#include "os_shell.h"
+#include "lvgl_driver.h"
+#include "touch_input.h"
+#include "shell_apps.h"
+#define SHELL_AVAILABLE 1
+#else
+#define SHELL_AVAILABLE 0
+#endif
+
+// TouchHAL global instance — required by touch_input.cpp (extern TouchHAL touch)
+#if SHELL_AVAILABLE
+#include "hal_touch.h"
+TouchHAL touch;
+#endif
 
 // SD card support (for SD_FORMAT command) — only when networking libs are available
 #if defined(HAS_SDCARD) && HAS_SDCARD && defined(SD_MMC_D0) && defined(ENABLE_WIFI)
@@ -50,6 +69,16 @@ static WebServerHAL _webserver;
 static bool _webserver_enabled = true;
 #else
 static bool _webserver_enabled = false;
+#endif
+
+// NTP time sync — starts when WiFi connects
+#if defined(ENABLE_WIFI) && __has_include("hal_ntp.h")
+#include "hal_ntp.h"
+#include "os_settings.h"
+static NtpHAL _ntp;
+#define NTP_AVAILABLE 1
+#else
+#define NTP_AVAILABLE 0
 #endif
 
 #if defined(ENABLE_DIAG) && __has_include("hal_diag.h")
@@ -151,7 +180,7 @@ static StarfieldApp app_instance;
 static App* app = &app_instance;
 
 // Serial command buffer
-static char _cmd_buf[512];
+static char _cmd_buf[256];
 static uint8_t _cmd_idx = 0;
 
 static void handleSerialCommands() {
@@ -194,19 +223,28 @@ static void handleSerialCommands() {
 #endif
 #if defined(ENABLE_DIAG)
             else if (strcmp(_cmd_buf, "DIAG") == 0) {
-                static char dbuf[2048];
-                int len = hal_diag::full_report_json(dbuf, sizeof(dbuf));
-                if (len > 0) Serial.println(dbuf);
+                char* dbuf = (char*)malloc(2048);
+                if (dbuf) {
+                    int len = hal_diag::full_report_json(dbuf, 2048);
+                    if (len > 0) Serial.println(dbuf);
+                    free(dbuf);
+                }
             }
             else if (strcmp(_cmd_buf, "HEALTH") == 0) {
-                static char hbuf[1024];
-                int len = hal_diag::health_to_json(hbuf, sizeof(hbuf));
-                if (len > 0) Serial.println(hbuf);
+                char* hbuf = (char*)malloc(1024);
+                if (hbuf) {
+                    int len = hal_diag::health_to_json(hbuf, 1024);
+                    if (len > 0) Serial.println(hbuf);
+                    free(hbuf);
+                }
             }
             else if (strcmp(_cmd_buf, "ANOMALIES") == 0) {
-                static char abuf[1024];
-                int len = hal_diag::anomalies_to_json(abuf, sizeof(abuf));
-                if (len > 0) Serial.println(abuf);
+                char* abuf = (char*)malloc(1024);
+                if (abuf) {
+                    int len = hal_diag::anomalies_to_json(abuf, 1024);
+                    if (len > 0) Serial.println(abuf);
+                    free(abuf);
+                }
             }
 #endif
 #if defined(ENABLE_BLE_SCANNER)
@@ -464,94 +502,20 @@ static void handleSerialCommands() {
     }
 }
 
+// Boot sequence helper — shows service status during OS boot, no-op otherwise
+#if defined(ENABLE_SETTINGS) || defined(ENABLE_DIAG)
+static inline void boot_show(const char* name, const char* status, const char* detail = nullptr) {
+    boot_sequence::showService(name, status, detail);
+}
+#else
+static inline void boot_show(const char*, const char*, const char* = nullptr) {}
+#endif
+
 // --- Optional WiFi + Heartbeat background services ---
 static void services_init() {
-#if defined(ENABLE_WIFI)
-    Serial.printf("[tritium] WiFi: connecting...\n");
-    wifi.init();
-
-    // Add default network if provided via build flags
-#if defined(DEFAULT_WIFI_SSID) && defined(DEFAULT_WIFI_PASS)
-    if (wifi.getSavedCount() == 0) {
-        wifi.addNetwork(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS);
-    }
-#endif
-
-    wifi.connect();
-
-    // Wait up to 10s for connection
-    uint32_t start = millis();
-    while (!wifi.isConnected() && (millis() - start) < 10000) {
-        delay(100);
-    }
-
-    if (wifi.isConnected()) {
-        Serial.printf("[tritium] WiFi: %s (%s)\n", wifi.getSSID(), wifi.getIP());
-#if defined(APP_STARFIELD)
-        {
-            char l1[48];
-            snprintf(l1, sizeof(l1), "%s", wifi.getIP());
-            app_instance.setOverlayText("TRITIUM", l1, nullptr);
-        }
-#endif
-    } else {
-        Serial.printf("[tritium] WiFi: not connected\n");
-#if defined(ENABLE_WEBSERVER)
-        // No WiFi? Start AP mode for phone commissioning
-        Serial.printf("[tritium] Starting AP mode for commissioning...\n");
-        wifi.startAP();  // Creates "Tritium-XXYY" open network
-        // Show commissioning info on display overlay
-#if defined(APP_STARFIELD)
-        {
-            char l1[48], l2[48];
-            snprintf(l1, sizeof(l1), "WIFI: %s", wifi.getSSID());
-            snprintf(l2, sizeof(l2), "HTTP://%s/", wifi.getAPIP());
-            app_instance.setOverlayText("TRITIUM SETUP", l1, l2);
-        }
-#endif
-#else
-        Serial.printf("[tritium] Will retry in background\n");
-#endif
-    }
-#endif
-
-#if defined(ENABLE_HEARTBEAT)
-    if (_wifi_enabled) {
-        hal_heartbeat::HeartbeatConfig hb_cfg;
-#if defined(DEFAULT_SERVER_URL)
-        hb_cfg.server_url = DEFAULT_SERVER_URL;
-#endif
-#if defined(DEFAULT_DEVICE_ID)
-        hb_cfg.device_id = DEFAULT_DEVICE_ID;
-#endif
-        hb_cfg.interval_ms = 30000;  // 30s heartbeats
-        if (hal_heartbeat::init(hb_cfg)) {
-            Serial.printf("[tritium] Heartbeat: active\n");
-        } else {
-            Serial.printf("[tritium] Heartbeat: not configured\n");
-        }
-    }
-#endif
-
-#if defined(ENABLE_COT)
-    if (_wifi_enabled && wifi.isConnected()) {
-        hal_cot::CotConfig cot_cfg;
-#if defined(DEFAULT_DEVICE_ID)
-        cot_cfg.device_id = DEFAULT_DEVICE_ID;
-#endif
-        cot_cfg.interval_ms = 60000;  // CoT SA every 60s
-#if HAS_CAMERA
-        cot_cfg.cot_type = hal_cot::COT_TYPE_CAMERA;
-#endif
-        if (hal_cot::init(cot_cfg)) {
-            Serial.printf("[tritium] CoT/TAK: active (uid=%s callsign=%s)\n",
-                          cot_cfg.device_id ? cot_cfg.device_id : "auto",
-                          cot_cfg.callsign ? cot_cfg.callsign : "auto");
-        } else {
-            Serial.printf("[tritium] CoT/TAK: init failed\n");
-        }
-    }
-#endif
+    // WiFi is fully deferred to first loop tick so the shell boots instantly.
+    // wifi_deferred_init() handles init + connect + wifi-dependent services.
+    boot_show("WiFi", "ok", "deferred");
 
 #if defined(ENABLE_BLE_SCANNER)
     {
@@ -561,8 +525,10 @@ static void services_init() {
         ble_cfg.active_scan = false;       // Passive — less intrusive
         if (hal_ble_scanner::init(ble_cfg)) {
             Serial.printf("[tritium] BLE Scanner: active\n");
+            boot_show("BLE", "ok");
         } else {
             Serial.printf("[tritium] BLE Scanner: failed to start\n");
+            boot_show("BLE", "fail");
         }
     }
 #endif
@@ -582,15 +548,19 @@ static void services_init() {
                                               mesh_baud)) {
             Serial.printf("[tritium] Meshtastic: active (UART%d, %lu baud)\n",
                           MESHTASTIC_UART_NUM, (unsigned long)mesh_baud);
+            boot_show("LoRa", "ok", "meshtastic");
         } else {
             Serial.printf("[tritium] Meshtastic: serial init failed\n");
+            boot_show("LoRa", "fail");
         }
 #else
         hal_lora::LoRaConfig lora_cfg;
         if (hal_lora::init(lora_cfg)) {
             Serial.printf("[tritium] LoRa: active (%s)\n", hal_lora::get_mode());
+            boot_show("LoRa", "ok");
         } else {
             Serial.printf("[tritium] LoRa: init failed\n");
+            boot_show("LoRa", "fail");
         }
 #endif
     }
@@ -604,6 +574,7 @@ static void services_init() {
         diag_cfg.anomaly_detection = true;
         if (hal_diag::init(diag_cfg)) {
             Serial.printf("[tritium] Diagnostics: active\n");
+            boot_show("Diag", "ok");
             hal_diag::log(hal_diag::Severity::INFO, "system", "Tritium-Edge boot complete");
 
             // Wire power HAL into diagnostics on boards with PMIC
@@ -643,18 +614,11 @@ static void services_init() {
             }
 #endif
 
-            // Wire touch diagnostics on boards with touch pins
+            // Touch diagnostics on boards with touch pins (ESP-IDF I2C)
 #if __has_include("hal_touch.h") && defined(TOUCH_SDA)
             {
                 static TouchHAL _diag_touch;
-#if defined(TOUCH_I2C_NUM) && TOUCH_I2C_NUM == 1
-                static TwoWire _touch_wire(1);
-                _touch_wire.begin(TOUCH_SDA, TOUCH_SCL);
-                _touch_wire.setClock(400000);
-                _diag_touch.init(_touch_wire);
-#else
-                _diag_touch.init(Wire);
-#endif
+                _diag_touch.init();
                 hal_diag::set_touch_provider([](bool& available) -> bool {
                     available = _diag_touch.available();
                     return true;
@@ -685,6 +649,7 @@ static void services_init() {
 #endif
         } else {
             Serial.printf("[tritium] Diagnostics: init failed\n");
+            boot_show("Diag", "fail");
         }
     }
 #endif
@@ -696,6 +661,7 @@ static void services_init() {
         // an active WiFi connection on the same channel.
         if (_espnow.init(EspNowRole::NODE, 1)) {
             Serial.printf("[tritium] ESP-NOW Mesh: active\n");
+            boot_show("Mesh", "ok");
 #if defined(ENABLE_DIAG)
             _espnow.enableDiagLogging(true);
             // Wire mesh stats into diagnostics
@@ -723,6 +689,7 @@ static void services_init() {
             _espnow.meshDiscovery();
         } else {
             Serial.printf("[tritium] ESP-NOW Mesh: init failed\n");
+            boot_show("Mesh", "fail");
         }
     }
 #endif
@@ -753,120 +720,196 @@ static void services_init() {
     }
 #endif
 
-#if defined(ENABLE_WEBSERVER)
-    if (_wifi_enabled && (wifi.isConnected() || wifi.isAPMode())) {
-        LittleFS.begin(true);  // Format on first mount
-
-        uint16_t web_port = 80;
-        if (_webserver.init(web_port)) {
-            _webserver.addAllPages();
-
-            // Wire BLE data into web server if BLE scanner is active
-#if defined(ENABLE_BLE_SCANNER)
-            _webserver.setBleProvider([](char* buf, size_t size) -> int {
-                if (!hal_ble_scanner::is_active()) return 0;
-
-                BleDevice devs[16];
-                int n = hal_ble_scanner::get_devices(devs, 16);
-                int known = 0;
-                for (int i = 0; i < n; i++) if (devs[i].is_known) known++;
-
-                int pos = snprintf(buf, size,
-                    "{\"active\":true,\"total\":%d,\"known\":%d,\"devices\":[", n, known);
-                for (int i = 0; i < n && pos < (int)size - 100; i++) {
-                    if (i > 0) buf[pos++] = ',';
-                    pos += snprintf(buf + pos, size - pos,
-                        "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
-                        "\"rssi\":%d,\"name\":\"%s\",\"seen\":%lu,\"known\":%s}",
-                        devs[i].addr[0], devs[i].addr[1], devs[i].addr[2],
-                        devs[i].addr[3], devs[i].addr[4], devs[i].addr[5],
-                        devs[i].rssi, devs[i].name,
-                        (unsigned long)devs[i].seen_count,
-                        devs[i].is_known ? "true" : "false");
-                }
-                pos += snprintf(buf + pos, size - pos, "]}");
-                return pos;
-            });
-#endif
-
-            // Wire diagnostics data into web server
-#if defined(ENABLE_DIAG)
-            _webserver.setDiagProvider([](char* buf, size_t size) -> int {
-                return hal_diag::full_report_json(buf, size);
-            });
-            _webserver.setDiagHealthProvider([](char* buf, size_t size) -> int {
-                return hal_diag::health_to_json(buf, size);
-            });
-            _webserver.setDiagEventsProvider([](char* buf, size_t size) -> int {
-                return hal_diag::events_to_json(buf, size, 50);
-            });
-            _webserver.setDiagAnomaliesProvider([](char* buf, size_t size) -> int {
-                return hal_diag::anomalies_to_json(buf, size);
-            });
-#endif
-
-            // Wire GIS tile data into web server (boards with SD card)
-#if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("hal_gis.h")
-            {
-                static GisHAL _gis;
-                GisConfig gis_cfg;
-                gis_cfg.sd_mount_point = "/sdcard";
-                gis_cfg.tile_base_path = "/gis";
-                gis_cfg.max_cache_tiles = 16;
-                if (_gis.init(gis_cfg)) {
-                    _webserver.setGisTileProvider([](const char* layer, uint8_t z, uint32_t x, uint32_t y, size_t& outLen) -> uint8_t* {
-                        return _gis.getTile(layer, z, x, y, outLen);
-                    });
-                    _webserver.setGisLayerProvider([](char* buf, size_t size) -> int {
-                        int n = _gis.getLayerCount();
-                        int pos = snprintf(buf, size, "[");
-                        for (int i = 0; i < n && pos < (int)size - 200; i++) {
-                            GisLayer layer;
-                            if (!_gis.getLayer(i, layer)) continue;
-                            if (i > 0) buf[pos++] = ',';
-                            pos += snprintf(buf + pos, size - pos,
-                                "{\"name\":\"%s\",\"tile_count\":%u,\"zoom_min\":%u,\"zoom_max\":%u}",
-                                layer.name, (unsigned)layer.tile_count, layer.zoom_min, layer.zoom_max);
-                        }
-                        pos += snprintf(buf + pos, size - pos, "]");
-                        return pos;
-                    });
-                    Serial.printf("[tritium] GIS: %d layers, %u tiles\n",
-                                  _gis.getLayerCount(), (unsigned)_gis.getTileCount());
-                }
-            }
-#endif
-
-            // Wire mesh topology data into web server
-#if defined(ENABLE_ESPNOW)
-            _webserver.setMeshProvider([](char* buf, size_t size) -> int {
-                return _espnow.meshToJson(buf, size);
-            });
-#endif
-
-            // In AP mode, start captive portal for auto-redirect
-            if (wifi.isAPMode()) {
-                _webserver.startCaptivePortal();
-                Serial.printf("[tritium] Web server: http://%s:%u/ (captive portal)\n",
-                              wifi.getAPIP(), web_port);
-                Serial.printf("[tritium] Connect phone to WiFi '%s' for setup\n",
-                              wifi.getSSID());
-            } else {
-                // Normal mode: start mDNS for easy phone discovery
-                uint8_t mac[6];
-                WiFi.macAddress(mac);
-                char hostname[32];
-                snprintf(hostname, sizeof(hostname), "tritium-%02x%02x", mac[4], mac[5]);
-                _webserver.startMDNS(hostname);
-                Serial.printf("[tritium] Web server: http://%s:%u/ (mDNS: %s.local)\n",
-                              wifi.getIP(), web_port, hostname);
-            }
-        }
-    }
-#endif
 }
 
+// Deferred WiFi connect + WiFi-dependent services.
+// Called from services_tick() — runs once on first tick, then once more when connected.
+#if defined(ENABLE_WIFI)
+static bool _wifi_connect_started = false;
+static bool _wifi_services_started = false;
+
+static void wifi_deferred_init() {
+    // Phase 1: init + connect WiFi (shell is already visible so blocking is OK here)
+    if (!_wifi_connect_started) {
+        _wifi_connect_started = true;
+        Serial.printf("[tritium] WiFi: initializing (deferred)...\n");
+        wifi.init();  // Loads saved networks from NVS and calls autoConnect()
+#if defined(DEFAULT_WIFI_SSID) && defined(DEFAULT_WIFI_PASS)
+        if (wifi.getSavedCount() == 0) {
+            wifi.addNetwork(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS);
+            wifi.connect();
+        }
+#endif
+        if (wifi.isConnected()) {
+            Serial.printf("[tritium] WiFi: %s (%s)\n", wifi.getSSID(), wifi.getIP());
+        } else {
+            Serial.printf("[tritium] WiFi: not connected yet, will retry\n");
+#if defined(ENABLE_WEBSERVER)
+            // Start AP mode for commissioning if no connection
+            wifi.startAP();
+            Serial.printf("[tritium] AP mode started for commissioning\n");
+#endif
+        }
+    }
+
+    // Phase 2: start wifi-dependent services once connected (or in AP mode)
+    if (!_wifi_services_started && (wifi.isConnected() || wifi.isAPMode())) {
+        _wifi_services_started = true;
+
+#if NTP_AVAILABLE
+        {
+            // Load saved timezone or default to UTC
+            TritiumSettings& settings = TritiumSettings::instance();
+            const char* saved_tz = settings.getString(SettingsDomain::SYSTEM, "timezone", "UTC0");
+            if (_ntp.init(saved_tz)) {
+                Serial.printf("[tritium] NTP: synced (%s)\n", _ntp.getTimeStr());
+            } else {
+                Serial.printf("[tritium] NTP: init (sync pending)\n");
+            }
+        }
+#endif
+
+#if defined(ENABLE_HEARTBEAT)
+        {
+            hal_heartbeat::HeartbeatConfig hb_cfg;
+#if defined(DEFAULT_SERVER_URL)
+            hb_cfg.server_url = DEFAULT_SERVER_URL;
+#endif
+#if defined(DEFAULT_DEVICE_ID)
+            hb_cfg.device_id = DEFAULT_DEVICE_ID;
+#endif
+            hb_cfg.interval_ms = 30000;
+            if (hal_heartbeat::init(hb_cfg)) {
+                Serial.printf("[tritium] Heartbeat: active\n");
+            }
+        }
+#endif
+
+#if defined(ENABLE_COT)
+        if (wifi.isConnected()) {
+            hal_cot::CotConfig cot_cfg;
+#if defined(DEFAULT_DEVICE_ID)
+            cot_cfg.device_id = DEFAULT_DEVICE_ID;
+#endif
+            cot_cfg.interval_ms = 60000;
+#if HAS_CAMERA
+            cot_cfg.cot_type = hal_cot::COT_TYPE_CAMERA;
+#endif
+            if (hal_cot::init(cot_cfg)) {
+                Serial.printf("[tritium] CoT/TAK: active\n");
+            }
+        }
+#endif
+
+#if defined(ENABLE_WEBSERVER)
+        {
+            LittleFS.begin(true);
+            uint16_t web_port = 80;
+            if (_webserver.init(web_port)) {
+                _webserver.addAllPages();
+
+#if defined(ENABLE_BLE_SCANNER)
+                _webserver.setBleProvider([](char* buf, size_t size) -> int {
+                    if (!hal_ble_scanner::is_active()) return 0;
+                    BleDevice devs[16];
+                    int n = hal_ble_scanner::get_devices(devs, 16);
+                    int known = 0;
+                    for (int i = 0; i < n; i++) if (devs[i].is_known) known++;
+                    int pos = snprintf(buf, size,
+                        "{\"active\":true,\"total\":%d,\"known\":%d,\"devices\":[", n, known);
+                    for (int i = 0; i < n && pos < (int)size - 100; i++) {
+                        if (i > 0) buf[pos++] = ',';
+                        pos += snprintf(buf + pos, size - pos,
+                            "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+                            "\"rssi\":%d,\"name\":\"%s\",\"seen\":%lu,\"known\":%s}",
+                            devs[i].addr[0], devs[i].addr[1], devs[i].addr[2],
+                            devs[i].addr[3], devs[i].addr[4], devs[i].addr[5],
+                            devs[i].rssi, devs[i].name,
+                            (unsigned long)devs[i].seen_count,
+                            devs[i].is_known ? "true" : "false");
+                    }
+                    pos += snprintf(buf + pos, size - pos, "]}");
+                    return pos;
+                });
+#endif
+
+#if defined(ENABLE_DIAG)
+                _webserver.setDiagProvider([](char* buf, size_t size) -> int {
+                    return hal_diag::full_report_json(buf, size);
+                });
+                _webserver.setDiagHealthProvider([](char* buf, size_t size) -> int {
+                    return hal_diag::health_to_json(buf, size);
+                });
+                _webserver.setDiagEventsProvider([](char* buf, size_t size) -> int {
+                    return hal_diag::events_to_json(buf, size, 50);
+                });
+                _webserver.setDiagAnomaliesProvider([](char* buf, size_t size) -> int {
+                    return hal_diag::anomalies_to_json(buf, size);
+                });
+#endif
+
+#if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("hal_gis.h")
+                {
+                    static GisHAL _gis;
+                    GisConfig gis_cfg;
+                    gis_cfg.sd_mount_point = "/sdcard";
+                    gis_cfg.tile_base_path = "/gis";
+                    gis_cfg.max_cache_tiles = 16;
+                    if (_gis.init(gis_cfg)) {
+                        _webserver.setGisTileProvider([](const char* layer, uint8_t z, uint32_t x, uint32_t y, size_t& outLen) -> uint8_t* {
+                            return _gis.getTile(layer, z, x, y, outLen);
+                        });
+                        _webserver.setGisLayerProvider([](char* buf, size_t size) -> int {
+                            int n = _gis.getLayerCount();
+                            int pos = snprintf(buf, size, "[");
+                            for (int i = 0; i < n && pos < (int)size - 200; i++) {
+                                GisLayer layer;
+                                if (!_gis.getLayer(i, layer)) continue;
+                                if (i > 0) buf[pos++] = ',';
+                                pos += snprintf(buf + pos, size - pos,
+                                    "{\"name\":\"%s\",\"tile_count\":%u,\"zoom_min\":%u,\"zoom_max\":%u}",
+                                    layer.name, (unsigned)layer.tile_count, layer.zoom_min, layer.zoom_max);
+                            }
+                            pos += snprintf(buf + pos, size - pos, "]");
+                            return pos;
+                        });
+                        Serial.printf("[tritium] GIS: %d layers, %u tiles\n",
+                                      _gis.getLayerCount(), (unsigned)_gis.getTileCount());
+                    }
+                }
+#endif
+
+#if defined(ENABLE_ESPNOW)
+                _webserver.setMeshProvider([](char* buf, size_t size) -> int {
+                    return _espnow.meshToJson(buf, size);
+                });
+#endif
+
+                if (wifi.isAPMode()) {
+                    _webserver.startCaptivePortal();
+                    Serial.printf("[tritium] Web server: http://%s:%u/ (captive portal)\n",
+                                  wifi.getAPIP(), web_port);
+                } else {
+                    uint8_t mac[6];
+                    WiFi.macAddress(mac);
+                    char hostname[32];
+                    snprintf(hostname, sizeof(hostname), "tritium-%02x%02x", mac[4], mac[5]);
+                    _webserver.startMDNS(hostname);
+                    Serial.printf("[tritium] Web server: http://%s:%u/ (mDNS: %s.local)\n",
+                                  wifi.getIP(), web_port, hostname);
+                }
+            }
+        }
+#endif
+        Serial.printf("[tritium] WiFi services ready\n");
+    }
+}
+#endif  // ENABLE_WIFI
+
 static void services_tick() {
+#if defined(ENABLE_WIFI)
+    wifi_deferred_init();
+#endif
 #if defined(ENABLE_HEARTBEAT)
     hal_heartbeat::tick();
 #endif
@@ -879,8 +922,8 @@ static void services_tick() {
 #if defined(ENABLE_ESPNOW)
     _espnow.process();
 #endif
-#if defined(ENABLE_WEBSERVER)
-    _webserver.process();
+#if defined(ENABLE_WEBSERVER) && defined(ENABLE_WIFI)
+    if (_wifi_services_started) _webserver.process();
 #endif
 #if defined(ENABLE_COT)
     hal_cot::tick();
@@ -907,18 +950,104 @@ void setup() {
 
     Serial.printf("[tritium] Board: %s %dx%d\n", DISPLAY_DRIVER, w, h);
 
-    // Boot splash — shows on every boot before app starts
+    // Boot display: OS builds get full boot sequence, others get simple splash
+#if defined(ENABLE_SETTINGS) || defined(ENABLE_DIAG)
+    boot_sequence::init(panel, w, h);
+    boot_sequence::showLogo(TRITIUM_VERSION);
+#else
     tritium_splash(panel, w, h);
+#endif
 
-    // Start the app (display something while WiFi connects)
+    // Start the app (skip when shell is active — LVGL owns the display)
+#if !SHELL_AVAILABLE
     app->setup(panel, w, h);
     Serial.printf("[tritium] App '%s' started\n", app->name());
+#endif
 
-    // Then bring up background services
+    // Bring up background services
     services_init();
+
+    // Finish boot sequence for OS builds
+#if defined(ENABLE_SETTINGS) || defined(ENABLE_DIAG)
+    boot_sequence::showReady();
+    boot_sequence::finish();
+#endif
+
+    // Initialize Tritium-OS shell (LVGL window manager with touch)
+#if SHELL_AVAILABLE
+    lv_display_t* lv_disp = lvgl_driver::init(panel, w, h);
+    if (lv_disp) {
+        Serial.printf("[tritium] LVGL display driver ready\n");
+    } else {
+        Serial.printf("[tritium] LVGL display driver FAILED\n");
+    }
+
+    if (touch.init()) {
+        Serial.printf("[tritium] Touch: detected\n");
+    } else {
+        Serial.printf("[tritium] Touch: not detected\n");
+    }
+    if (touch_input::init()) {
+        Serial.printf("[tritium] Touch input: LVGL indev registered\n");
+    }
+
+    if (tritium_shell::init(panel, w, h)) {
+        Serial.printf("[tritium] Shell: initialized %dx%d\n", w, h);
+    }
+
+    shell_apps::register_all_apps();
+    Serial.printf("[tritium] Shell: %d apps registered\n", tritium_shell::getAppCount());
+    tritium_shell::showLauncher();
+#endif
 
     Serial.printf("[tritium] Ready.\n");
 }
+
+// Shell status bar — poll services every ~1s and push live data to LVGL
+#if SHELL_AVAILABLE
+static void updateShellStatus() {
+    static uint32_t last_update = 0;
+    if (millis() - last_update < 1000) return;
+    last_update = millis();
+
+#if defined(ENABLE_WIFI)
+    tritium_shell::setWifiStatus(wifi.isConnected(),
+                                  wifi.isConnected() ? wifi.getRSSI() : 0);
+#endif
+
+#if defined(ENABLE_BLE_SCANNER)
+    tritium_shell::setBleStatus(hal_ble_scanner::get_visible_count());
+#endif
+
+#if defined(ENABLE_ESPNOW)
+    tritium_shell::setMeshStatus(_espnow.getPeerCount());
+#endif
+
+    // Power status — boards with PMIC report battery, others show USB
+#if HAS_PMIC && __has_include("hal_power.h")
+    {
+        // Power provider is already wired into diag — read from there or direct
+        // For now, use the diag touch provider pattern: call PowerHAL directly
+        // TODO: wire PowerHAL instance into shell status updates
+        tritium_shell::setBatteryStatus(50, false);  // placeholder
+    }
+#else
+    tritium_shell::setBatteryStatus(-1, false);  // USB powered, no battery
+#endif
+
+    // Clock — use wall-clock if available, otherwise uptime
+    {
+        struct tm timeinfo;
+        time_t now = time(nullptr);
+        if (localtime_r(&now, &timeinfo) && timeinfo.tm_year > 100) {
+            tritium_shell::setClock(timeinfo.tm_hour, timeinfo.tm_min);
+        } else {
+            uint32_t up = millis() / 1000;
+            tritium_shell::setClock((up / 3600) % 24, (up / 60) % 60);
+        }
+    }
+}
+#endif  // SHELL_AVAILABLE
 
 void loop() {
 #if defined(ENABLE_DIAG)
@@ -926,8 +1055,15 @@ void loop() {
 #endif
 
     handleSerialCommands();
-    app->loop();
     services_tick();
+
+#if SHELL_AVAILABLE
+    lvgl_driver::tick();
+    tritium_shell::tick();
+    updateShellStatus();
+#else
+    app->loop();
+#endif
 
 #if defined(ENABLE_DIAG)
     hal_diag::report_loop_time(micros() - loop_start);

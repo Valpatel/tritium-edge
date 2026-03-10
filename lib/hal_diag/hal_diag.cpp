@@ -185,7 +185,7 @@ static uint16_t         _snap_head = 0;
 static uint16_t         _snap_count = 0;
 
 // Anomaly list (small, fixed-size)
-static constexpr int    MAX_ANOMALIES = 32;
+static constexpr int    MAX_ANOMALIES = 16;
 static Anomaly          _anomalies[MAX_ANOMALIES];
 static int              _anomaly_count = 0;
 

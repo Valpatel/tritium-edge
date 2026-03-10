@@ -41,6 +41,17 @@ extern "C" {
 #endif
 
 /**
+ * @brief Display health metrics (stub — zeroed for now).
+ */
+typedef struct {
+    uint32_t frame_count;
+    uint32_t fps;
+    uint32_t flush_time_avg_us;
+    const char* board_name;
+    const char* driver;
+} display_health_t;
+
+/**
  * @brief Initialize display for the current board (selected by build flags).
  *
  * This sets up the SPI/RGB bus, panel IO, panel driver, and backlight.
@@ -99,6 +110,41 @@ void display_set_brightness(uint8_t brightness);
  * @return Binary semaphore handle, or NULL if display not initialized.
  */
 SemaphoreHandle_t display_get_flush_semaphore(void);
+
+/**
+ * @brief Check if the display uses an RGB parallel interface.
+ *
+ * @return true for RGB panels (e.g. 4.3C-BOX), false for QSPI panels.
+ */
+bool display_is_rgb(void);
+
+/**
+ * @brief Get display health metrics (stub — returns zeros for now).
+ */
+display_health_t display_get_health(void);
+
+/**
+ * @brief Get the two RGB panel framebuffers for zero-copy LVGL rendering.
+ *
+ * Only valid for RGB panels. For QSPI panels, returns false.
+ *
+ * @param fb0 Output pointer to first framebuffer.
+ * @param fb1 Output pointer to second framebuffer.
+ * @return true if framebuffers were retrieved, false otherwise.
+ */
+bool display_get_rgb_framebuffers(void** fb0, void** fb1);
+
+/**
+ * @brief Get the vsync "GUI ready" semaphore (RGB panels only).
+ * @return Semaphore handle, or NULL if not applicable.
+ */
+void* display_get_sem_gui_ready(void);
+
+/**
+ * @brief Get the vsync "vsync end" semaphore (RGB panels only).
+ * @return Semaphore handle, or NULL if not applicable.
+ */
+void* display_get_sem_vsync_end(void);
 
 #ifdef __cplusplus
 }

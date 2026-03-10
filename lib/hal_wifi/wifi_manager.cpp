@@ -80,8 +80,9 @@ WifiManager::~WifiManager() {
 }
 
 void WifiManager::init() {
+    WiFi.persistent(true);           // Cache last connection in flash for fast reconnect
     WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(false);
+    WiFi.setAutoReconnect(true);     // Auto-reconnect on disconnect
     WiFi.onEvent(wifiEventHandler);
 
     loadNetworks();

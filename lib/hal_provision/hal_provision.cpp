@@ -325,7 +325,6 @@ bool ProvisionHAL::provisionFromSD(const char* sdPath) {
 bool ProvisionHAL::startUSBProvision() {
     _usbActive = true;
     _usbBufLen = 0;
-    memset(_usbBuf, 0, sizeof(_usbBuf));
     DBG_INFO(TAG, "USB provisioning started (simulator stub)");
     return true;
 }
@@ -588,6 +587,7 @@ bool ProvisionHAL::isWebProvisionActive() const { return false; }
 #else
 
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include <LittleFS.h>
 #include <FS.h>
 #include <SD_MMC.h>
@@ -810,7 +810,9 @@ bool ProvisionHAL::provisionFromSD(const char* sdPath) {
 bool ProvisionHAL::startUSBProvision() {
     _usbActive = true;
     _usbBufLen = 0;
-    memset(_usbBuf, 0, sizeof(_usbBuf));
+    if (!_usbBuf) _usbBuf = (char*)heap_caps_calloc(1, PROV_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    if (!_usbBuf) _usbBuf = (char*)calloc(1, PROV_BUF_SIZE);
+    if (!_usbBuf) return false;
     Serial.println("{\"status\":\"ready\",\"msg\":\"Send provisioning JSON\"}");
     DBG_INFO(TAG, "USB provisioning started — waiting for data on Serial");
     return true;
@@ -833,7 +835,7 @@ bool ProvisionHAL::processUSBProvision() {
                 }
                 return ok;
             }
-        } else if (_usbBufLen < sizeof(_usbBuf) - 1) {
+        } else if (_usbBufLen < PROV_BUF_SIZE - 1) {
             _usbBuf[_usbBufLen++] = c;
         } else {
             // Buffer overflow — reset

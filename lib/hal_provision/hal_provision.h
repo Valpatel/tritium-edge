@@ -132,10 +132,11 @@ private:
     bool _usbActive = false;
     bool _bleActive = false;
     bool _webActive = false;
-    char _usbBuf[4096] = {};
+    char* _usbBuf = nullptr;    // Lazy-allocated in PSRAM (4096)
     size_t _usbBufLen = 0;
-    char _bleBuf[4096] = {};
+    char* _bleBuf = nullptr;    // Lazy-allocated in PSRAM (4096)
     size_t _bleBufLen = 0;
+    static constexpr size_t PROV_BUF_SIZE = 4096;
 
     void _ensureProvDir();
     bool _loadIdentity();
