@@ -25,6 +25,7 @@
 #include "lvgl_driver.h"
 #include "touch_input.h"
 #include "shell_apps.h"
+#include "lock_screen.h"
 #define SHELL_AVAILABLE 1
 #else
 #define SHELL_AVAILABLE 0
@@ -511,6 +512,11 @@ static void main_task(void* /*arg*/) {
 
     // Show launcher now that all apps are registered
     tritium_shell::showLauncher();
+
+    // Show lock screen on boot if PIN is configured
+    if (lock_screen::is_enabled()) {
+        lock_screen::show();
+    }
 
     // Wire display framebuffer into web server screenshot provider
 #if defined(ENABLE_WEBSERVER)

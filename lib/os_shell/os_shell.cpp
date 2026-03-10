@@ -31,6 +31,7 @@
 #include "os_shell.h"
 #include "shell_theme.h"
 #include "shell_apps.h"
+#include "lock_screen.h"
 #include "tritium_splash.h"  // TRITIUM_VERSION
 #include <cmath>
 #include <cstdio>
@@ -729,6 +730,9 @@ bool init(esp_lcd_panel_handle_t panel, int width, int height) {
     registerApp({"Settings", "System settings", LV_SYMBOL_SETTINGS, true,
                   shell_apps::settings_create});
 
+    // Initialize lock screen (loads stored PIN from NVS)
+    lock_screen::init();
+
     // Don't show launcher yet — caller registers additional apps first,
     // then calls showLauncher() to build the grid with all apps visible.
     return true;
@@ -750,6 +754,9 @@ void tick() {
             s_toasts[i].obj = nullptr;
         }
     }
+
+    // Lock screen tick (updates clock, handles lockout timer)
+    lock_screen::tick();
 
     // Clock colon blink — toggles ":" visibility every second for alive feel.
     // Only modifies the text, LVGL handles the minimal redraw internally.

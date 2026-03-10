@@ -6,6 +6,7 @@
 
 #include "shell_apps.h"
 #include "shell_theme.h"
+#include "lock_screen.h"
 #include "display.h"
 #include "tritium_splash.h"  // TRITIUM_VERSION
 #include "os_settings.h"     // TritiumSettings, SettingsDomain
@@ -426,7 +427,7 @@ static void power_off_slider_cb(lv_event_t* e) {
 // ---------------------------------------------------------------------------
 
 static lv_obj_t* s_settings_content = nullptr;
-static lv_obj_t* s_settings_tab_btns[10] = {};
+static lv_obj_t* s_settings_tab_btns[11] = {};
 static int s_settings_active_tab = 0;
 
 // Forward declarations for tab content builders
@@ -439,6 +440,7 @@ static void settings_build_storage(lv_obj_t* cont);
 static void settings_build_tracking(lv_obj_t* cont);
 static void settings_build_power(lv_obj_t* cont);
 static void settings_build_screensaver(lv_obj_t* cont);
+static void settings_build_security(lv_obj_t* cont);
 static void settings_build_system(lv_obj_t* cont);
 
 static void settings_select_tab(int idx) {
@@ -446,7 +448,7 @@ static void settings_select_tab(int idx) {
     s_settings_active_tab = idx;
 
     // Update tab button styling
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 11; i++) {
         if (!s_settings_tab_btns[i]) continue;
         bool active = (i == idx);
         lv_obj_set_style_border_color(s_settings_tab_btns[i],
@@ -473,7 +475,8 @@ static void settings_select_tab(int idx) {
         case 6: settings_build_tracking(s_settings_content); break;
         case 7: settings_build_power(s_settings_content); break;
         case 8: settings_build_screensaver(s_settings_content); break;
-        case 9: settings_build_system(s_settings_content); break;
+        case 9: settings_build_security(s_settings_content); break;
+        case 10: settings_build_system(s_settings_content); break;
     }
 }
 
@@ -514,9 +517,10 @@ void settings_create(lv_obj_t* viewport) {
         LV_SYMBOL_GPS,             // Tracking
         LV_SYMBOL_BATTERY_FULL,    // Power
         LV_SYMBOL_IMAGE,           // Screensaver
+        LV_SYMBOL_WARNING,         // Security
         LV_SYMBOL_SETTINGS,        // System
     };
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 11; i++) {
         lv_obj_t* btn = lv_btn_create(tab_bar);
         int tab_h = (tritium_shell::uiConfig().screen_height > 400) ? 48 : 36;
         lv_obj_set_width(btn, tab_h + 8);
@@ -962,6 +966,118 @@ static void settings_build_screensaver(lv_obj_t* cont) {
     lv_obj_t* size_slider = tritium_theme::createSlider(sf_panel, 1, 6, sf_size);
     lv_obj_set_width(size_slider, lv_pct(95));
     lv_obj_add_event_cb(size_slider, ss_starsize_cb, LV_EVENT_VALUE_CHANGED, size_val);
+}
+
+// ---------------------------------------------------------------------------
+// Settings Tab: SECURITY (lock screen PIN management)
+// ---------------------------------------------------------------------------
+
+static lv_obj_t* s_pin_ta = nullptr;
+static lv_obj_t* s_pin_status = nullptr;
+
+static void pin_save_cb(lv_event_t* e) {
+    (void)e;
+    if (!s_pin_ta || !s_pin_status) return;
+    const char* pin = lv_textarea_get_text(s_pin_ta);
+    if (!pin || pin[0] == '\0') {
+        // Clear PIN — disable lock screen
+        lock_screen::set_pin("");
+        lv_label_set_text(s_pin_status, "Lock screen disabled");
+        lv_obj_set_style_text_color(s_pin_status, T_CYAN, 0);
+    } else if (strlen(pin) < 4) {
+        lv_label_set_text(s_pin_status, "PIN must be 4-8 digits");
+        lv_obj_set_style_text_color(s_pin_status, T_MAGENTA, 0);
+        return;
+    } else {
+        lock_screen::set_pin(pin);
+        lv_label_set_text(s_pin_status, "PIN saved");
+        lv_obj_set_style_text_color(s_pin_status, T_GREEN, 0);
+    }
+    lv_textarea_set_text(s_pin_ta, "");
+}
+
+static void pin_clear_cb(lv_event_t* e) {
+    (void)e;
+    lock_screen::set_pin("");
+    if (s_pin_status) {
+        lv_label_set_text(s_pin_status, "Lock screen disabled");
+        lv_obj_set_style_text_color(s_pin_status, T_CYAN, 0);
+    }
+    if (s_pin_ta) lv_textarea_set_text(s_pin_ta, "");
+}
+
+static void pin_test_cb(lv_event_t* e) {
+    (void)e;
+    if (lock_screen::is_enabled()) {
+        lock_screen::show();
+    } else if (s_pin_status) {
+        lv_label_set_text(s_pin_status, "No PIN set — nothing to test");
+        lv_obj_set_style_text_color(s_pin_status, T_GHOST, 0);
+    }
+}
+
+static void settings_build_security(lv_obj_t* cont) {
+    // Status
+    lv_obj_t* panel = tritium_theme::createPanel(cont, "LOCK SCREEN");
+    lv_obj_set_width(panel, lv_pct(100));
+    lv_obj_set_height(panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(panel, 24, 0);
+    lv_obj_set_style_pad_gap(panel, 6, 0);
+
+    bool enabled = lock_screen::is_enabled();
+    char buf[48];
+    snprintf(buf, sizeof(buf), "Status: %s", enabled ? "ENABLED" : "Disabled");
+    lv_obj_t* status_lbl = tritium_theme::createLabel(panel, buf, true);
+    lv_obj_set_style_text_color(status_lbl, enabled ? T_GREEN : T_GHOST, 0);
+
+    // PIN entry
+    lv_obj_t* pin_panel = tritium_theme::createPanel(cont, "SET / CHANGE PIN");
+    lv_obj_set_width(pin_panel, lv_pct(100));
+    lv_obj_set_height(pin_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(pin_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(pin_panel, 24, 0);
+    lv_obj_set_style_pad_gap(pin_panel, 6, 0);
+
+    tritium_theme::createLabel(pin_panel, "Enter 4-8 digit PIN:", true);
+
+    s_pin_ta = lv_textarea_create(pin_panel);
+    lv_textarea_set_max_length(s_pin_ta, 8);
+    lv_textarea_set_password_mode(s_pin_ta, true);
+    lv_textarea_set_one_line(s_pin_ta, true);
+    lv_textarea_set_accepted_chars(s_pin_ta, "0123456789");
+    lv_textarea_set_placeholder_text(s_pin_ta, "PIN");
+    lv_obj_set_width(s_pin_ta, lv_pct(80));
+    lv_obj_set_height(s_pin_ta, 36);
+    lv_obj_set_style_bg_color(s_pin_ta, T_SURFACE2, 0);
+    lv_obj_set_style_text_color(s_pin_ta, T_CYAN, 0);
+    lv_obj_set_style_border_color(s_pin_ta, T_CYAN, 0);
+    lv_obj_set_style_border_width(s_pin_ta, 1, 0);
+
+    // Buttons row
+    lv_obj_t* btn_row = lv_obj_create(pin_panel);
+    lv_obj_set_width(btn_row, lv_pct(100));
+    lv_obj_set_height(btn_row, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_row, 0, 0);
+    lv_obj_set_style_pad_all(btn_row, 0, 0);
+    lv_obj_set_style_pad_gap(btn_row, 8, 0);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+
+    lv_obj_t* save_btn = tritium_theme::createButton(btn_row, "Save PIN");
+    lv_obj_add_event_cb(save_btn, pin_save_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* clear_btn = tritium_theme::createButton(btn_row, "Clear PIN");
+    lv_obj_add_event_cb(clear_btn, pin_clear_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* test_btn = tritium_theme::createButton(btn_row, "Test Lock");
+    lv_obj_add_event_cb(test_btn, pin_test_cb, LV_EVENT_CLICKED, nullptr);
+
+    // Status feedback
+    s_pin_status = lv_label_create(pin_panel);
+    lv_label_set_text(s_pin_status, "");
+    lv_obj_set_style_text_font(s_pin_status, tritium_shell::uiSmallFont(), 0);
+    lv_obj_set_style_text_color(s_pin_status, T_GHOST, 0);
 }
 
 // ---------------------------------------------------------------------------
