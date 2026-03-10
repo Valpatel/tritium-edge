@@ -132,6 +132,7 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include "web/mesh_html.h"
 #include "web/terminal_html.h"
 #include "web/remote_html.h"
+#include "web/settings_html.h"
 #endif
 
 // Touch input for remote control injection
@@ -881,6 +882,12 @@ static esp_err_t _terminal_handler(httpd_req_t* req) {
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, TERMINAL_HTML, strlen(TERMINAL_HTML));
 }
+
+static esp_err_t _settings_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, SETTINGS_HTML, strlen(SETTINGS_HTML));
+}
 #else
 static esp_err_t _dashboard_handler(httpd_req_t* req) {
     _instance->_requestCount++;
@@ -983,6 +990,7 @@ void WebServerHAL::addDashboard() {
 
 #if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
     REG(_server, "/terminal", HTTP_GET, _terminal_handler);
+    REG(_server, "/settings", HTTP_GET, _settings_page_handler);
 #endif
 
     DBG_INFO("web", "Dashboard page added at /");

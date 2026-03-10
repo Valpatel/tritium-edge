@@ -813,8 +813,9 @@ Page load:
 - [x] Toast notification system (3 stacked, auto-dismiss) — `os_shell.cpp`
 - [x] Notification shade (swipe-down gesture) — `os_shell.cpp`
 - [x] Tritium cyberpunk theme (11-color palette) — `shell_theme.h`
-- [ ] Shell status bar wired to live service data — IN PROGRESS
-- [ ] More system apps (WiFi config, file browser, mesh viewer) — TODO
+- [x] Shell status bar wired to live service data — WiFi, BLE, mesh, battery, clock
+- [x] 6 launcher apps: Map, Chat, Terminal, Files, About, Settings (11 tabs)
+- [x] Lock screen with PIN entry and lockout protection — `lock_screen.cpp`
 
 ### Sprint 3: Remote Management — MOSTLY COMPLETE
 - [x] Web dashboard redesign (Valpatel cyberpunk theme) — `web/dashboard.html`
@@ -825,9 +826,8 @@ Page load:
 - [x] Terminal web UI — `web/terminal.html`
 - [x] 35+ REST API endpoints — `hal_webserver.cpp`
 - [x] Live screenshot viewer with auto-refresh — existing `/api/screenshot`
-- [ ] Settings REST API (GET/PUT) — IN PROGRESS
-- [ ] Serial polling API (for terminal without WebSocket) — IN PROGRESS
-- [ ] Real WebSocket support (needs ESPAsyncWebServer or custom impl) — TODO
+- [x] WebSocket bridge — real-time events, serial terminal, commands — `ws_bridge.cpp`
+- [x] Settings REST API (GET/PUT/reset) — `hal_webserver.cpp`
 
 ### Sprint 4: Communication — PARTIALLY COMPLETE
 - [ ] BLE serial port (NUS) — BLOCKED (NimBLE esp_bt.h not found)
@@ -835,8 +835,8 @@ Page load:
 - [x] Mesh protocol (discovery, topology, encrypted channels) — `mesh_protocol.h`
 - [x] Terminal app (web) — `web/terminal.html`
 - [x] Mesh topology visualizer (web) — `web/mesh.html`
-- [ ] On-device terminal app (LVGL) — TODO
-- [ ] On-device mesh viewer app (LVGL) — TODO
+- [x] On-device terminal app (LVGL) — `shell_apps.cpp`
+- [x] On-device mesh chat app (LVGL) — `shell_apps.cpp`
 
 ### Sprint 5: Polish — IN PROGRESS
 - [ ] Boot sequence animation with service progress — IN PROGRESS
