@@ -741,7 +741,7 @@ bool init(esp_lcd_panel_handle_t panel, int width, int height) {
     // Initialize lock screen (loads stored PIN from NVS)
     lock_screen::init();
 
-    // Subscribe to key events for toast notifications
+    // Subscribe to key events for toast + shade notifications
 #if EVENTS_AVAILABLE
     auto& bus = TritiumEventBus::instance();
     bus.subscribe(EVT_WIFI_CONNECTED, [](const TritiumEvent&, void*) {
@@ -749,6 +749,7 @@ bool init(esp_lcd_panel_handle_t panel, int width, int height) {
     }, nullptr);
     bus.subscribe(EVT_WIFI_DISCONNECTED, [](const TritiumEvent&, void*) {
         toast("WiFi disconnected", NOTIFY_WARNING);
+        notify("WiFi", "Connection lost", NOTIFY_WARNING);
     }, nullptr);
     bus.subscribe(EVT_MESH_PEER_JOINED, [](const TritiumEvent&, void*) {
         toast("Mesh peer joined", NOTIFY_INFO);
@@ -758,6 +759,7 @@ bool init(esp_lcd_panel_handle_t panel, int width, int height) {
     }, nullptr);
     bus.subscribe(EVT_POWER_LOW_BATTERY, [](const TritiumEvent&, void*) {
         toast("Low battery!", NOTIFY_ERROR);
+        notify("Power", "Battery low — connect charger", NOTIFY_ERROR);
     }, nullptr);
     bus.subscribe(EVT_POWER_USB_CONNECT, [](const TritiumEvent&, void*) {
         toast("USB connected", NOTIFY_INFO);
