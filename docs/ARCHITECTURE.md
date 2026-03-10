@@ -48,7 +48,7 @@ points.
 | Multi-family hardware | Three-layer abstraction: PAL (chip-specific), Drivers (peripheral-specific, shared), BSP (board-specific pin maps). Write a sensor driver once, use it everywhere. |
 | Compile-time hardware selection | Board and app chosen via `-DBOARD_*` / `-DAPP_*` build flags. Zero runtime dispatch overhead. |
 | Capability-driven UI | Devices report capabilities in heartbeat. Server shows relevant config options. No camera settings for a temperature node. |
-| HAL abstraction | Each peripheral gets a self-contained library under `lib/hal_*`. Dual-mode I2C supports both Arduino Wire and LovyanGFX backends. |
+| HAL abstraction | Each peripheral gets a self-contained library under `lib/hal_*`. I2C uses ESP-IDF i2c_master driver (TritiumI2C wrapper). |
 | Server modularity | One router per domain, services for business logic, store for persistence. No monoliths. |
 | Multi-tenant first | Organizations, users, roles, and device scoping baked into the data model from the start. |
 | Config-as-code | Pydantic settings with environment variable overrides. No magic config files. |
@@ -897,7 +897,7 @@ continue to work -- the server simply skips config sync for them.
 
 | Convention | Example |
 |------------|---------|
-| C++17, Arduino framework | `#include <Arduino.h>` |
+| C++17, ESP-IDF 5.5.2 | `#include "esp_log.h"` |
 | 4-space indentation | No tabs |
 | 100-column line width | Enforced by clang-format |
 | SCREAMING_SNAKE_CASE for pins | `#define LCD_BL 48` |
@@ -953,7 +953,7 @@ Test commands:
 | ESP32-S3-Touch-LCD-4.3C-BOX | `touch-lcd-43c-box` | 800x480 | ST7262 RGB | Touch |
 | ESP32-S3-Touch-LCD-3.49 | `touch-lcd-349` | 172x640 | AXS15231B QSPI | Touch |
 
-All boards: ESP32-S3, 16MB flash, 8MB PSRAM, Arduino framework, LovyanGFX
+All boards: ESP32-S3, 16MB flash, 8MB PSRAM, ESP-IDF 5.5.2, LovyanGFX
 display abstraction.
 
 ---
@@ -963,7 +963,7 @@ display abstraction.
 | Resource | Location |
 |----------|----------|
 | Current fleet server | `server/fleet_server.py` |
-| Server requirements | `server/REQUIREMENTS.md` |
+| OS services | `lib/os_*/` |
 | Admin panel SPA | `server/templates/admin.html` |
 | Firmware entry point | `src/main.cpp` |
 | Board pin definitions | `include/boards/*.h` |

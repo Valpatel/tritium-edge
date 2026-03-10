@@ -223,7 +223,7 @@ const char* pal_family_name(void);    /* "esp32", "stm32", "nrf52", "linux" */
 
 | Family   | Framework          | PAL Location      | Build System       |
 |----------|--------------------|-------------------|--------------------|
-| ESP32-S3 | Arduino / ESP-IDF  | platforms/esp32/  | PlatformIO         |
+| ESP32-S3 | ESP-IDF 5.5.2      | platforms/esp32/  | PlatformIO         |
 | STM32    | Zephyr / STM32 HAL | platforms/stm32/  | PlatformIO or CMake|
 | nRF52    | Zephyr / nRF SDK   | platforms/nrf52/  | CMake              |
 | RP2040   | Pico SDK           | platforms/rp2040/ | CMake              |
@@ -415,13 +415,13 @@ protocol.
 ### Phase 1: Current State (ESP32 Only)
 
 - Existing C++ HALs in `lib/hal_*` continue to work unchanged.
-- The Arduino framework acts as an implicit platform layer.
+- ESP-IDF 5.5.2 acts as the platform layer.
 - No refactoring is required at this stage.
 
 ### Phase 2: Extract PAL Interfaces (Triggered by Second Family)
 
 - Define `pal/*.h` header files with the interfaces documented above.
-- Create `platforms/esp32/` that wraps existing Arduino and ESP-IDF calls.
+- Create `platforms/esp32/` that wraps existing ESP-IDF calls.
 - Gradually migrate sensor-specific code from `lib/hal_*` into
   `drivers/{category}/` using PAL calls.
 - Existing apps and high-level HALs remain untouched.
