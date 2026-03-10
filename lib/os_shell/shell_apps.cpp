@@ -142,6 +142,7 @@ static lv_obj_t* s_wifi_rssi_bar     = nullptr;
 static lv_obj_t* s_wifi_scan_list    = nullptr;
 static lv_obj_t* s_wifi_saved_list   = nullptr;
 static lv_timer_t* s_wifi_timer      = nullptr;
+static lv_timer_t* s_chat_timer      = nullptr;  // Chat app — defined here for cleanup_timers()
 static lv_timer_t* s_term_timer      = nullptr;  // Terminal app — defined here for cleanup_timers()
 
 #if WIFI_APP_AVAILABLE
@@ -3502,7 +3503,259 @@ void cleanup_timers() {
     if (s_power_timer)     { lv_timer_delete(s_power_timer);     s_power_timer     = nullptr; }
     if (s_ble_timer)       { lv_timer_delete(s_ble_timer);       s_ble_timer       = nullptr; }
     if (s_tracking_timer)  { lv_timer_delete(s_tracking_timer);  s_tracking_timer  = nullptr; }
+    if (s_chat_timer)      { lv_timer_delete(s_chat_timer);      s_chat_timer      = nullptr; }
     if (s_term_timer)      { lv_timer_delete(s_term_timer);      s_term_timer      = nullptr; }
+}
+
+// ===========================================================================
+//  Mesh Chat App — P2P messaging over ESP-NOW
+// ===========================================================================
+
+static lv_obj_t* s_chat_log     = nullptr;
+static lv_obj_t* s_chat_input   = nullptr;
+static lv_obj_t* s_chat_peers   = nullptr;
+
+// Chat message ring buffer (lazy-allocated in PSRAM)
+static constexpr int CHAT_MAX_MSGS  = 32;
+static constexpr int CHAT_MSG_LEN   = 200;
+
+struct ChatMessage {
+    char sender[18];   // MAC string (short: XX:XX:XX)
+    char text[CHAT_MSG_LEN];
+    bool is_self;
+};
+
+static ChatMessage* s_chat_msgs = nullptr;
+static int s_chat_msg_head = 0;
+static int s_chat_msg_count = 0;
+static bool s_chat_dirty = false;
+
+static void chat_ensure_buf() {
+    if (s_chat_msgs) return;
+    s_chat_msgs = (ChatMessage*)heap_caps_malloc(
+        CHAT_MAX_MSGS * sizeof(ChatMessage), MALLOC_CAP_SPIRAM);
+    if (!s_chat_msgs)
+        s_chat_msgs = (ChatMessage*)malloc(CHAT_MAX_MSGS * sizeof(ChatMessage));
+    if (s_chat_msgs)
+        memset(s_chat_msgs, 0, CHAT_MAX_MSGS * sizeof(ChatMessage));
+}
+
+static void chat_add_msg(const char* sender, const char* text, bool is_self) {
+    chat_ensure_buf();
+    if (!s_chat_msgs) return;
+    ChatMessage& m = s_chat_msgs[s_chat_msg_head];
+    strncpy(m.sender, sender, sizeof(m.sender) - 1);
+    m.sender[sizeof(m.sender) - 1] = '\0';
+    strncpy(m.text, text, sizeof(m.text) - 1);
+    m.text[sizeof(m.text) - 1] = '\0';
+    m.is_self = is_self;
+    s_chat_msg_head = (s_chat_msg_head + 1) % CHAT_MAX_MSGS;
+    if (s_chat_msg_count < CHAT_MAX_MSGS) s_chat_msg_count++;
+    s_chat_dirty = true;
+}
+
+#if MESH_APP_AVAILABLE
+
+// Callback registered with MeshManager to receive chat messages
+static void chat_rx_callback(const MeshHeaderEx& hdr,
+                              const uint8_t* payload, void* /*ud*/) {
+    // Only handle broadcast and addressed messages
+    if (hdr.type != MESH_EX_BROADCAST && hdr.type != MESH_EX_ADDRESSED) return;
+    if (hdr.payload_len == 0 || hdr.payload_len > CHAT_MSG_LEN - 1) return;
+
+    // Check if this looks like a chat message (starts with "CHAT:" prefix)
+    if (hdr.payload_len < 6) return;
+    if (memcmp(payload, "CHAT:", 5) != 0) return;
+
+    // Extract the text after "CHAT:"
+    char text[CHAT_MSG_LEN];
+    int text_len = hdr.payload_len - 5;
+    memcpy(text, payload + 5, text_len);
+    text[text_len] = '\0';
+
+    // Format sender MAC (short form)
+    char sender[18];
+    snprintf(sender, sizeof(sender), "%02X:%02X:%02X",
+             hdr.src_mac[3], hdr.src_mac[4], hdr.src_mac[5]);
+
+    // Look up device name from peer list
+    const MeshPeerInfo* peer = MeshManager::instance().findPeer(hdr.src_mac);
+    if (peer && peer->device_name[0]) {
+        strncpy(sender, peer->device_name, sizeof(sender) - 1);
+        sender[sizeof(sender) - 1] = '\0';
+    }
+
+    chat_add_msg(sender, text, false);
+
+    // Show toast for new messages
+    char toast_buf[80];
+    snprintf(toast_buf, sizeof(toast_buf), "%s: %s",
+             sender, text_len > 40 ? "..." : text);
+    tritium_shell::toast(toast_buf, tritium_shell::NOTIFY_INFO, 3000);
+}
+
+static void chat_send_cb(lv_event_t* /*e*/) {
+    auto& mm = MeshManager::instance();
+    if (!mm.isReady() || !s_chat_input) return;
+    const char* text = lv_textarea_get_text(s_chat_input);
+    if (!text || text[0] == '\0') return;
+
+    // Prefix with "CHAT:" to distinguish from other mesh messages
+    char payload[CHAT_MSG_LEN + 6];
+    int len = snprintf(payload, sizeof(payload), "CHAT:%s", text);
+
+    if (mm.broadcast((const uint8_t*)payload, len)) {
+        chat_add_msg("You", text, true);
+        lv_textarea_set_text(s_chat_input, "");
+    } else {
+        tritium_shell::toast("Send failed", tritium_shell::NOTIFY_ERROR, 2000);
+    }
+}
+
+static void chat_refresh(lv_timer_t* /*t*/) {
+    if (!s_chat_log || !s_chat_dirty || !s_chat_msgs) return;
+    s_chat_dirty = false;
+
+    // Rebuild chat display
+    lv_obj_clean(s_chat_log);
+
+    int start = (s_chat_msg_count < CHAT_MAX_MSGS) ? 0 : s_chat_msg_head;
+    for (int i = 0; i < s_chat_msg_count; i++) {
+        int idx = (start + i) % CHAT_MAX_MSGS;
+        ChatMessage& m = s_chat_msgs[idx];
+
+        lv_obj_t* row = lv_obj_create(s_chat_log);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 2, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        // Sender label
+        lv_obj_t* sender_lbl = lv_label_create(row);
+        lv_label_set_text(sender_lbl, m.sender);
+        lv_obj_set_style_text_color(sender_lbl, m.is_self ? T_CYAN : T_GREEN, 0);
+        lv_obj_set_style_text_font(sender_lbl, tritium_shell::uiSmallFont(), 0);
+
+        // Message text
+        lv_obj_t* text_lbl = lv_label_create(row);
+        lv_label_set_text(text_lbl, m.text);
+        lv_label_set_long_mode(text_lbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(text_lbl, lv_pct(100));
+        lv_obj_set_style_text_color(text_lbl, T_TEXT, 0);
+        lv_obj_set_style_text_font(text_lbl, tritium_shell::uiSmallFont(), 0);
+    }
+
+    // Auto-scroll to bottom
+    lv_obj_scroll_to_y(s_chat_log, LV_COORD_MAX, LV_ANIM_OFF);
+
+    // Update peer count
+    if (s_chat_peers) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%d peers online",
+                 MeshManager::instance().peerCount());
+        lv_label_set_text(s_chat_peers, buf);
+    }
+}
+
+#endif  // MESH_APP_AVAILABLE
+
+void mesh_chat_create(lv_obj_t* viewport) {
+    lv_obj_clean(viewport);
+    lv_obj_set_flex_flow(viewport, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(viewport, 4, 0);
+    lv_obj_set_style_pad_gap(viewport, 4, 0);
+
+#if !MESH_APP_AVAILABLE
+    tritium_theme::createLabel(viewport, "Mesh HAL not available");
+    return;
+#else
+    // Header row
+    lv_obj_t* hdr = lv_obj_create(viewport);
+    lv_obj_set_width(hdr, lv_pct(100));
+    lv_obj_set_height(hdr, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_opa(hdr, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 0, 0);
+    lv_obj_remove_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* title = lv_label_create(hdr);
+    lv_label_set_text(title, LV_SYMBOL_SHUFFLE " MESH CHAT");
+    lv_obj_set_style_text_color(title, T_CYAN, 0);
+    lv_obj_set_style_text_font(title, tritium_shell::uiFont(), 0);
+
+    s_chat_peers = lv_label_create(hdr);
+    lv_label_set_text(s_chat_peers, "0 peers");
+    lv_obj_set_style_text_color(s_chat_peers, T_GHOST, 0);
+    lv_obj_set_style_text_font(s_chat_peers, tritium_shell::uiSmallFont(), 0);
+
+    // Message log area
+    s_chat_log = lv_obj_create(viewport);
+    lv_obj_set_width(s_chat_log, lv_pct(100));
+    lv_obj_set_flex_grow(s_chat_log, 1);
+    lv_obj_set_flex_flow(s_chat_log, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_bg_color(s_chat_log, T_VOID, 0);
+    lv_obj_set_style_bg_opa(s_chat_log, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_chat_log, T_CYAN, 0);
+    lv_obj_set_style_border_opa(s_chat_log, LV_OPA_20, 0);
+    lv_obj_set_style_border_width(s_chat_log, 1, 0);
+    lv_obj_set_style_radius(s_chat_log, 4, 0);
+    lv_obj_set_style_pad_all(s_chat_log, 4, 0);
+    lv_obj_set_style_pad_gap(s_chat_log, 2, 0);
+    lv_obj_set_scrollbar_mode(s_chat_log, LV_SCROLLBAR_MODE_AUTO);
+
+    // Welcome message
+    chat_add_msg("System", "Mesh Chat ready. Type a message to broadcast.", false);
+
+    // Input row
+    lv_obj_t* input_row = lv_obj_create(viewport);
+    lv_obj_set_width(input_row, lv_pct(100));
+    lv_obj_set_height(input_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(input_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_all(input_row, 0, 0);
+    lv_obj_set_style_pad_gap(input_row, 4, 0);
+    lv_obj_set_style_bg_opa(input_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(input_row, 0, 0);
+    lv_obj_remove_flag(input_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Text input
+    s_chat_input = lv_textarea_create(input_row);
+    lv_obj_set_flex_grow(s_chat_input, 1);
+    lv_obj_set_height(s_chat_input, 32);
+    lv_textarea_set_one_line(s_chat_input, true);
+    lv_textarea_set_placeholder_text(s_chat_input, "message...");
+    lv_textarea_set_max_length(s_chat_input, CHAT_MSG_LEN - 10);
+    lv_obj_set_style_bg_color(s_chat_input, T_SURFACE2, 0);
+    lv_obj_set_style_bg_opa(s_chat_input, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_chat_input, T_TEXT, 0);
+    lv_obj_set_style_text_font(s_chat_input, tritium_shell::uiSmallFont(), 0);
+    lv_obj_set_style_border_color(s_chat_input, T_CYAN, 0);
+    lv_obj_set_style_border_opa(s_chat_input, LV_OPA_40, 0);
+    lv_obj_set_style_border_width(s_chat_input, 1, 0);
+    lv_obj_set_style_radius(s_chat_input, 4, 0);
+    lv_obj_add_event_cb(s_chat_input, chat_send_cb, LV_EVENT_READY, nullptr);
+
+    // Send button
+    lv_obj_t* send_btn = tritium_theme::createButton(input_row, LV_SYMBOL_RIGHT, T_GREEN);
+    lv_obj_set_size(send_btn, 44, 32);
+    lv_obj_add_event_cb(send_btn, [](lv_event_t* /*e*/) {
+        lv_obj_send_event(s_chat_input, LV_EVENT_READY, nullptr);
+    }, LV_EVENT_CLICKED, nullptr);
+
+    // Register mesh message callback for incoming chat
+    MeshManager::instance().onMessage(chat_rx_callback, nullptr);
+
+    // Refresh timer (update peer count, render new messages)
+    s_chat_timer = lv_timer_create(chat_refresh, 500, nullptr);
+
+    // Initial refresh
+    s_chat_dirty = true;
+#endif  // MESH_APP_AVAILABLE
 }
 
 // ===========================================================================
@@ -3690,6 +3943,10 @@ void terminal_create(lv_obj_t* viewport) {
 // ===========================================================================
 
 void register_all_apps() {
+    // Mesh Chat — P2P messaging over ESP-NOW
+    tritium_shell::registerApp({"Chat", "Mesh messaging", LV_SYMBOL_SHUFFLE,
+                                false, mesh_chat_create});
+
     // Terminal — on-device serial console for debugging and commands
     tritium_shell::registerApp({"Terminal", "Serial console", LV_SYMBOL_KEYBOARD,
                                 true, terminal_create});

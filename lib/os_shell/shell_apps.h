@@ -44,6 +44,9 @@ void power_app_create(lv_obj_t* viewport);
 /// On-device terminal — serial command console with scrollback.
 void terminal_create(lv_obj_t* viewport);
 
+/// Mesh Chat — P2P messaging over ESP-NOW mesh.
+void mesh_chat_create(lv_obj_t* viewport);
+
 /// Delete any active LVGL timers from shell apps (call before switching apps).
 void cleanup_timers();
 
