@@ -37,9 +37,8 @@ bool IMUHAL::detectMotion(float threshold) {
 
 #else // ESP32
 
-#include <Arduino.h>
-#include <Wire.h>
-#include <lgfx/v1/platforms/common.hpp>
+#include "tritium_compat.h"
+#include "tritium_i2c.h"
 
 #ifndef HAS_IMU
 #define HAS_IMU 0
@@ -55,13 +54,10 @@ bool IMUHAL::detectMotion(float threshold) {
 #define QMI8658_GX_L          0x3B
 #define QMI8658_RESET         0x60
 
-bool IMUHAL::init(TwoWire &wire) {
+bool IMUHAL::init() {
 #if !HAS_IMU
     return false;
 #else
-    _wire = &wire;
-    _use_lgfx = false;
-
 #if defined(IMU_I2C_ADDR)
     _addr = IMU_I2C_ADDR;
 #else
@@ -76,16 +72,8 @@ bool IMUHAL::initLgfx(uint8_t i2c_port, uint8_t addr) {
 #if !HAS_IMU
     return false;
 #else
-    _use_lgfx = true;
-    _lgfx_port = i2c_port;
+    // Legacy API — lgfx I2C no longer used, all I2C goes through i2c0
     _addr = addr;
-    _wire = nullptr;
-
-    // Ensure lgfx I2C bus is initialized (may already be set up by touch driver)
-#if defined(IMU_SDA) && defined(IMU_SCL)
-    lgfx::i2c::init(i2c_port, IMU_SDA, IMU_SCL);
-#endif
-
     return initDevice();
 #endif
 }
@@ -160,45 +148,17 @@ bool IMUHAL::detectMotion(float threshold) {
 }
 
 void IMUHAL::writeReg(uint8_t reg, uint8_t val) {
-    if (_use_lgfx) {
-        uint8_t buf[2] = { reg, val };
-        lgfx::i2c::transactionWrite(_lgfx_port, _addr, buf, 2, 400000);
-    } else {
-        _wire->beginTransmission(_addr);
-        _wire->write(reg);
-        _wire->write(val);
-        _wire->endTransmission();
-    }
+    i2c0.writeReg(_addr, reg, val);
 }
 
 uint8_t IMUHAL::readReg(uint8_t reg) {
     uint8_t val = 0;
-    if (_use_lgfx) {
-        lgfx::i2c::transactionWriteRead(_lgfx_port, _addr,
-            &reg, 1, &val, 1, 400000);
-    } else {
-        _wire->beginTransmission(_addr);
-        _wire->write(reg);
-        _wire->endTransmission(false);
-        _wire->requestFrom(_addr, (uint8_t)1);
-        if (_wire->available()) val = _wire->read();
-    }
+    i2c0.readReg(_addr, reg, &val);
     return val;
 }
 
 void IMUHAL::readRegs(uint8_t reg, uint8_t *buf, uint8_t len) {
-    if (_use_lgfx) {
-        lgfx::i2c::transactionWriteRead(_lgfx_port, _addr,
-            &reg, 1, buf, len, 400000);
-    } else {
-        _wire->beginTransmission(_addr);
-        _wire->write(reg);
-        _wire->endTransmission(false);
-        _wire->requestFrom(_addr, len);
-        for (uint8_t i = 0; i < len && _wire->available(); i++) {
-            buf[i] = _wire->read();
-        }
-    }
+    i2c0.writeRead(_addr, &reg, 1, buf, len);
 }
 
 #endif // SIMULATOR

@@ -5,7 +5,7 @@
  */
 
 #include "tritium_splash.h"
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <esp_heap_caps.h>
 #include <cstring>
 

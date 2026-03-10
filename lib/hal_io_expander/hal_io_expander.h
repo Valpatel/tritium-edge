@@ -5,14 +5,10 @@
 //   #include "hal_io_expander.h"
 //   IOExpander io;
 //   io.init();  // simulator
-//   io.init(Wire);  // ESP32
+//   io.init();  // ESP32 (uses global i2c0)
 
 #include <cstdint>
 #include <cstddef>
-
-#ifndef SIMULATOR
-class TwoWire;
-#endif
 
 class IOExpander {
 public:
@@ -24,7 +20,7 @@ public:
 #ifdef SIMULATOR
     bool init();
 #else
-    bool init(TwoWire &wire);
+    bool init();
 #endif
     void setPinMode(uint8_t pin, uint8_t mode);
     void writePin(uint8_t pin, uint8_t value);
@@ -38,7 +34,6 @@ private:
     uint8_t _dir_state = 0xFF;
 
 #ifndef SIMULATOR
-    TwoWire *_wire = nullptr;
     uint8_t _addr = 0;
 
     static constexpr uint8_t CH422G_WR_IO_ADDR = 0x38;

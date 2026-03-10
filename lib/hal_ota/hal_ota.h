@@ -2,6 +2,14 @@
 #include <cstdint>
 #include <functional>
 
+#ifndef SIMULATOR
+// Forward declarations for ESP-IDF HTTP server handler friend access
+#include "esp_err.h"
+struct httpd_req;
+typedef struct httpd_req httpd_req_t;
+esp_err_t handleUpdatePost(httpd_req_t* req);
+#endif
+
 // OTA update modes
 enum class OtaSource : uint8_t {
     WIFI_PUSH,      // HTTP server push (ElegantOTA style)
@@ -88,7 +96,8 @@ private:
     OtaStateCb _stateCb = nullptr;
     bool _serverRunning = false;
 
-    // Allow HTTP handler free functions access to private members
-    friend void _otaHandleUpload();
-    friend void _otaHandleResult();
+#ifndef SIMULATOR
+    // Allow ESP-IDF HTTP handler free functions access to private members
+    friend esp_err_t handleUpdatePost(httpd_req_t* req);
+#endif
 };

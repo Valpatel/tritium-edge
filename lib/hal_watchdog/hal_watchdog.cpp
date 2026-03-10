@@ -89,7 +89,7 @@ WatchdogHAL::TestResult WatchdogHAL::runTest() {
 // ESP32-S3 implementation using ESP-IDF task watchdog
 // ---------------------------------------------------------------------------
 
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <esp_task_wdt.h>
 #include <esp_system.h>
 #include <esp_heap_caps.h>
@@ -104,12 +104,17 @@ bool WatchdogHAL::init(uint32_t timeout_s) {
 
     _timeout = timeout_s;
 
-    // Arduino ESP32 uses the ESP-IDF 4.x watchdog API
-    esp_err_t err = esp_task_wdt_init(timeout_s, true);
+    // ESP-IDF 5.x watchdog API — uses config struct
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = timeout_s * 1000,
+        .idle_core_mask = 0,           // Don't watch idle tasks
+        .trigger_panic = true,
+    };
+    esp_err_t err = esp_task_wdt_init(&wdt_config);
     if (err == ESP_ERR_INVALID_STATE) {
         // Already initialized — deinit and reinit with new timeout
         esp_task_wdt_deinit();
-        err = esp_task_wdt_init(timeout_s, true);
+        err = esp_task_wdt_init(&wdt_config);
     }
     if (err != ESP_OK) {
         DBG_ERROR("wdt", "WDT init failed: %d", err);

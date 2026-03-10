@@ -7,12 +7,22 @@ static constexpr const char* TAG = "ota_audit";
 
 #ifndef SIMULATOR
 
-#include <LittleFS.h>
-#include <Arduino.h>
+#include "tritium_compat.h"
+#include <sys/stat.h>
+
+// LittleFS is mounted at /littlefs via VFS — use POSIX file ops
+static const char* LFS_PREFIX = "/littlefs";
+static const char* AUDIT_LOG_PATH = "/ota_audit.log";
+
+static void audit_fullpath(char* out, size_t outSize) {
+    snprintf(out, outSize, "%s%s", LFS_PREFIX, AUDIT_LOG_PATH);
+}
 
 bool OtaAuditLog::init() {
-    if (!LittleFS.begin(true)) {
-        DBG_ERROR(TAG, "LittleFS mount failed");
+    // LittleFS is already mounted by webserver_service — just verify
+    struct stat st;
+    if (stat(LFS_PREFIX, &st) != 0) {
+        DBG_ERROR(TAG, "LittleFS not mounted at %s", LFS_PREFIX);
         return false;
     }
     _ready = true;
@@ -26,37 +36,34 @@ void OtaAuditLog::logAttempt(const char* source, const char* version,
 
     // Build JSON line
     char line[256];
-    int n = snprintf(line, sizeof(line),
+    int n;
+    if (!success && detail) {
+        n = snprintf(line, sizeof(line),
                      "{\"t\":%lu,\"src\":\"%s\",\"ver\":\"%s\",\"board\":\"%s\","
-                     "\"ok\":%s%s%s}\n",
+                     "\"ok\":false,\"err\":\"%s\"}\n",
                      (unsigned long)(millis() / 1000),
                      source ? source : "?",
                      version ? version : "?",
                      board ? board : "?",
-                     success ? "true" : "false",
-                     (!success && detail) ? ",\"err\":\"" : "",
-                     (!success && detail) ? detail : "");
-
-    // Close the detail string if present
-    if (!success && detail) {
-        // Need to append closing quote + brace
-        if (n > 0 && n < (int)sizeof(line) - 3) {
-            // Replace the trailing }\n with "}\n
-            if (line[n-2] == '}') {
-                line[n-2] = '"';
-                line[n-1] = '}';
-                line[n] = '\n';
-                line[n+1] = '\0';
-                n++;
-            }
-        }
+                     detail);
+    } else {
+        n = snprintf(line, sizeof(line),
+                     "{\"t\":%lu,\"src\":\"%s\",\"ver\":\"%s\",\"board\":\"%s\","
+                     "\"ok\":%s}\n",
+                     (unsigned long)(millis() / 1000),
+                     source ? source : "?",
+                     version ? version : "?",
+                     board ? board : "?",
+                     success ? "true" : "false");
     }
 
     // Append to log file
-    File f = LittleFS.open(LOG_PATH, FILE_APPEND);
+    char fp[256];
+    audit_fullpath(fp, sizeof(fp));
+    FILE* f = fopen(fp, "a");
     if (f) {
-        f.print(line);
-        f.close();
+        fwrite(line, 1, n, f);
+        fclose(f);
         DBG_INFO(TAG, "Logged: %s v%s %s", source, version, success ? "OK" : "FAIL");
     }
 
@@ -67,73 +74,81 @@ void OtaAuditLog::logAttempt(const char* source, const char* version,
 size_t OtaAuditLog::readLog(char* buf, size_t bufSize) {
     if (!_ready || !buf || bufSize == 0) return 0;
 
-    File f = LittleFS.open(LOG_PATH, FILE_READ);
+    char fp[256];
+    audit_fullpath(fp, sizeof(fp));
+    FILE* f = fopen(fp, "r");
     if (!f) return 0;
 
-    size_t n = f.readBytes(buf, bufSize - 1);
+    size_t n = fread(buf, 1, bufSize - 1, f);
     buf[n] = '\0';
-    f.close();
+    fclose(f);
     return n;
 }
 
 int OtaAuditLog::getEntryCount() {
     if (!_ready) return 0;
 
-    File f = LittleFS.open(LOG_PATH, FILE_READ);
+    char fp[256];
+    audit_fullpath(fp, sizeof(fp));
+    FILE* f = fopen(fp, "r");
     if (!f) return 0;
 
     int count = 0;
-    while (f.available()) {
-        if (f.read() == '\n') count++;
+    int c;
+    while ((c = fgetc(f)) != EOF) {
+        if (c == '\n') count++;
     }
-    f.close();
+    fclose(f);
     return count;
 }
 
 void OtaAuditLog::clear() {
     if (!_ready) return;
-    LittleFS.remove(LOG_PATH);
+    char fp[256];
+    audit_fullpath(fp, sizeof(fp));
+    remove(fp);
     DBG_INFO(TAG, "Audit log cleared");
 }
 
 void OtaAuditLog::trimLog() {
     if (!_ready) return;
 
-    File f = LittleFS.open(LOG_PATH, FILE_READ);
+    char fp[256];
+    audit_fullpath(fp, sizeof(fp));
+
+    struct stat st;
+    if (stat(fp, &st) != 0) return;
+    size_t fileSize = st.st_size;
+    if (fileSize <= MAX_LOG_SIZE) return;
+
+    // Read file, skip first half of entries
+    FILE* f = fopen(fp, "r");
     if (!f) return;
 
-    size_t fileSize = f.size();
-    if (fileSize <= MAX_LOG_SIZE) {
-        f.close();
-        return;
-    }
-
-    // Read into buffer, skip first half of entries
     size_t skipBytes = fileSize - MAX_LOG_SIZE / 2;
-    f.seek(skipBytes);
+    fseek(f, skipBytes, SEEK_SET);
 
     // Find next newline (start of complete entry)
-    while (f.available()) {
-        if (f.read() == '\n') break;
+    int c;
+    while ((c = fgetc(f)) != EOF) {
+        if (c == '\n') break;
     }
 
     // Read remaining data
-    size_t remaining = f.size() - f.position();
+    long pos = ftell(f);
+    size_t remaining = fileSize - pos;
     char* buf = (char*)malloc(remaining + 1);
-    if (!buf) {
-        f.close();
-        return;
-    }
+    if (!buf) { fclose(f); return; }
 
-    size_t n = f.readBytes(buf, remaining);
+    size_t n = fread(buf, 1, remaining, f);
     buf[n] = '\0';
-    f.close();
+    fclose(f);
 
     // Rewrite file with trimmed content
-    f = LittleFS.open(LOG_PATH, FILE_WRITE);
+    f = fopen(fp, "w");
     if (f) {
-        f.write((uint8_t*)buf, n);
-        f.close();
+        fwrite(buf, 1, n, f);
+        fclose(f);
         DBG_INFO(TAG, "Trimmed audit log: %u -> %u bytes", fileSize, n);
     }
     free(buf);

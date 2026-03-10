@@ -118,10 +118,11 @@ SleepHAL::TestResult SleepHAL::runTest() {
 // ESP32-S3 implementation using ESP-IDF sleep APIs + Arduino framework
 // ---------------------------------------------------------------------------
 
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <esp_sleep.h>
 #include <driver/gpio.h>
 #include <driver/uart.h>
+#include <driver/touch_pad.h>
 
 // ---- Wake source configuration -------------------------------------------
 
@@ -151,10 +152,10 @@ void SleepHAL::setWakeUART(int uart_num) {
 }
 
 void SleepHAL::setWakeTouch(uint8_t pin, uint16_t threshold) {
-    (void)pin;
-    (void)threshold;
-    // Configure the touch pin threshold for wake detection
-    touchSleepWakeUpEnable(pin, threshold);
+    // Initialize touch pad subsystem if needed, configure the pad for wake
+    touch_pad_init();
+    touch_pad_config((touch_pad_t)pin);
+    touch_pad_set_thresh((touch_pad_t)pin, threshold);
     esp_sleep_enable_touchpad_wakeup();
     DBG_INFO(TAG, "Touch wake enabled on pin %u, threshold %u", pin, threshold);
 }

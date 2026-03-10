@@ -6,7 +6,7 @@
 #include "serial_capture.h"
 #include "debug_log.h"
 
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <cstring>
@@ -40,58 +40,42 @@ static char _inject_ring[MAX_INJECT_CMDS][MAX_INJECT_LEN];
 static volatile int _inject_head  = 0;
 static volatile int _inject_tail  = 0;
 
-// ── Custom Print class that wraps Serial ─────────────────────────────────────
+// ── Capture helper (no Arduino Print class — uses direct line accumulation) ──
 
-class SerialCapturePrint : public Print {
-public:
-    void setTarget(Print* target) { _target = target; }
+static void _capture_flush_line() {
+    _line_buf[_line_pos] = '\0';
 
-    size_t write(uint8_t c) override {
-        // Pass through to original Serial
-        if (_target) _target->write(c);
-
-        // Accumulate into line buffer
-        if (c == '\n' || c == '\r') {
-            if (_line_pos > 0) {
-                flushLine();
-            }
-        } else if (_line_pos < MAX_LINE_LEN - 1) {
-            _line_buf[_line_pos++] = (char)c;
-        }
-        return 1;
+    if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        strncpy(_ring[_ring_head], _line_buf, MAX_LINE_LEN - 1);
+        _ring[_ring_head][MAX_LINE_LEN - 1] = '\0';
+        _ring_head = (_ring_head + 1) % MAX_LINES;
+        if (_ring_count < MAX_LINES) _ring_count++;
+        xSemaphoreGive(_mutex);
     }
 
-    size_t write(const uint8_t* buffer, size_t size) override {
-        for (size_t i = 0; i < size; i++) {
-            write(buffer[i]);
-        }
-        return size;
+    // Fire callback outside mutex to avoid deadlock
+    if (_callback) {
+        _callback(_line_buf, _callback_data);
     }
 
-private:
-    Print* _target = nullptr;
+    _line_pos = 0;
+}
 
-    void flushLine() {
-        _line_buf[_line_pos] = '\0';
-
-        if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            strncpy(_ring[_ring_head], _line_buf, MAX_LINE_LEN - 1);
-            _ring[_ring_head][MAX_LINE_LEN - 1] = '\0';
-            _ring_head = (_ring_head + 1) % MAX_LINES;
-            if (_ring_count < MAX_LINES) _ring_count++;
-            xSemaphoreGive(_mutex);
+static void _capture_write_byte(uint8_t c) {
+    if (c == '\n' || c == '\r') {
+        if (_line_pos > 0) {
+            _capture_flush_line();
         }
-
-        // Fire callback outside mutex to avoid deadlock
-        if (_callback) {
-            _callback(_line_buf, _callback_data);
-        }
-
-        _line_pos = 0;
+    } else if (_line_pos < MAX_LINE_LEN - 1) {
+        _line_buf[_line_pos++] = (char)c;
     }
-};
+}
 
-static SerialCapturePrint _capture_print;
+static void _capture_write_bytes(const uint8_t* buf, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        _capture_write_byte(buf[i]);
+    }
+}
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -102,12 +86,9 @@ void serial_capture::init() {
         return;
     }
 
-    // Redirect Serial output through our capture wrapper.
-    // We store the underlying UART/CDC target and redirect Serial's
-    // output stream to our wrapper that copies to the ring buffer.
-    // Note: on ESP32-S3 with USB CDC, Serial is HWCDC which inherits Print.
-    // We capture by installing a custom print hook via the log system.
-    _capture_print.setTarget(&Serial);
+    // Serial capture initialized — lines are pushed via captureLog() or
+    // the debug_log output hook calling serial_capture callbacks.
+    // No Arduino Serial redirection needed with ESP-IDF native.
 
     DBG_INFO(TAG, "Serial capture initialized (%d line ring buffer)", MAX_LINES);
 }
@@ -201,20 +182,9 @@ void serial_capture::injectCommand(const char* cmd) {
     _inject_ring[_inject_head][MAX_INJECT_LEN - 1] = '\0';
     _inject_head = next;
 
-    // Push each character of the command into Serial RX
-    // This makes it appear as if typed on the serial console,
-    // so handleSerialCommands() in main.cpp will process it.
-    size_t len = strlen(cmd);
-    for (size_t i = 0; i < len; i++) {
-        // On ESP32-S3 with USB CDC, we cannot easily inject into the HW RX.
-        // Instead, write directly into the Serial input buffer if available.
-    }
-
-    // Fallback: write command + newline to Serial so it echoes and gets
-    // picked up by the next handleSerialCommands() cycle via available().
-    // On USB CDC Serial, writing to Serial goes to the host, not back to RX.
-    // So we use a different approach: store in inject ring and let the
-    // ws_bridge tick pull from it and dispatch to ServiceRegistry directly.
+    // Store in inject ring and let ws_bridge tick pull from it and
+    // dispatch to ServiceRegistry directly. Cannot push to Serial RX
+    // on USB CDC — the inject ring is the canonical path.
 }
 
 // Called by ws_bridge to drain injected commands (since we can't push to
@@ -229,6 +199,6 @@ const char* _serial_capture_drain_inject() {
 // Write a line through the capture pipeline (for echoing command responses
 // that bypass Serial.printf, e.g. from ServiceRegistry::dispatchCommand)
 void _serial_capture_write_line(const char* line) {
-    _capture_print.write((const uint8_t*)line, strlen(line));
-    _capture_print.write((uint8_t)'\n');
+    _capture_write_bytes((const uint8_t*)line, strlen(line));
+    _capture_write_byte((uint8_t)'\n');
 }

@@ -7,7 +7,7 @@
 #include <cstdlib>
 static uint32_t millis() { return 0; }
 #else
-#include <Arduino.h>
+#include "tritium_compat.h"
 #endif
 
 // Frame analysis parameters

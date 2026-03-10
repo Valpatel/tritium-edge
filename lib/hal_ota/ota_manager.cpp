@@ -17,16 +17,16 @@ static constexpr const char* TAG = "ota_mgr";
 // ============================================================================
 #ifndef SIMULATOR
 
-#include <Arduino.h>
-#include <WiFi.h>
-#include <Update.h>
-#include <SD_MMC.h>
-#include <HTTPClient.h>
-#include <esp_ota_ops.h>
+#include "tritium_compat.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_ota_ops.h"
+#include "esp_http_client.h"
 #include <esp_partition.h>
 #include <nvs_flash.h>
 #include <nvs.h>
-#include <MD5Builder.h>
+#include <mbedtls/md5.h>
+#include <sys/stat.h>
 
 namespace ota_manager {
 
@@ -37,9 +37,13 @@ static OtaStatus _status = {};
 static OtaProgressCallback _progressCb = nullptr;
 static void* _progressUserData = nullptr;
 static OtaAuditLog _audit;
-static MD5Builder _md5;
+static mbedtls_md5_context _md5_ctx;
 static bool _uploadStarted = false;
 static bool _initialized = false;
+
+// ESP-IDF OTA state for chunked upload
+static esp_ota_handle_t _ota_handle = 0;
+static const esp_partition_t* _ota_partition = nullptr;
 
 static constexpr const char* NVS_NAMESPACE = "ota_hist";
 static constexpr int MAX_HISTORY = 5;
@@ -113,6 +117,17 @@ static void saveHistoryEntry(const char* version, const char* source, bool succe
     nvs_close(nvs);
 }
 
+// Helper to read new version from the written OTA partition
+static void readNewVersion(const esp_partition_t* partition) {
+    if (partition) {
+        esp_app_desc_t new_desc;
+        if (esp_ota_get_partition_description(partition, &new_desc) == ESP_OK) {
+            strncpy(_status.new_version, new_desc.version,
+                    sizeof(_status.new_version) - 1);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -160,63 +175,86 @@ bool updateFromUpload(const uint8_t* data, size_t len, bool final_chunk) {
         _status.total_bytes = 0;
         _status.new_version[0] = '\0';
 
-        _md5.begin();
+        mbedtls_md5_init(&_md5_ctx);
+        mbedtls_md5_starts(&_md5_ctx);
 
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-            char err[64];
-            snprintf(err, sizeof(err), "Update.begin failed: %s",
-                     Update.errorString());
-            setError(err);
-            _audit.logAttempt("web", "unknown", "any", false, err);
+        _ota_partition = esp_ota_get_next_update_partition(NULL);
+        if (!_ota_partition) {
+            setError("No OTA partition available");
+            mbedtls_md5_free(&_md5_ctx);
+            _audit.logAttempt("web", "unknown", "any", false, "No OTA partition");
+            return false;
+        }
+
+        esp_err_t err = esp_ota_begin(_ota_partition, OTA_SIZE_UNKNOWN, &_ota_handle);
+        if (err != ESP_OK) {
+            char errbuf[64];
+            snprintf(errbuf, sizeof(errbuf), "esp_ota_begin failed: 0x%x", err);
+            setError(errbuf);
+            mbedtls_md5_free(&_md5_ctx);
+            _audit.logAttempt("web", "unknown", "any", false, errbuf);
             return false;
         }
         _uploadStarted = true;
     }
 
     // Write chunk
-    _md5.add(data, len);
-    size_t written = Update.write(const_cast<uint8_t*>(data), len);
-    if (written != len) {
-        char err[64];
-        snprintf(err, sizeof(err), "Write failed: %s", Update.errorString());
-        setError(err);
-        Update.abort();
+    mbedtls_md5_update(&_md5_ctx, data, len);
+    esp_err_t err = esp_ota_write(_ota_handle, data, len);
+    if (err != ESP_OK) {
+        char errbuf[64];
+        snprintf(errbuf, sizeof(errbuf), "esp_ota_write failed: 0x%x", err);
+        setError(errbuf);
+        esp_ota_abort(_ota_handle);
+        mbedtls_md5_free(&_md5_ctx);
         _uploadStarted = false;
-        _audit.logAttempt("web", "unknown", "any", false, err);
+        _audit.logAttempt("web", "unknown", "any", false, errbuf);
         return false;
     }
 
-    _status.bytes_written += written;
+    _status.bytes_written += len;
     _status.total_bytes = _status.bytes_written;  // Updated as we go
     updateProgress(_status.bytes_written, _status.total_bytes);
 
     if (final_chunk) {
-        // Finalize
-        _md5.calculate();
+        // Finalize MD5
+        uint8_t md5_result[16];
+        mbedtls_md5_finish(&_md5_ctx, md5_result);
+        mbedtls_md5_free(&_md5_ctx);
+
+        // Format MD5 as hex string for logging
+        char md5_hex[33];
+        for (int i = 0; i < 16; i++) {
+            snprintf(md5_hex + i * 2, 3, "%02x", md5_result[i]);
+        }
+
         setState(OTA_VERIFYING, "Verifying firmware");
 
-        if (!Update.end(true)) {
-            char err[64];
-            snprintf(err, sizeof(err), "Verification failed: %s",
-                     Update.errorString());
-            setError(err);
+        err = esp_ota_end(_ota_handle);
+        if (err != ESP_OK) {
+            char errbuf[64];
+            snprintf(errbuf, sizeof(errbuf), "esp_ota_end failed: 0x%x", err);
+            setError(errbuf);
             _uploadStarted = false;
-            _audit.logAttempt("web", "unknown", "any", false, err);
+            _audit.logAttempt("web", "unknown", "any", false, errbuf);
+            return false;
+        }
+
+        err = esp_ota_set_boot_partition(_ota_partition);
+        if (err != ESP_OK) {
+            char errbuf[64];
+            snprintf(errbuf, sizeof(errbuf), "Set boot partition failed: 0x%x", err);
+            setError(errbuf);
+            _uploadStarted = false;
+            _audit.logAttempt("web", "unknown", "any", false, errbuf);
             return false;
         }
 
         _uploadStarted = false;
         _status.progress_pct = 100;
 
-        // Try to read new version from next boot partition
-        const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
-        if (next) {
-            esp_app_desc_t new_desc;
-            if (esp_ota_get_partition_description(next, &new_desc) == ESP_OK) {
-                strncpy(_status.new_version, new_desc.version,
-                        sizeof(_status.new_version) - 1);
-            }
-        }
+        // Try to read new version from the written partition
+        readNewVersion(_ota_partition);
 
         setState(OTA_READY_REBOOT, "Upload complete, ready to reboot");
         saveHistoryEntry(
@@ -227,7 +265,7 @@ bool updateFromUpload(const uint8_t* data, size_t len, bool final_chunk) {
                           "any", true, nullptr);
 
         DBG_INFO(TAG, "Upload OTA complete, %u bytes, MD5=%s",
-                 _status.bytes_written, _md5.toString().c_str());
+                 _status.bytes_written, md5_hex);
     }
 
     return true;
@@ -242,87 +280,142 @@ bool updateFromUrl(const char* url) {
     DBG_INFO(TAG, "URL OTA from: %s", url);
     setState(OTA_DOWNLOADING, "Downloading firmware");
 
-    HTTPClient http;
-    http.begin(url);
-    http.setTimeout(30000);
-    int httpCode = http.GET();
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.timeout_ms = 30000;
 
-    if (httpCode != HTTP_CODE_OK) {
-        char err[64];
-        snprintf(err, sizeof(err), "HTTP error: %d", httpCode);
-        setError(err);
-        http.end();
-        _audit.logAttempt("url", "unknown", "any", false, err);
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        setError("HTTP client init failed");
+        _audit.logAttempt("url", "unknown", "any", false, "HTTP client init failed");
         return false;
     }
 
-    int contentLength = http.getSize();
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        char errbuf[64];
+        snprintf(errbuf, sizeof(errbuf), "HTTP open failed: 0x%x", err);
+        setError(errbuf);
+        esp_http_client_cleanup(client);
+        _audit.logAttempt("url", "unknown", "any", false, errbuf);
+        return false;
+    }
+
+    int contentLength = esp_http_client_fetch_headers(client);
+    int statusCode = esp_http_client_get_status_code(client);
+
+    if (statusCode != 200) {
+        char errbuf[64];
+        snprintf(errbuf, sizeof(errbuf), "HTTP error: %d", statusCode);
+        setError(errbuf);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        _audit.logAttempt("url", "unknown", "any", false, errbuf);
+        return false;
+    }
+
     if (contentLength <= 0) {
         setError("Invalid content length");
-        http.end();
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
         _audit.logAttempt("url", "unknown", "any", false, "Invalid content length");
         return false;
     }
 
     _status.total_bytes = contentLength;
 
-    if (!Update.begin(contentLength)) {
-        char err[64];
-        snprintf(err, sizeof(err), "No space: %s", Update.errorString());
-        setError(err);
-        http.end();
-        _audit.logAttempt("url", "unknown", "any", false, err);
+    const esp_partition_t* update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!update_partition) {
+        setError("No OTA partition available");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        _audit.logAttempt("url", "unknown", "any", false, "No OTA partition");
+        return false;
+    }
+
+    esp_ota_handle_t update_handle;
+    err = esp_ota_begin(update_partition, (size_t)contentLength, &update_handle);
+    if (err != ESP_OK) {
+        char errbuf[64];
+        snprintf(errbuf, sizeof(errbuf), "esp_ota_begin failed: 0x%x", err);
+        setError(errbuf);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        _audit.logAttempt("url", "unknown", "any", false, errbuf);
         return false;
     }
 
     setState(OTA_WRITING, "Writing firmware to flash");
 
-    WiFiClient* stream = http.getStreamPtr();
     uint8_t buf[1024];
     uint32_t written = 0;
 
-    while (http.connected() && written < (uint32_t)contentLength) {
-        size_t available = stream->available();
-        if (available) {
-            size_t toRead = (available < sizeof(buf)) ? available : sizeof(buf);
-            size_t bytesRead = stream->readBytes(buf, toRead);
-            size_t bytesWritten = Update.write(buf, bytesRead);
-            if (bytesWritten != bytesRead) {
-                char err[64];
-                snprintf(err, sizeof(err), "Write failed at %u: %s",
-                         written, Update.errorString());
-                setError(err);
-                Update.abort();
-                http.end();
-                _audit.logAttempt("url", "unknown", "any", false, err);
+    while (written < (uint32_t)contentLength) {
+        int bytesRead = esp_http_client_read(client, (char*)buf, sizeof(buf));
+        if (bytesRead < 0) {
+            char errbuf[64];
+            snprintf(errbuf, sizeof(errbuf), "HTTP read failed at %u", written);
+            setError(errbuf);
+            esp_ota_abort(update_handle);
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            _audit.logAttempt("url", "unknown", "any", false, errbuf);
+            return false;
+        }
+        if (bytesRead == 0) {
+            if (written < (uint32_t)contentLength) {
+                char errbuf[64];
+                snprintf(errbuf, sizeof(errbuf), "Connection closed at %u/%d",
+                         written, contentLength);
+                setError(errbuf);
+                esp_ota_abort(update_handle);
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
+                _audit.logAttempt("url", "unknown", "any", false, errbuf);
                 return false;
             }
-            written += bytesWritten;
-            updateProgress(written, contentLength);
+            break;
         }
-        delay(1);
+
+        err = esp_ota_write(update_handle, buf, (size_t)bytesRead);
+        if (err != ESP_OK) {
+            char errbuf[64];
+            snprintf(errbuf, sizeof(errbuf), "Write failed at %u: 0x%x", written, err);
+            setError(errbuf);
+            esp_ota_abort(update_handle);
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            _audit.logAttempt("url", "unknown", "any", false, errbuf);
+            return false;
+        }
+        written += (uint32_t)bytesRead;
+        updateProgress(written, contentLength);
     }
 
-    http.end();
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
     setState(OTA_VERIFYING, "Verifying firmware");
 
-    if (!Update.end(true)) {
-        char err[64];
-        snprintf(err, sizeof(err), "Verify failed: %s", Update.errorString());
-        setError(err);
-        _audit.logAttempt("url", "unknown", "any", false, err);
+    err = esp_ota_end(update_handle);
+    if (err != ESP_OK) {
+        char errbuf[64];
+        snprintf(errbuf, sizeof(errbuf), "esp_ota_end failed: 0x%x", err);
+        setError(errbuf);
+        _audit.logAttempt("url", "unknown", "any", false, errbuf);
+        return false;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        char errbuf[64];
+        snprintf(errbuf, sizeof(errbuf), "Set boot partition failed: 0x%x", err);
+        setError(errbuf);
+        _audit.logAttempt("url", "unknown", "any", false, errbuf);
         return false;
     }
 
     // Read new version
-    const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
-    if (next) {
-        esp_app_desc_t new_desc;
-        if (esp_ota_get_partition_description(next, &new_desc) == ESP_OK) {
-            strncpy(_status.new_version, new_desc.version,
-                    sizeof(_status.new_version) - 1);
-        }
-    }
+    readNewVersion(update_partition);
 
     setState(OTA_READY_REBOOT, "URL update complete");
     saveHistoryEntry(
@@ -340,40 +433,68 @@ bool updateFromSD(const char* path) {
     if (!_initialized) return false;
     if (!path || strlen(path) == 0) path = "/firmware.bin";
 
-    DBG_INFO(TAG, "SD OTA from: %s", path);
+    // Build full VFS path
+    char fullPath[160];
+    if (path[0] == '/') {
+        snprintf(fullPath, sizeof(fullPath), "/sdcard%s", path);
+    } else {
+        snprintf(fullPath, sizeof(fullPath), "/sdcard/%s", path);
+    }
+
+    DBG_INFO(TAG, "SD OTA from: %s", fullPath);
     setState(OTA_CHECKING, "Reading SD card");
 
-    if (!SD_MMC.begin()) {
-        setError("SD card mount failed");
-        _audit.logAttempt("sd", "unknown", "any", false, "SD mount failed");
+    // Check SD card is mounted
+    struct stat sd_stat;
+    if (stat("/sdcard", &sd_stat) != 0) {
+        setError("SD card not mounted");
+        _audit.logAttempt("sd", "unknown", "any", false, "SD not mounted");
         return false;
     }
 
-    File firmware = SD_MMC.open(path, FILE_READ);
-    if (!firmware) {
-        char err[64];
-        snprintf(err, sizeof(err), "Cannot open %s", path);
-        setError(err);
-        _audit.logAttempt("sd", "unknown", "any", false, err);
+    struct stat file_stat;
+    if (stat(fullPath, &file_stat) != 0) {
+        char errbuf[64];
+        snprintf(errbuf, sizeof(errbuf), "Cannot stat %s", path);
+        setError(errbuf);
+        _audit.logAttempt("sd", "unknown", "any", false, errbuf);
         return false;
     }
 
-    size_t fileSize = firmware.size();
+    size_t fileSize = (size_t)file_stat.st_size;
     if (fileSize == 0) {
         setError("Firmware file is empty");
-        firmware.close();
         _audit.logAttempt("sd", "unknown", "any", false, "Empty file");
+        return false;
+    }
+
+    FILE* firmware = fopen(fullPath, "rb");
+    if (!firmware) {
+        char errbuf[64];
+        snprintf(errbuf, sizeof(errbuf), "Cannot open %s", path);
+        setError(errbuf);
+        _audit.logAttempt("sd", "unknown", "any", false, errbuf);
         return false;
     }
 
     _status.total_bytes = fileSize;
 
-    if (!Update.begin(fileSize)) {
-        char err[64];
-        snprintf(err, sizeof(err), "No space: %s", Update.errorString());
-        setError(err);
-        firmware.close();
-        _audit.logAttempt("sd", "unknown", "any", false, err);
+    const esp_partition_t* update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!update_partition) {
+        setError("No OTA partition available");
+        fclose(firmware);
+        _audit.logAttempt("sd", "unknown", "any", false, "No OTA partition");
+        return false;
+    }
+
+    esp_ota_handle_t update_handle;
+    esp_err_t err = esp_ota_begin(update_partition, fileSize, &update_handle);
+    if (err != ESP_OK) {
+        char errbuf[64];
+        snprintf(errbuf, sizeof(errbuf), "esp_ota_begin failed: 0x%x", err);
+        setError(errbuf);
+        fclose(firmware);
+        _audit.logAttempt("sd", "unknown", "any", false, errbuf);
         return false;
     }
 
@@ -382,51 +503,63 @@ bool updateFromSD(const char* path) {
     uint8_t buf[1024];
     uint32_t written = 0;
 
-    while (firmware.available()) {
-        size_t toRead = firmware.available();
+    while (written < (uint32_t)fileSize) {
+        size_t toRead = fileSize - written;
         if (toRead > sizeof(buf)) toRead = sizeof(buf);
-        size_t bytesRead = firmware.read(buf, toRead);
-        size_t bytesWritten = Update.write(buf, bytesRead);
-        if (bytesWritten != bytesRead) {
-            char err[64];
-            snprintf(err, sizeof(err), "Write failed at %u: %s",
-                     written, Update.errorString());
-            setError(err);
-            Update.abort();
-            firmware.close();
-            _audit.logAttempt("sd", "unknown", "any", false, err);
+        size_t bytesRead = fread(buf, 1, toRead, firmware);
+        if (bytesRead == 0) {
+            char errbuf[64];
+            snprintf(errbuf, sizeof(errbuf), "Read failed at %u", written);
+            setError(errbuf);
+            esp_ota_abort(update_handle);
+            fclose(firmware);
+            _audit.logAttempt("sd", "unknown", "any", false, errbuf);
             return false;
         }
-        written += bytesWritten;
+
+        err = esp_ota_write(update_handle, buf, bytesRead);
+        if (err != ESP_OK) {
+            char errbuf[64];
+            snprintf(errbuf, sizeof(errbuf), "Write failed at %u: 0x%x", written, err);
+            setError(errbuf);
+            esp_ota_abort(update_handle);
+            fclose(firmware);
+            _audit.logAttempt("sd", "unknown", "any", false, errbuf);
+            return false;
+        }
+        written += (uint32_t)bytesRead;
         updateProgress(written, fileSize);
     }
 
-    firmware.close();
+    fclose(firmware);
     setState(OTA_VERIFYING, "Verifying firmware");
 
-    if (!Update.end(true)) {
-        char err[64];
-        snprintf(err, sizeof(err), "Verify failed: %s", Update.errorString());
-        setError(err);
-        _audit.logAttempt("sd", "unknown", "any", false, err);
+    err = esp_ota_end(update_handle);
+    if (err != ESP_OK) {
+        char errbuf[64];
+        snprintf(errbuf, sizeof(errbuf), "esp_ota_end failed: 0x%x", err);
+        setError(errbuf);
+        _audit.logAttempt("sd", "unknown", "any", false, errbuf);
         return false;
     }
 
-    // Rename to .bak
-    char bakPath[128];
-    snprintf(bakPath, sizeof(bakPath), "%s.bak", path);
-    SD_MMC.remove(bakPath);
-    SD_MMC.rename(path, bakPath);
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        char errbuf[64];
+        snprintf(errbuf, sizeof(errbuf), "Set boot partition failed: 0x%x", err);
+        setError(errbuf);
+        _audit.logAttempt("sd", "unknown", "any", false, errbuf);
+        return false;
+    }
+
+    // Rename to .bak via POSIX
+    char bakPath[176];
+    snprintf(bakPath, sizeof(bakPath), "%s.bak", fullPath);
+    remove(bakPath);
+    rename(fullPath, bakPath);
 
     // Read new version
-    const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
-    if (next) {
-        esp_app_desc_t new_desc;
-        if (esp_ota_get_partition_description(next, &new_desc) == ESP_OK) {
-            strncpy(_status.new_version, new_desc.version,
-                    sizeof(_status.new_version) - 1);
-        }
-    }
+    readNewVersion(update_partition);
 
     setState(OTA_READY_REBOOT, "SD update complete");
     saveHistoryEntry(
@@ -468,7 +601,7 @@ bool rollback() {
 bool reboot() {
     DBG_INFO(TAG, "Rebooting...");
     delay(200);
-    ESP.restart();
+    esp_restart();
     return true;  // Never reached
 }
 

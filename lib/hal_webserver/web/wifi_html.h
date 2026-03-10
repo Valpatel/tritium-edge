@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include <pgmspace.h>
+// pgmspace.h not needed — PROGMEM is no-op on ESP32
 
 static const char WIFI_HTML_V2[] PROGMEM =
 #include "wifi.html.inc"

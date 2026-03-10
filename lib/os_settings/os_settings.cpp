@@ -12,8 +12,9 @@
 // ============================================================================
 #ifndef SIMULATOR
 
-#include <Arduino.h>
-#include <Preferences.h>
+#include "tritium_compat.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <esp_mac.h>
@@ -173,6 +174,39 @@ static inline void unlockMutex(void*) { sim_mutex.unlock(); }
 #endif
 
 // ============================================================================
+// NVS helpers (ESP32 only) — check if a key exists in an NVS namespace
+// ============================================================================
+
+#ifndef SIMULATOR
+
+// Returns true if the key exists in the given NVS namespace
+static bool nvs_key_exists(const char* ns, const char* key) {
+    nvs_handle_t handle;
+    if (nvs_open(ns, NVS_READONLY, &handle) != ESP_OK) {
+        return false;  // namespace doesn't exist yet
+    }
+    // Try to get the size of any type — if the key exists, one will succeed
+    size_t len = 0;
+    esp_err_t err = nvs_get_str(handle, key, nullptr, &len);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        int32_t dummy_i;
+        err = nvs_get_i32(handle, key, &dummy_i);
+    }
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        uint8_t dummy_u;
+        err = nvs_get_u8(handle, key, &dummy_u);
+    }
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        size_t blob_len = 0;
+        err = nvs_get_blob(handle, key, nullptr, &blob_len);
+    }
+    nvs_close(handle);
+    return (err != ESP_ERR_NVS_NOT_FOUND);
+}
+
+#endif // !SIMULATOR
+
+// ============================================================================
 // Init
 // ============================================================================
 
@@ -180,9 +214,20 @@ bool TritiumSettings::init() {
     if (_initialized) return true;
 
 #ifndef SIMULATOR
+    // Initialize NVS flash — required before any nvs_open() calls
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        ret = nvs_flash_init();
+    }
+    if (ret != ESP_OK) {
+        Serial.printf("[settings] ERROR: nvs_flash_init failed (0x%x)\n", ret);
+        return false;
+    }
+
     _mutex = xSemaphoreCreateMutex();
     if (!_mutex) {
-        Serial.println("[settings] ERROR: failed to create mutex");
+        Serial.printf("[settings] ERROR: failed to create mutex\n");
         return false;
     }
 #endif
@@ -191,7 +236,7 @@ bool TritiumSettings::init() {
     _initialized = true;
 
 #ifndef SIMULATOR
-    Serial.println("[settings] Initialized with NVS backing store");
+    Serial.printf("[settings] Initialized with NVS backing store\n");
 #else
     printf("[settings] Initialized with in-memory backing store (simulator)\n");
 #endif
@@ -217,30 +262,22 @@ void TritiumSettings::applyDefaults(const char* domain) {
         makeNamespace(d.domain, ns, sizeof(ns));
 
 #ifndef SIMULATOR
-        Preferences prefs;
-        if (!prefs.begin(ns, true)) {
-            // Namespace doesn't exist — will be created on first write
-            prefs.end();
-        } else {
-            // Check if key already exists — if so, skip
-            if (prefs.isKey(d.key)) {
-                prefs.end();
-                continue;
-            }
-            prefs.end();
-        }
+        // Check if key already exists — if so, skip
+        if (nvs_key_exists(ns, d.key)) continue;
 
         // Key doesn't exist — write the factory default
-        prefs.begin(ns, false);
+        nvs_handle_t handle;
+        if (nvs_open(ns, NVS_READWRITE, &handle) != ESP_OK) continue;
+
         switch (d.type) {
             case SettingsType::BOOL:
-                prefs.putBool(d.key, d.value.b);
+                nvs_set_u8(handle, d.key, d.value.b ? 1 : 0);
                 break;
             case SettingsType::INT32:
-                prefs.putInt(d.key, d.value.i);
+                nvs_set_i32(handle, d.key, d.value.i);
                 break;
             case SettingsType::FLOAT:
-                prefs.putFloat(d.key, d.value.f);
+                nvs_set_blob(handle, d.key, &d.value.f, sizeof(float));
                 break;
             case SettingsType::STRING: {
                 // Replace %XXXX placeholder with MAC suffix
@@ -251,16 +288,17 @@ void TritiumSettings::applyDefaults(const char* domain) {
                     int prefix_len = (int)(placeholder - val);
                     snprintf(resolved, sizeof(resolved), "%.*s%s%s",
                              prefix_len, val, macSuffix, placeholder + 5);
-                    prefs.putString(d.key, resolved);
+                    nvs_set_str(handle, d.key, resolved);
                 } else {
-                    prefs.putString(d.key, val);
+                    nvs_set_str(handle, d.key, val);
                 }
                 break;
             }
             default:
                 break;
         }
-        prefs.end();
+        nvs_commit(handle);
+        nvs_close(handle);
 #else
         // Simulator: use "ns:key" as map key
         std::string mapKey = std::string(ns) + ":" + d.key;
@@ -308,10 +346,13 @@ bool TritiumSettings::getBool(const char* domain, const char* key, bool default_
     makeNamespace(domain, ns, sizeof(ns));
 
 #ifndef SIMULATOR
-    Preferences prefs;
-    if (prefs.begin(ns, true)) {
-        result = prefs.getBool(key, default_val);
-        prefs.end();
+    nvs_handle_t handle;
+    if (nvs_open(ns, NVS_READONLY, &handle) == ESP_OK) {
+        uint8_t val;
+        if (nvs_get_u8(handle, key, &val) == ESP_OK) {
+            result = (val != 0);
+        }
+        nvs_close(handle);
     }
 #else
     std::string mapKey = std::string(ns) + ":" + key;
@@ -332,10 +373,13 @@ int32_t TritiumSettings::getInt(const char* domain, const char* key, int32_t def
     makeNamespace(domain, ns, sizeof(ns));
 
 #ifndef SIMULATOR
-    Preferences prefs;
-    if (prefs.begin(ns, true)) {
-        result = prefs.getInt(key, default_val);
-        prefs.end();
+    nvs_handle_t handle;
+    if (nvs_open(ns, NVS_READONLY, &handle) == ESP_OK) {
+        int32_t val;
+        if (nvs_get_i32(handle, key, &val) == ESP_OK) {
+            result = val;
+        }
+        nvs_close(handle);
     }
 #else
     std::string mapKey = std::string(ns) + ":" + key;
@@ -356,10 +400,14 @@ float TritiumSettings::getFloat(const char* domain, const char* key, float defau
     makeNamespace(domain, ns, sizeof(ns));
 
 #ifndef SIMULATOR
-    Preferences prefs;
-    if (prefs.begin(ns, true)) {
-        result = prefs.getFloat(key, default_val);
-        prefs.end();
+    nvs_handle_t handle;
+    if (nvs_open(ns, NVS_READONLY, &handle) == ESP_OK) {
+        float val;
+        size_t len = sizeof(float);
+        if (nvs_get_blob(handle, key, &val, &len) == ESP_OK && len == sizeof(float)) {
+            result = val;
+        }
+        nvs_close(handle);
     }
 #else
     std::string mapKey = std::string(ns) + ":" + key;
@@ -380,13 +428,16 @@ const char* TritiumSettings::getString(const char* domain, const char* key,
     makeNamespace(domain, ns, sizeof(ns));
 
 #ifndef SIMULATOR
-    Preferences prefs;
-    if (prefs.begin(ns, true)) {
-        String val = prefs.getString(key, default_val);
-        strncpy(_strBuf, val.c_str(), sizeof(_strBuf) - 1);
-        _strBuf[sizeof(_strBuf) - 1] = '\0';
-        prefs.end();
-    } else {
+    nvs_handle_t handle;
+    bool got_value = false;
+    if (nvs_open(ns, NVS_READONLY, &handle) == ESP_OK) {
+        size_t len = sizeof(_strBuf);
+        if (nvs_get_str(handle, key, _strBuf, &len) == ESP_OK) {
+            got_value = true;
+        }
+        nvs_close(handle);
+    }
+    if (!got_value) {
         strncpy(_strBuf, default_val, sizeof(_strBuf) - 1);
         _strBuf[sizeof(_strBuf) - 1] = '\0';
     }
@@ -416,10 +467,12 @@ bool TritiumSettings::setBool(const char* domain, const char* key, bool value) {
     makeNamespace(domain, ns, sizeof(ns));
 
 #ifndef SIMULATOR
-    Preferences prefs;
-    if (prefs.begin(ns, false)) {
-        ok = (prefs.putBool(key, value) > 0);
-        prefs.end();
+    nvs_handle_t handle;
+    if (nvs_open(ns, NVS_READWRITE, &handle) == ESP_OK) {
+        if (nvs_set_u8(handle, key, value ? 1 : 0) == ESP_OK) {
+            ok = (nvs_commit(handle) == ESP_OK);
+        }
+        nvs_close(handle);
     }
 #else
     std::string mapKey = std::string(ns) + ":" + key;
@@ -439,10 +492,12 @@ bool TritiumSettings::setInt(const char* domain, const char* key, int32_t value)
     makeNamespace(domain, ns, sizeof(ns));
 
 #ifndef SIMULATOR
-    Preferences prefs;
-    if (prefs.begin(ns, false)) {
-        ok = (prefs.putInt(key, value) > 0);
-        prefs.end();
+    nvs_handle_t handle;
+    if (nvs_open(ns, NVS_READWRITE, &handle) == ESP_OK) {
+        if (nvs_set_i32(handle, key, value) == ESP_OK) {
+            ok = (nvs_commit(handle) == ESP_OK);
+        }
+        nvs_close(handle);
     }
 #else
     std::string mapKey = std::string(ns) + ":" + key;
@@ -462,10 +517,12 @@ bool TritiumSettings::setFloat(const char* domain, const char* key, float value)
     makeNamespace(domain, ns, sizeof(ns));
 
 #ifndef SIMULATOR
-    Preferences prefs;
-    if (prefs.begin(ns, false)) {
-        ok = (prefs.putFloat(key, value) > 0);
-        prefs.end();
+    nvs_handle_t handle;
+    if (nvs_open(ns, NVS_READWRITE, &handle) == ESP_OK) {
+        if (nvs_set_blob(handle, key, &value, sizeof(float)) == ESP_OK) {
+            ok = (nvs_commit(handle) == ESP_OK);
+        }
+        nvs_close(handle);
     }
 #else
     std::string mapKey = std::string(ns) + ":" + key;
@@ -487,10 +544,12 @@ bool TritiumSettings::setString(const char* domain, const char* key, const char*
     makeNamespace(domain, ns, sizeof(ns));
 
 #ifndef SIMULATOR
-    Preferences prefs;
-    if (prefs.begin(ns, false)) {
-        ok = (prefs.putString(key, value) > 0);
-        prefs.end();
+    nvs_handle_t handle;
+    if (nvs_open(ns, NVS_READWRITE, &handle) == ESP_OK) {
+        if (nvs_set_str(handle, key, value) == ESP_OK) {
+            ok = (nvs_commit(handle) == ESP_OK);
+        }
+        nvs_close(handle);
     }
 #else
     std::string mapKey = std::string(ns) + ":" + key;
@@ -623,30 +682,47 @@ int TritiumSettings::toJson(char* buf, size_t size, const char* domain) {
             makeNamespace(domains[d], ns, sizeof(ns));
 
 #ifndef SIMULATOR
-            Preferences prefs;
-            prefs.begin(ns, true);
-            switch (def.type) {
-                case SettingsType::BOOL:
-                    JAPPEND("\"%s\":%s", def.key,
-                            prefs.getBool(def.key, def.value.b) ? "true" : "false");
-                    break;
-                case SettingsType::INT32:
-                    JAPPEND("\"%s\":%d", def.key,
-                            prefs.getInt(def.key, def.value.i));
-                    break;
-                case SettingsType::FLOAT:
-                    JAPPEND("\"%s\":%.2f", def.key,
-                            prefs.getFloat(def.key, def.value.f));
-                    break;
-                case SettingsType::STRING: {
-                    String val = prefs.getString(def.key, def.value.s ? def.value.s : "");
-                    JAPPEND("\"%s\":\"%s\"", def.key, val.c_str());
-                    break;
+            nvs_handle_t handle;
+            if (nvs_open(ns, NVS_READONLY, &handle) == ESP_OK) {
+                switch (def.type) {
+                    case SettingsType::BOOL: {
+                        uint8_t val;
+                        bool bval = def.value.b;
+                        if (nvs_get_u8(handle, def.key, &val) == ESP_OK) {
+                            bval = (val != 0);
+                        }
+                        JAPPEND("\"%s\":%s", def.key, bval ? "true" : "false");
+                        break;
+                    }
+                    case SettingsType::INT32: {
+                        int32_t val = def.value.i;
+                        nvs_get_i32(handle, def.key, &val);
+                        JAPPEND("\"%s\":%d", def.key, (int)val);
+                        break;
+                    }
+                    case SettingsType::FLOAT: {
+                        float val = def.value.f;
+                        size_t len = sizeof(float);
+                        nvs_get_blob(handle, def.key, &val, &len);
+                        JAPPEND("\"%s\":%.2f", def.key, val);
+                        break;
+                    }
+                    case SettingsType::STRING: {
+                        char strval[SETTINGS_MAX_STRING_LEN];
+                        size_t len = sizeof(strval);
+                        const char* fallback = def.value.s ? def.value.s : "";
+                        if (nvs_get_str(handle, def.key, strval, &len) == ESP_OK) {
+                            JAPPEND("\"%s\":\"%s\"", def.key, strval);
+                        } else {
+                            JAPPEND("\"%s\":\"%s\"", def.key, fallback);
+                        }
+                        break;
+                    }
+                    default:
+                        break;
                 }
-                default:
-                    break;
+                nvs_close(handle);
             }
-            prefs.end();
 #else
             std::string mapKey = std::string(ns) + ":" + def.key;
             auto it = sim_store.find(mapKey);
@@ -837,11 +913,14 @@ bool TritiumSettings::factoryReset(const char* domain) {
 
 bool TritiumSettings::clearNamespace(const char* ns) {
 #ifndef SIMULATOR
-    Preferences prefs;
-    if (!prefs.begin(ns, false)) return false;
-    bool ok = prefs.clear();
-    prefs.end();
-    return ok;
+    nvs_handle_t handle;
+    if (nvs_open(ns, NVS_READWRITE, &handle) != ESP_OK) return false;
+    esp_err_t err = nvs_erase_all(handle);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return (err == ESP_OK);
 #else
     std::string prefix = std::string(ns) + ":";
     auto it = sim_store.begin();

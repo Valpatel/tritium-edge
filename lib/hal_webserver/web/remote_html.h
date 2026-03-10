@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include <pgmspace.h>
+// pgmspace.h not needed — PROGMEM is no-op on ESP32
 
 // The remote control page is served as a single self-contained HTML file with
 // inline CSS and JavaScript.  No external dependencies (fonts load from CDN

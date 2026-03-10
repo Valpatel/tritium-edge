@@ -32,11 +32,12 @@
 #include "shell_theme.h"
 #include "shell_apps.h"
 #include "tritium_splash.h"  // TRITIUM_VERSION
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
 #ifndef SIMULATOR
-#include <Arduino.h>
+#include "tritium_compat.h"
 #else
 #include <SDL2/SDL.h>
 static uint32_t millis() { return SDL_GetTicks(); }
@@ -116,7 +117,7 @@ static const lv_font_t* font_for_size(SizeClass sc) {
     switch (sc) {
         case SIZE_SMALL:  return &lv_font_montserrat_10;
         case SIZE_MEDIUM: return &lv_font_montserrat_12;
-        case SIZE_LARGE:  return &lv_font_montserrat_14;
+        case SIZE_LARGE:  return &lv_font_montserrat_20;
     }
     return &lv_font_montserrat_12;
 }
@@ -130,6 +131,39 @@ static lv_color_t color_for_level(NotifyLevel level) {
     }
     return T_CYAN;
 }
+
+// --- Public UI scaling helpers (used by shell_apps) -----------------------
+
+const lv_font_t* uiFont() { return font_for_size(s_size_class); }
+
+const lv_font_t* uiHeadingFont() {
+    switch (s_size_class) {
+        case SIZE_SMALL:  return &lv_font_montserrat_14;
+        case SIZE_MEDIUM: return &lv_font_montserrat_20;
+        case SIZE_LARGE:  return &lv_font_montserrat_28;
+    }
+    return &lv_font_montserrat_20;
+}
+
+const lv_font_t* uiSmallFont() {
+    switch (s_size_class) {
+        case SIZE_SMALL:  return &lv_font_montserrat_10;
+        case SIZE_MEDIUM: return &lv_font_montserrat_10;
+        case SIZE_LARGE:  return &lv_font_montserrat_14;
+    }
+    return &lv_font_montserrat_10;
+}
+
+const lv_font_t* uiIconFont() {
+    switch (s_size_class) {
+        case SIZE_SMALL:  return &lv_font_montserrat_16;
+        case SIZE_MEDIUM: return &lv_font_montserrat_20;
+        case SIZE_LARGE:  return &lv_font_montserrat_36;
+    }
+    return &lv_font_montserrat_20;
+}
+
+const ShellConfig& uiConfig() { return s_cfg; }
 
 // Forward declarations
 static void create_alive_dot(lv_obj_t* parent);
@@ -152,8 +186,10 @@ static void create_status_bar(lv_obj_t* screen) {
     lv_obj_set_style_border_color(s_status_bar, T_CYAN, 0);
     lv_obj_set_style_border_opa(s_status_bar, LV_OPA_20, 0);
     lv_obj_set_style_radius(s_status_bar, 0, 0);
-    lv_obj_set_style_pad_hor(s_status_bar, 4, 0);
-    lv_obj_set_style_pad_ver(s_status_bar, 1, 0);
+    int sb_pad_h = (s_size_class == SIZE_LARGE) ? 8 : 4;
+    int sb_pad_v = (s_size_class == SIZE_LARGE) ? 4 : 1;
+    lv_obj_set_style_pad_hor(s_status_bar, sb_pad_h, 0);
+    lv_obj_set_style_pad_ver(s_status_bar, sb_pad_v, 0);
 
     // Flex layout: app name left, status icons right
     lv_obj_set_flex_flow(s_status_bar, LV_FLEX_FLOW_ROW);
@@ -298,7 +334,10 @@ static lv_obj_t* create_nav_button(lv_obj_t* parent, const char* symbol,
     lv_obj_t* lbl = lv_label_create(btn);
     lv_label_set_text(lbl, symbol);
     lv_obj_set_style_text_color(lbl, T_CYAN, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+    const lv_font_t* nav_font = (s_size_class == SIZE_LARGE)
+                                     ? &lv_font_montserrat_28
+                                     : &lv_font_montserrat_16;
+    lv_obj_set_style_text_font(lbl, nav_font, 0);
     lv_obj_center(lbl);
 
     if (cb) {
@@ -323,8 +362,9 @@ static void create_nav_bar(lv_obj_t* screen) {
     lv_obj_set_style_border_color(s_nav_bar, T_CYAN, 0);
     lv_obj_set_style_border_opa(s_nav_bar, LV_OPA_60, 0);
     lv_obj_set_style_radius(s_nav_bar, 0, 0);
-    lv_obj_set_style_pad_all(s_nav_bar, 4, 0);
-    lv_obj_set_style_pad_gap(s_nav_bar, 4, 0);
+    int nav_pad = (s_size_class == SIZE_LARGE) ? 8 : 4;
+    lv_obj_set_style_pad_all(s_nav_bar, nav_pad, 0);
+    lv_obj_set_style_pad_gap(s_nav_bar, nav_pad, 0);
 
     // Horizontal flex for buttons
     lv_obj_set_flex_flow(s_nav_bar, LV_FLEX_FLOW_ROW);
@@ -498,7 +538,7 @@ static void create_notification_shade(lv_obj_t* screen) {
     lv_obj_t* header = lv_label_create(s_notif_shade);
     lv_label_set_text(header, "NOTIFICATIONS");
     lv_obj_set_style_text_color(header, T_BRIGHT, 0);
-    lv_obj_set_style_text_font(header, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(header, uiHeadingFont(), 0);
     lv_obj_set_width(header, lv_pct(100));
     lv_obj_set_style_text_align(header, LV_TEXT_ALIGN_CENTER, 0);
 
@@ -524,24 +564,46 @@ static void launcher_app_click_cb(lv_event_t* e) {
 static void build_launcher_grid(lv_obj_t* viewport) {
     lv_obj_clean(viewport);
 
-    lv_obj_set_flex_flow(viewport, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(viewport, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(viewport, 8, 0);
-    lv_obj_set_style_pad_gap(viewport, 8, 0);
+    // Launcher doesn't need scrolling — disable to prevent content overflow
+    lv_obj_remove_flag(viewport, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Calculate cell size based on screen width
-    int cell_w, cell_h;
+    lv_obj_set_flex_flow(viewport, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(viewport, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    int pad = (s_size_class == SIZE_LARGE) ? 16 : 8;
+    int gap = (s_size_class == SIZE_LARGE) ? 16 : 8;
+    lv_obj_set_style_pad_all(viewport, pad, 0);
+    lv_obj_set_style_pad_gap(viewport, gap, 0);
+
+    // Calculate cell size dynamically from available viewport space.
+    // Goal: fill the viewport with a grid that uses most of the space.
+    int vp_w = s_cfg.screen_width - 2 * pad;
+    int vp_h = s_cfg.screen_height - s_cfg.status_bar_height - 2 * pad;
+
+    // Determine grid layout: pick columns based on app count and width
+    int n_apps = s_app_count > 0 ? s_app_count : 1;
+    int cols, rows;
     if (s_size_class == SIZE_SMALL) {
-        cell_w = 60;
-        cell_h = 64;
-    } else if (s_size_class == SIZE_MEDIUM) {
-        cell_w = 80;
-        cell_h = 80;
+        cols = (vp_w + gap) / (60 + gap);
+        if (cols < 2) cols = 2;
     } else {
-        cell_w = 100;
-        cell_h = 96;
+        // Target: fill width with evenly sized cells
+        // For 800px wide screen with 5 apps: 5 cols x 1 row
+        // For 800px wide with 10 apps: 5 cols x 2 rows
+        cols = (n_apps <= 6) ? n_apps : (int)sqrtf((float)n_apps * vp_w / vp_h) + 1;
+        if (cols > n_apps) cols = n_apps;
+        if (cols < 2) cols = 2;
+        if (cols > 6) cols = 6;
     }
+    rows = (n_apps + cols - 1) / cols;
+    if (rows < 1) rows = 1;
+
+    int cell_w = (vp_w - (cols - 1) * gap) / cols;
+    int cell_h = (vp_h - (rows - 1) * gap) / rows;
+
+    // Cap width to keep cells from being absurdly wide (preserves card-like aspect)
+    int max_w = vp_h * 2 / 3;  // width shouldn't exceed ~67% of viewport height
+    if (cell_w > max_w) cell_w = max_w;
 
     const lv_font_t* name_font = font_for_size(s_size_class);
 
@@ -552,37 +614,39 @@ static void build_launcher_grid(lv_obj_t* viewport) {
             if ((pass == 0 && !is_sys) || (pass == 1 && is_sys)) continue;
 
             lv_obj_t* cell = lv_obj_create(viewport);
+            lv_obj_remove_style_all(cell);
             lv_obj_set_size(cell, cell_w, cell_h);
             lv_obj_set_style_bg_color(cell, T_SURFACE2, 0);
             lv_obj_set_style_bg_opa(cell, LV_OPA_COVER, 0);
             lv_obj_set_style_border_color(cell, T_CYAN, 0);
-            lv_obj_set_style_border_opa(cell, LV_OPA_10, 0);
+            lv_obj_set_style_border_opa(cell, LV_OPA_30, 0);
             lv_obj_set_style_border_width(cell, 1, 0);
             lv_obj_set_style_radius(cell, 6, 0);
-            lv_obj_set_style_pad_all(cell, 4, 0);
-            lv_obj_set_style_pad_gap(cell, 2, 0);
+            lv_obj_set_style_pad_all(cell, 0, 0);
             lv_obj_remove_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_flex_flow(cell, LV_FLEX_FLOW_COLUMN);
-            lv_obj_set_flex_align(cell, LV_FLEX_ALIGN_CENTER,
-                                  LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
             // Pressed state
-            lv_obj_set_style_bg_color(cell, T_SURFACE3,
-                                       LV_STATE_PRESSED);
+            lv_obj_set_style_bg_color(cell, T_SURFACE3, LV_STATE_PRESSED);
             lv_obj_set_style_border_opa(cell, LV_OPA_40, LV_STATE_PRESSED);
 
-            // Icon
+            // Icon — position at vertical center of cell
             lv_obj_t* icon = lv_label_create(cell);
             lv_label_set_text(icon, s_apps[i].icon ? s_apps[i].icon : LV_SYMBOL_FILE);
             lv_obj_set_style_text_color(icon, T_CYAN, 0);
-            const lv_font_t* icon_font = (s_size_class == SIZE_SMALL)
-                                             ? &lv_font_montserrat_16
-                                             : &lv_font_montserrat_20;
+            const lv_font_t* icon_font;
+            if (s_size_class == SIZE_LARGE)
+                icon_font = &lv_font_montserrat_36;
+            else if (s_size_class == SIZE_SMALL)
+                icon_font = &lv_font_montserrat_16;
+            else
+                icon_font = &lv_font_montserrat_20;
             lv_obj_set_style_text_font(icon, icon_font, 0);
             lv_obj_set_style_text_align(icon, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_width(icon, cell_w);
+            lv_obj_align(icon, LV_ALIGN_CENTER, 0, -12);
 
-            // Name
+            // Name — below icon
             lv_obj_t* name = lv_label_create(cell);
             lv_label_set_text(name, s_apps[i].name);
             lv_obj_set_style_text_color(name, T_TEXT, 0);
@@ -590,6 +654,7 @@ static void build_launcher_grid(lv_obj_t* viewport) {
             lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_width(name, cell_w - 8);
             lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+            lv_obj_align_to(name, icon, LV_ALIGN_OUT_BOTTOM_MID, 0, 8);
 
             // Click handler
             lv_obj_add_event_cb(cell, launcher_app_click_cb, LV_EVENT_CLICKED,
@@ -606,20 +671,35 @@ bool init(esp_lcd_panel_handle_t panel, int width, int height) {
     s_panel = panel;
 
     // Determine size class from shortest dimension
-    int short_side = (width < height) ? width : height;
-    if (short_side < 250) {
-        s_size_class = SIZE_SMALL;
-    } else if (short_side > 500) {
-        s_size_class = SIZE_LARGE;
+    // Size class based on total pixel area, not just short side.
+    // 800x480 = 384000 is a large screen. 320x480 = 153600 is medium.
+    int area = width * height;
+    if (area >= 300000) {
+        s_size_class = SIZE_LARGE;    // 800x480, 450x600, etc.
+    } else if (area >= 100000) {
+        s_size_class = SIZE_MEDIUM;   // 320x480, 368x448, etc.
     } else {
-        s_size_class = SIZE_MEDIUM;
+        s_size_class = SIZE_SMALL;    // 172x640 (110080) — actually medium, 240x536 (128640)
+    }
+    // Override: narrow but tall screens (e.g. 172x640) are medium at most
+    int short_side = (width < height) ? width : height;
+    if (short_side < 250 && s_size_class > SIZE_SMALL) {
+        s_size_class = SIZE_SMALL;
     }
 
     // Calculate bar heights
     s_cfg.screen_width = width;
     s_cfg.screen_height = height;
-    s_cfg.status_bar_height = (height > 300) ? 24 : 16;
-    s_cfg.nav_bar_height = (height > 300) ? 48 : 32;
+    if (s_size_class == SIZE_LARGE) {
+        s_cfg.status_bar_height = 36;
+        s_cfg.nav_bar_height = 56;
+    } else if (s_size_class == SIZE_MEDIUM) {
+        s_cfg.status_bar_height = 24;
+        s_cfg.nav_bar_height = 48;
+    } else {
+        s_cfg.status_bar_height = 16;
+        s_cfg.nav_bar_height = 32;
+    }
 
     // Apply the Tritium cyberpunk theme
     tritium_theme::apply();
@@ -649,9 +729,8 @@ bool init(esp_lcd_panel_handle_t panel, int width, int height) {
     registerApp({"Settings", "System settings", LV_SYMBOL_SETTINGS, true,
                   shell_apps::settings_create});
 
-    // Show launcher by default
-    showLauncher();
-
+    // Don't show launcher yet — caller registers additional apps first,
+    // then calls showLauncher() to build the grid with all apps visible.
     return true;
 }
 
@@ -976,7 +1055,7 @@ void showNotificationShade() {
     lv_obj_t* header = lv_label_create(s_notif_shade);
     lv_label_set_text(header, "NOTIFICATIONS");
     lv_obj_set_style_text_color(header, T_BRIGHT, 0);
-    lv_obj_set_style_text_font(header, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(header, uiHeadingFont(), 0);
     lv_obj_set_width(header, lv_pct(100));
     lv_obj_set_style_text_align(header, LV_TEXT_ALIGN_CENTER, 0);
 

@@ -310,21 +310,30 @@ char* SeedHAL::_serializeManifest(const SeedManifest& m) const {
 // ============================================================================
 #ifndef SIMULATOR
 
-#include <Arduino.h>
-#include <SD_MMC.h>
+#include "tritium_compat.h"
+// SD card via VFS — use POSIX file ops on /sdcard/
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <esp_mac.h>
 #include <esp_ota_ops.h>
 #include <mbedtls/sha256.h>
 
 bool SeedHAL::hashFile(const char* path, char* out) const {
     if (!_initialized || !out) return false;
 
-    // Use SD_MMC directly for streaming hash (avoids loading entire file)
+    // Stream hash from SD via POSIX (avoids loading entire file)
     if (_sd && _sd->exists(path)) {
-        File f = SD_MMC.open(path, FILE_READ);
+        char sdpath[128];
+        snprintf(sdpath, sizeof(sdpath), "/sdcard%s", path);
+        FILE* f = fopen(sdpath, "rb");
         if (!f) {
             DBG_ERROR(TAG, "hashFile: cannot open %s", path);
             return false;
         }
+
+        fseek(f, 0, SEEK_END);
+        size_t fsize = ftell(f);
+        fseek(f, 0, SEEK_SET);
 
         mbedtls_sha256_context ctx;
         mbedtls_sha256_init(&ctx);
@@ -332,10 +341,8 @@ bool SeedHAL::hashFile(const char* path, char* out) const {
 
         uint8_t chunk[4096];
         size_t total = 0;
-        size_t fsize = f.size();
-        while (f.available()) {
-            size_t n = f.read(chunk, sizeof(chunk));
-            if (n == 0) break;
+        size_t n;
+        while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) {
             mbedtls_sha256_update(&ctx, chunk, n);
             total += n;
 
@@ -344,7 +351,7 @@ bool SeedHAL::hashFile(const char* path, char* out) const {
                 _reportProgress((uint8_t)(total * 100 / fsize));
             }
         }
-        f.close();
+        fclose(f);
 
         uint8_t hash[32];
         mbedtls_sha256_finish(&ctx, hash);
@@ -397,9 +404,11 @@ bool SeedHAL::serveFile(const char* path, SeedChunkCb cb,
                          size_t chunkSize) const {
     if (!_initialized || !cb) return false;
 
-    // Stream from SD card
+    // Stream from SD card via POSIX
     if (_sd && _sd->exists(path)) {
-        File f = SD_MMC.open(path, FILE_READ);
+        char sdpath[128];
+        snprintf(sdpath, sizeof(sdpath), "/sdcard%s", path);
+        FILE* f = fopen(sdpath, "rb");
         if (!f) {
             DBG_ERROR(TAG, "serveFile: cannot open %s", path);
             return false;
@@ -407,17 +416,19 @@ bool SeedHAL::serveFile(const char* path, SeedChunkCb cb,
 
         uint8_t* chunk = (uint8_t*)malloc(chunkSize);
         if (!chunk) {
-            f.close();
+            fclose(f);
             return false;
         }
 
-        size_t total = 0;
-        size_t fsize = f.size();
-        bool ok = true;
+        fseek(f, 0, SEEK_END);
+        size_t fsize = ftell(f);
+        fseek(f, 0, SEEK_SET);
 
-        while (f.available() && ok) {
-            size_t n = f.read(chunk, chunkSize);
-            if (n == 0) break;
+        size_t total = 0;
+        bool ok = true;
+        size_t n;
+
+        while ((n = fread(chunk, 1, chunkSize, f)) > 0 && ok) {
             ok = cb(chunk, n);
             total += n;
             if (fsize > 0) {
@@ -426,7 +437,7 @@ bool SeedHAL::serveFile(const char* path, SeedChunkCb cb,
         }
 
         free(chunk);
-        f.close();
+        fclose(f);
         DBG_INFO(TAG, "Served %s: %u bytes, %s", path, (unsigned)total,
                  ok ? "complete" : "aborted");
         return ok;
@@ -476,7 +487,9 @@ bool SeedHAL::importFirmware() {
              running->label, (unsigned)running->size);
 
     // Open output file on SD
-    File out = SD_MMC.open(SEED_FW_PATH, FILE_WRITE);
+    char sdpath[128];
+    snprintf(sdpath, sizeof(sdpath), "/sdcard%s", SEED_FW_PATH);
+    FILE* out = fopen(sdpath, "wb");
     if (!out) {
         DBG_ERROR(TAG, "Cannot create %s on SD card", SEED_FW_PATH);
         return false;
@@ -486,7 +499,7 @@ bool SeedHAL::importFirmware() {
     static constexpr size_t CHUNK_SIZE = 4096;
     uint8_t* chunk = (uint8_t*)malloc(CHUNK_SIZE);
     if (!chunk) {
-        out.close();
+        fclose(out);
         return false;
     }
 
@@ -515,7 +528,7 @@ bool SeedHAL::importFirmware() {
             break;
         }
 
-        size_t w = out.write(chunk, n);
+        size_t w = fwrite(chunk, 1, n, out);
         if (w != n) {
             DBG_ERROR(TAG, "SD write error at offset %u", (unsigned)offset);
             ok = false;
@@ -526,7 +539,7 @@ bool SeedHAL::importFirmware() {
     }
 
     free(chunk);
-    out.close();
+    fclose(out);
 
     _reportProgress(100);
     DBG_INFO(TAG, "Firmware exported: %u bytes to %s", (unsigned)written,
@@ -620,10 +633,13 @@ bool SeedHAL::createSeedPackage() {
             strncpy(m.files[idx].path, SEED_FW_PATH, sizeof(m.files[idx].path) - 1);
 
             // Get file size
-            File f = SD_MMC.open(SEED_FW_PATH, FILE_READ);
-            if (f) {
-                m.files[idx].size = f.size();
-                f.close();
+            {
+                char fwpath[128];
+                snprintf(fwpath, sizeof(fwpath), "/sdcard%s", SEED_FW_PATH);
+                struct stat fwst;
+                if (stat(fwpath, &fwst) == 0) {
+                    m.files[idx].size = fwst.st_size;
+                }
             }
 
             // Compute checksum

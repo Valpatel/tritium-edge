@@ -8,7 +8,7 @@
 
 #if defined(ENABLE_SETTINGS) || defined(ENABLE_DIAG)
 
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <esp_heap_caps.h>
 #include <cstring>
 #include <cstdio>
@@ -341,22 +341,38 @@ static void clear_region(int y0, int y1) {
 // ============================================================================
 
 static void push_full() {
-    if (!_panel || !_fb || !_dma) return;
-    for (int y = 0; y < _h; y += CHUNK) {
-        int rows = (y + CHUNK > _h) ? _h - y : CHUNK;
-        memcpy(_dma, &_fb[y * _w], rows * _w * 2);
-        esp_lcd_panel_draw_bitmap(_panel, 0, y, _w, y + rows, _dma);
+    if (!_panel || !_fb) return;
+    if (_dma) {
+        // QSPI/SPI panels: bounce through DMA buffer in internal SRAM
+        for (int y = 0; y < _h; y += CHUNK) {
+            int rows = (y + CHUNK > _h) ? _h - y : CHUNK;
+            memcpy(_dma, &_fb[y * _w], rows * _w * 2);
+            esp_lcd_panel_draw_bitmap(_panel, 0, y, _w, y + rows, _dma);
+        }
+    } else {
+        // RGB panels: draw_bitmap does a memcpy, can read from PSRAM directly
+        for (int y = 0; y < _h; y += CHUNK) {
+            int rows = (y + CHUNK > _h) ? _h - y : CHUNK;
+            esp_lcd_panel_draw_bitmap(_panel, 0, y, _w, y + rows, &_fb[y * _w]);
+        }
     }
 }
 
 static void push_region(int y0, int y1) {
-    if (!_panel || !_fb || !_dma) return;
+    if (!_panel || !_fb) return;
     if (y0 < 0) y0 = 0;
     if (y1 > _h) y1 = _h;
-    for (int y = y0; y < y1; y += CHUNK) {
-        int rows = (y + CHUNK > y1) ? y1 - y : CHUNK;
-        memcpy(_dma, &_fb[y * _w], rows * _w * 2);
-        esp_lcd_panel_draw_bitmap(_panel, 0, y, _w, y + rows, _dma);
+    if (_dma) {
+        for (int y = y0; y < y1; y += CHUNK) {
+            int rows = (y + CHUNK > y1) ? y1 - y : CHUNK;
+            memcpy(_dma, &_fb[y * _w], rows * _w * 2);
+            esp_lcd_panel_draw_bitmap(_panel, 0, y, _w, y + rows, _dma);
+        }
+    } else {
+        for (int y = y0; y < y1; y += CHUNK) {
+            int rows = (y + CHUNK > y1) ? y1 - y : CHUNK;
+            esp_lcd_panel_draw_bitmap(_panel, 0, y, _w, y + rows, &_fb[y * _w]);
+        }
     }
 }
 
@@ -602,12 +618,14 @@ void init(esp_lcd_panel_handle_t panel, int width, int height) {
     if (!_fb) { Serial.printf("[boot] PSRAM alloc failed\n"); return; }
     memset(_fb, 0, fb_size);
 
+    // DMA bounce buffer — needed for QSPI/SPI panels where draw_bitmap
+    // requires DMA-capable source memory. RGB panels don't need this since
+    // their draw_bitmap just does a memcpy from any source.
     size_t dma_size = _w * CHUNK * sizeof(uint16_t);
     _dma = (uint16_t*)heap_caps_malloc(dma_size, MALLOC_CAP_DMA);
     if (!_dma) {
-        heap_caps_free(_fb); _fb = nullptr;
-        Serial.printf("[boot] DMA alloc failed\n");
-        return;
+        Serial.printf("[boot] DMA bounce buffer unavailable — using direct PSRAM path\n");
+        // This is fine for RGB panels; fatal for QSPI panels
     }
 
     _rng = millis() ^ 0xDEADBEEF;

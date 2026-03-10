@@ -4,7 +4,7 @@
 #ifdef SIMULATOR
 #include "sim_hal.h"
 #else
-#include <Arduino.h>
+#include "tritium_compat.h"
 #endif
 #include "debug_log.h"
 

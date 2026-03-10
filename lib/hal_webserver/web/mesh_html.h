@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include <pgmspace.h>
+// pgmspace.h not needed — PROGMEM is no-op on ESP32
 
 static const char MESH_HTML_V2[] PROGMEM =
 #include "mesh.html.inc"

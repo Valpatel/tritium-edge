@@ -1,5 +1,5 @@
 #include "template_app.h"
-#include <Arduino.h>
+#include "tritium_compat.h"
 
 void TemplateApp::setup(LGFX& display) {
     Serial.printf("App: %s\n", name());

@@ -122,7 +122,7 @@ private:
     uint32_t _reconnectInterval = 5000; // ms
 
     // Internal
-    void* _client = nullptr;  // PubSubClient* (forward declared to avoid header dep)
+    void* _client = nullptr;  // esp_mqtt_client_handle_t (opaque to avoid header dep)
     void resubscribeAll();
 
 public:

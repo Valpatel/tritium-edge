@@ -17,13 +17,21 @@ bool CameraHAL::setSaturation(int) { return false; }
 
 #else // ESP32
 
-#include <Arduino.h>
+#include "tritium_compat.h"
+
+#if __has_include("esp_camera.h")
 #include <esp_camera.h>
+#else
+// esp32-camera component not available — disable camera support
+#undef HAS_CAMERA
+#define HAS_CAMERA 0
+#endif
 
 #ifndef HAS_CAMERA
 #define HAS_CAMERA 0
 #endif
 
+#if HAS_CAMERA
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -62,6 +70,8 @@ static void resolutionDimensions(CamResolution res, uint16_t &w, uint16_t &h) {
         default:                            w = 320;  h = 240;  break;
     }
 }
+
+#endif // HAS_CAMERA — internal helpers
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -143,7 +153,7 @@ CameraFrame* CameraHAL::capture() {
 
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
-        Serial.println("[CAM] capture failed");
+        Serial.printf("[CAM] capture failed\n");
         return nullptr;
     }
 

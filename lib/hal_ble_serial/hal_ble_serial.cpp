@@ -51,7 +51,7 @@ void deinit() { _status = {}; }
 // ============================================================================
 #else
 
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <NimBLEDevice.h>
 
 namespace hal_ble_serial {

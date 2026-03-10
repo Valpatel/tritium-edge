@@ -18,8 +18,9 @@ int get_summary_json(char* buf, size_t size) { return snprintf(buf, size, "{}");
 
 #else
 
-#include <Arduino.h>
-#include <WiFi.h>
+#include "tritium_compat.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
 #include <esp_wifi.h>
 #include <cstring>
 #include <cstdio>
@@ -87,47 +88,39 @@ static void prune_stale() {
     _network_count = write;
 }
 
-static void process_scan_results() {
-    int n = WiFi.scanComplete();
-    if (n < 0) return;  // scan not done or error
-
+static void process_scan_results(wifi_ap_record_t* ap_records, uint16_t ap_count) {
     uint32_t now = millis();
 
     if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        for (int i = 0; i < n; i++) {
-            uint8_t* bssid = WiFi.BSSID(i);
-            if (!bssid) continue;
+        for (uint16_t i = 0; i < ap_count; i++) {
+            wifi_ap_record_t& ap = ap_records[i];
 
-            int idx = find_by_bssid(bssid);
+            int idx = find_by_bssid(ap.bssid);
             if (idx >= 0) {
                 // Update existing entry
-                _networks[idx].rssi = WiFi.RSSI(i);
-                _networks[idx].channel = WiFi.channel(i);
+                _networks[idx].rssi = ap.rssi;
+                _networks[idx].channel = ap.primary;
                 _networks[idx].last_seen = now;
                 _networks[idx].seen_count++;
                 // Update SSID in case it changed (hidden -> visible)
-                const char* ssid = WiFi.SSID(i).c_str();
-                if (ssid && ssid[0]) {
-                    strncpy(_networks[idx].ssid, ssid, sizeof(_networks[idx].ssid) - 1);
+                if (ap.ssid[0]) {
+                    strncpy(_networks[idx].ssid, (const char*)ap.ssid, sizeof(_networks[idx].ssid) - 1);
                     _networks[idx].ssid[sizeof(_networks[idx].ssid) - 1] = '\0';
                 }
             } else if (_network_count < WIFI_SCANNER_MAX_NETWORKS) {
                 // New network
                 WifiNetwork& net = _networks[_network_count];
                 memset(&net, 0, sizeof(net));
-                memcpy(net.bssid, bssid, 6);
-                net.rssi = WiFi.RSSI(i);
-                net.channel = WiFi.channel(i);
-                net.auth_type = mapAuth(WiFi.encryptionType(i));
+                memcpy(net.bssid, ap.bssid, 6);
+                net.rssi = ap.rssi;
+                net.channel = ap.primary;
+                net.auth_type = mapAuth(ap.authmode);
                 net.first_seen = now;
                 net.last_seen = now;
                 net.seen_count = 1;
 
-                const char* ssid = WiFi.SSID(i).c_str();
-                if (ssid) {
-                    strncpy(net.ssid, ssid, sizeof(net.ssid) - 1);
-                    net.ssid[sizeof(net.ssid) - 1] = '\0';
-                }
+                strncpy(net.ssid, (const char*)ap.ssid, sizeof(net.ssid) - 1);
+                net.ssid[sizeof(net.ssid) - 1] = '\0';
 
                 _network_count++;
             }
@@ -136,8 +129,6 @@ static void process_scan_results() {
         prune_stale();
         xSemaphoreGive(_mutex);
     }
-
-    WiFi.scanDelete();
 }
 
 // --- Background scan task ---
@@ -149,13 +140,28 @@ static void scan_task(void* param) {
         esp_wifi_get_mode(&mode);
         if (mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA) {
             Serial.printf("[wifi_scan] Scanning...\n");
-            int result = WiFi.scanNetworks(false, _config.show_hidden, _config.passive);
-            if (result >= 0) {
-                process_scan_results();
+            wifi_scan_config_t scan_cfg = {};
+            scan_cfg.show_hidden = _config.show_hidden;
+            scan_cfg.scan_type = _config.passive ? WIFI_SCAN_TYPE_PASSIVE : WIFI_SCAN_TYPE_ACTIVE;
+            esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);  // blocking scan
+            if (err == ESP_OK) {
+                uint16_t ap_count = 0;
+                esp_wifi_scan_get_ap_num(&ap_count);
+                if (ap_count > 0) {
+                    uint16_t max_records = (ap_count > WIFI_SCANNER_MAX_NETWORKS) ?
+                                           WIFI_SCANNER_MAX_NETWORKS : ap_count;
+                    wifi_ap_record_t* ap_records = (wifi_ap_record_t*)malloc(
+                        max_records * sizeof(wifi_ap_record_t));
+                    if (ap_records) {
+                        esp_wifi_scan_get_ap_records(&max_records, ap_records);
+                        process_scan_results(ap_records, max_records);
+                        free(ap_records);
+                    }
+                }
                 Serial.printf("[wifi_scan] %d networks found (%d tracked)\n",
-                    result, _network_count);
+                    (int)ap_count, _network_count);
             } else {
-                Serial.printf("[wifi_scan] Scan failed (%d)\n", result);
+                Serial.printf("[wifi_scan] Scan failed (0x%x)\n", err);
             }
         } else {
             Serial.printf("[wifi_scan] Skipping — not in STA mode\n");

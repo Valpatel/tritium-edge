@@ -16,8 +16,10 @@ static constexpr const char* TAG = "mesh_mgr";
 // ============================================================================
 #ifndef SIMULATOR
 
-#include <Arduino.h>
-#include <WiFi.h>
+#include "tritium_compat.h"
+#include "esp_random.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
 #include <esp_wifi.h>
 
 // espnow_hal_ptr() defined inline in espnow_service.h
@@ -309,7 +311,8 @@ bool MeshManager::isGateway() const {
 void MeshManager::electGateway() {
     // Simple election: if we have WiFi and peers don't, we're gateway.
     // Check if WiFi is connected
-    bool hasWifi = (WiFi.status() == WL_CONNECTED);
+    wifi_ap_record_t _ap_info;
+    bool hasWifi = (esp_wifi_sta_get_ap_info(&_ap_info) == ESP_OK);
 
     if (hasWifi) {
         // Check if any peer is already gateway with better RSSI

@@ -18,18 +18,43 @@ void MqttHAL::resubscribeAll() {}
 
 #else // ESP32
 
-#include <Arduino.h>
-#include <WiFi.h>
-#include <PubSubClient.h>
+#include "tritium_compat.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_mac.h"
+#include <mqtt_client.h>
 #include <cstring>
 
-// We store a global pointer so the PubSubClient callback can find us
+// We store a global pointer so the ESP-IDF MQTT event handler can find us
 static MqttHAL* _globalMqtt = nullptr;
-static WiFiClient _wifiClient;
 
-static void mqttCallbackBridge(char* topic, byte* payload, unsigned int length) {
-    if (_globalMqtt) {
-        _globalMqtt->handleMessage(topic, payload, length);
+// ESP-IDF MQTT event handler
+static void mqtt_event_handler(void* handler_args, esp_event_base_t base,
+                                int32_t event_id, void* event_data) {
+    esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+    MqttHAL* self = (MqttHAL*)handler_args;
+    if (!self) return;
+
+    switch ((esp_mqtt_event_id_t)event_id) {
+    case MQTT_EVENT_CONNECTED:
+        self->handleMessage(nullptr, nullptr, 0);  // Signal connected (handled below)
+        break;
+    case MQTT_EVENT_DISCONNECTED:
+        break;
+    case MQTT_EVENT_DATA:
+        if (event->topic && event->topic_len > 0) {
+            // Null-terminate the topic for our callback
+            char topic_buf[MQTT_MAX_TOPIC_LEN];
+            size_t tlen = (size_t)event->topic_len < sizeof(topic_buf) - 1
+                          ? (size_t)event->topic_len : sizeof(topic_buf) - 1;
+            memcpy(topic_buf, event->topic, tlen);
+            topic_buf[tlen] = '\0';
+            self->handleMessage(topic_buf, (const uint8_t*)event->data,
+                                (size_t)event->data_len);
+        }
+        break;
+    default:
+        break;
     }
 }
 
@@ -44,17 +69,12 @@ bool MqttHAL::init(const char* broker, uint16_t port, const char* clientId) {
     } else {
         // Generate from MAC
         uint8_t mac[6];
-        WiFi.macAddress(mac);
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
         snprintf(_clientId, sizeof(_clientId), "esp32-%02X%02X%02X",
                  mac[3], mac[4], mac[5]);
     }
 
-    PubSubClient* ps = new PubSubClient(_wifiClient);
-    ps->setServer(_broker, _port);
-    ps->setCallback(mqttCallbackBridge);
-    ps->setBufferSize(1024);
-    ps->setKeepAlive(_keepAlive);
-    _client = ps;
+    // Client is created in connect() since ESP-IDF MQTT config is set at init time
     _globalMqtt = this;
     _initialized = true;
 
@@ -65,9 +85,7 @@ bool MqttHAL::init(const char* broker, uint16_t port, const char* clientId) {
 void MqttHAL::setBroker(const char* host, uint16_t port) {
     strncpy(_broker, host, sizeof(_broker) - 1);
     _port = port;
-    if (_client) {
-        ((PubSubClient*)_client)->setServer(_broker, _port);
-    }
+    // If already connected, need to reconnect for new broker to take effect
 }
 
 void MqttHAL::setCredentials(const char* username, const char* password) {
@@ -85,57 +103,86 @@ void MqttHAL::setLastWill(const char* topic, const char* payload,
 }
 
 bool MqttHAL::connect() {
-    if (!_initialized || !_client) return false;
-
-    PubSubClient* ps = (PubSubClient*)_client;
+    if (!_initialized) return false;
 
     // Check WiFi first
-    if (WiFi.status() != WL_CONNECTED) {
+    { wifi_ap_record_t _ap;
+      if (esp_wifi_sta_get_ap_info(&_ap) != ESP_OK) {
         _state = MqttState::DISCONNECTED;
         return false;
+      }
     }
 
     _state = MqttState::CONNECTING;
     _lastConnectAttempt = millis();
 
-    bool ok = false;
+    // Destroy old client if any
+    if (_client) {
+        esp_mqtt_client_stop((esp_mqtt_client_handle_t)_client);
+        esp_mqtt_client_destroy((esp_mqtt_client_handle_t)_client);
+        _client = nullptr;
+    }
+
+    // Build broker URI
+    char uri[128];
+    snprintf(uri, sizeof(uri), "mqtt://%s:%u", _broker, _port);
+
+    esp_mqtt_client_config_t mqtt_cfg = {};
+    mqtt_cfg.broker.address.uri = uri;
+    mqtt_cfg.credentials.client_id = _clientId;
+    mqtt_cfg.session.keepalive = _keepAlive;
+    mqtt_cfg.buffer.size = 1024;
+
+    if (_username[0]) {
+        mqtt_cfg.credentials.username = _username;
+        mqtt_cfg.credentials.authentication.password = _password;
+    }
+
     if (_hasLastWill) {
-        if (_username[0]) {
-            ok = ps->connect(_clientId, _username, _password,
-                             _lwTopic, _lwQos, _lwRetain, _lwPayload);
-        } else {
-            ok = ps->connect(_clientId, nullptr, nullptr,
-                             _lwTopic, _lwQos, _lwRetain, _lwPayload);
-        }
-    } else {
-        if (_username[0]) {
-            ok = ps->connect(_clientId, _username, _password);
-        } else {
-            ok = ps->connect(_clientId);
-        }
+        mqtt_cfg.session.last_will.topic = _lwTopic;
+        mqtt_cfg.session.last_will.msg = _lwPayload;
+        mqtt_cfg.session.last_will.qos = _lwQos;
+        mqtt_cfg.session.last_will.retain = _lwRetain ? 1 : 0;
     }
 
-    if (ok) {
-        _state = MqttState::CONNECTED;
-        _reconnects++;
-        Serial.printf("[MQTT] Connected to %s:%d as %s\n", _broker, _port, _clientId);
-        resubscribeAll();
-        if (_connectCb) _connectCb(true);
-    } else {
+    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    if (!client) {
         _state = MqttState::ERROR;
-        Serial.printf("[MQTT] Connect failed, rc=%d\n", ps->state());
+        Serial.printf("[MQTT] Client init failed\n");
         if (_connectCb) _connectCb(false);
+        return false;
     }
 
-    return ok;
+    esp_mqtt_client_register_event(client, (esp_mqtt_event_id_t)ESP_EVENT_ANY_ID,
+                                    mqtt_event_handler, this);
+
+    esp_err_t err = esp_mqtt_client_start(client);
+    if (err != ESP_OK) {
+        _state = MqttState::ERROR;
+        Serial.printf("[MQTT] Client start failed: 0x%x\n", err);
+        esp_mqtt_client_destroy(client);
+        if (_connectCb) _connectCb(false);
+        return false;
+    }
+
+    _client = client;
+    _state = MqttState::CONNECTED;
+    _reconnects++;
+    Serial.printf("[MQTT] Connected to %s:%d as %s\n", _broker, _port, _clientId);
+    resubscribeAll();
+    if (_connectCb) _connectCb(true);
+
+    return true;
 }
 
 void MqttHAL::disconnect() {
     if (_client) {
-        ((PubSubClient*)_client)->disconnect();
+        esp_mqtt_client_stop((esp_mqtt_client_handle_t)_client);
+        esp_mqtt_client_destroy((esp_mqtt_client_handle_t)_client);
+        _client = nullptr;
     }
     _state = MqttState::DISCONNECTED;
-    Serial.println("[MQTT] Disconnected");
+    Serial.printf("[MQTT] Disconnected\n");
 }
 
 bool MqttHAL::publish(const char* topic, const char* payload,
@@ -147,10 +194,14 @@ bool MqttHAL::publish(const char* topic, const uint8_t* payload,
                        size_t length, bool retain, uint8_t qos) {
     if (!_initialized || !_client || _state != MqttState::CONNECTED) return false;
 
-    PubSubClient* ps = (PubSubClient*)_client;
-    bool ok = ps->publish(topic, payload, length, retain);
-    if (ok) _msgSent++;
-    return ok;
+    int msg_id = esp_mqtt_client_publish((esp_mqtt_client_handle_t)_client,
+                                          topic, (const char*)payload, (int)length,
+                                          qos, retain ? 1 : 0);
+    if (msg_id >= 0) {
+        _msgSent++;
+        return true;
+    }
+    return false;
 }
 
 bool MqttHAL::subscribe(const char* topic, MqttMessageCallback callback,
@@ -180,7 +231,7 @@ bool MqttHAL::subscribe(const char* topic, MqttMessageCallback callback,
 
     // Subscribe on broker if connected
     if (_state == MqttState::CONNECTED && _client) {
-        ((PubSubClient*)_client)->subscribe(topic, qos);
+        esp_mqtt_client_subscribe((esp_mqtt_client_handle_t)_client, topic, qos);
     }
 
     return true;
@@ -192,7 +243,7 @@ bool MqttHAL::unsubscribe(const char* topic) {
             _subs[i].active = false;
             _numSubs--;
             if (_state == MqttState::CONNECTED && _client) {
-                ((PubSubClient*)_client)->unsubscribe(topic);
+                esp_mqtt_client_unsubscribe((esp_mqtt_client_handle_t)_client, topic);
             }
             return true;
         }
@@ -203,28 +254,22 @@ bool MqttHAL::unsubscribe(const char* topic) {
 void MqttHAL::process() {
     if (!_initialized || !_client) return;
 
-    PubSubClient* ps = (PubSubClient*)_client;
-
-    // Check connection
-    if (!ps->connected()) {
-        if (_state == MqttState::CONNECTED) {
-            _state = MqttState::DISCONNECTED;
-            Serial.println("[MQTT] Connection lost");
-            if (_connectCb) _connectCb(false);
-        }
-
-        // Auto-reconnect
-        if (_autoReconnect && WiFi.status() == WL_CONNECTED) {
-            uint32_t now = millis();
-            if (now - _lastConnectAttempt >= _reconnectInterval) {
-                connect();
+    // ESP-IDF MQTT client runs in its own task — events are delivered via
+    // the event handler callback. No explicit loop() call needed.
+    // We just check for auto-reconnect here.
+    if (_state != MqttState::CONNECTED) {
+        if (_state == MqttState::DISCONNECTED) {
+            // Auto-reconnect
+            wifi_ap_record_t _ap;
+            if (_autoReconnect && esp_wifi_sta_get_ap_info(&_ap) == ESP_OK) {
+                uint32_t now = millis();
+                if (now - _lastConnectAttempt >= _reconnectInterval) {
+                    connect();
+                }
             }
         }
         return;
     }
-
-    // Process incoming messages
-    ps->loop();
 }
 
 // Simple MQTT topic pattern match (supports + and # wildcards)
@@ -247,6 +292,9 @@ static bool topicMatch(const char* pattern, const char* topic) {
 }
 
 void MqttHAL::handleMessage(const char* topic, const uint8_t* payload, size_t length) {
+    // Null topic = connection event signal (from event handler)
+    if (!topic) return;
+
     _msgRecv++;
 
     for (int i = 0; i < MQTT_MAX_SUBS; i++) {
@@ -261,10 +309,10 @@ void MqttHAL::handleMessage(const char* topic, const uint8_t* payload, size_t le
 void MqttHAL::resubscribeAll() {
     if (!_client || _state != MqttState::CONNECTED) return;
 
-    PubSubClient* ps = (PubSubClient*)_client;
     for (int i = 0; i < MQTT_MAX_SUBS; i++) {
         if (_subs[i].active) {
-            ps->subscribe(_subs[i].topic, _subs[i].qos);
+            esp_mqtt_client_subscribe((esp_mqtt_client_handle_t)_client,
+                                      _subs[i].topic, _subs[i].qos);
         }
     }
 }

@@ -9,7 +9,7 @@
 #include <cstring>
 
 #ifndef SIMULATOR
-#include <Arduino.h>
+#include "tritium_compat.h"
 #define LOG(fmt, ...) Serial.printf(fmt, ##__VA_ARGS__)
 #else
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)

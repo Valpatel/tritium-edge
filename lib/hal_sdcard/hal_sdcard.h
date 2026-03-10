@@ -12,6 +12,11 @@
 #include <cstdint>
 #include <cstddef>
 
+// Include the full sdmmc type definitions (needed for member access to csd, ocr, etc.)
+#ifndef SIMULATOR
+#include "sd_protocol_types.h"
+#endif
+
 class SDCardHAL {
 public:
     bool init();
@@ -57,6 +62,11 @@ public:
     // Run read/write performance test. Writes blockSize bytes for cycles iterations.
     TestResult runTest(int cycles = 10, size_t blockSize = 4096);
 
+    // Remove a directory and all its contents recursively
+    bool removeRecursive(const char* path);
+
 private:
     bool _mounted = false;
+    sdmmc_card_t* _card = nullptr;
+    bool _removeRecursive(const char* path);
 };

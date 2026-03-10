@@ -5,16 +5,12 @@
 // Usage:
 //   #include "hal_power.h"
 //   PowerHAL power;
-//   power.init(Wire);           // ESP32 via Arduino Wire
-//   power.initLgfx(0, 0x34);   // ESP32 via lgfx::i2c
+//   power.init();               // ESP32 (uses global i2c0)
+//   power.initLgfx(0, 0x34);   // Legacy API (now uses i2c0 internally)
 //   power.init();               // simulator
 
 #include <cstdint>
 #include <cstddef>
-
-#ifndef SIMULATOR
-class TwoWire;
-#endif
 
 enum class PowerSource : uint8_t {
     UNKNOWN,
@@ -38,7 +34,7 @@ public:
 #ifdef SIMULATOR
     bool init();
 #else
-    bool init(TwoWire &wire);
+    bool init();
     bool initLgfx(uint8_t i2c_port, uint8_t addr = 0x34);
 #endif
     PowerInfo getInfo();
@@ -63,9 +59,6 @@ private:
     LowBatteryCallback _low_cb = nullptr;
 
 #ifndef SIMULATOR
-    TwoWire *_wire = nullptr;
-    bool _use_lgfx = false;
-    uint8_t _lgfx_port = 0;
     uint8_t _addr = 0;
 
     bool initAXP2101();

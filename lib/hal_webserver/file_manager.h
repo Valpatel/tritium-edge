@@ -3,17 +3,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #pragma once
-#if __has_include("ESPAsyncWebServer.h")
-#include <ESPAsyncWebServer.h>
-#define HAS_ASYNC_WEBSERVER 1
-#else
-#define HAS_ASYNC_WEBSERVER 0
-struct AsyncWebServer;  // forward declare stub
-#endif
+#include "esp_http_server.h"
 
 namespace file_manager {
 
 // Register all file manager routes on the given server
-void registerRoutes(AsyncWebServer* server);
+void registerRoutes(httpd_handle_t server);
 
 }  // namespace file_manager

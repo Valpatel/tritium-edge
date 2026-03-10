@@ -3,7 +3,7 @@
 #ifdef SIMULATOR
 #include "sim_hal.h"
 #else
-#include <Arduino.h>
+#include "tritium_compat.h"
 #endif
 
 #include <math.h>
@@ -241,7 +241,7 @@ void SystemApp::loop(LGFX& display) {
         display.setTextSize(2);
         display.setTextDatum(middle_center);
         display.drawString("NO SPRITE", _w / 2, _h / 2);
-        Serial.println("[DBG] No canvas! Drawing direct fallback.");
+        Serial.printf("[DBG] No canvas! Drawing direct fallback.\n");
     }
 
     // FPS tracking

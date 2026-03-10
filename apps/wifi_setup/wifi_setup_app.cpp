@@ -8,7 +8,7 @@
 #include <SDL2/SDL.h>
 static uint32_t millis() { return SDL_GetTicks(); }
 #else
-#include <Arduino.h>
+#include "tritium_compat.h"
 #endif
 
 WifiSetupApp* WifiSetupApp::_instance = nullptr;

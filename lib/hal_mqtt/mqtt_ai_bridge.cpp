@@ -18,7 +18,7 @@ const char* MqttAIBridge::buildTopic(const char*, const char*) { return ""; }
 
 #else
 
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include "hal_mqtt.h"
 #include "hal_audio.h"
 #include <cstring>
@@ -99,7 +99,7 @@ bool MqttAIBridge::startVoiceQuery() {
              "{\"rate\":16000,\"bits\":16,\"channels\":1,\"format\":\"pcm\"}");
     _mqtt->publish(topic, meta);
 
-    Serial.println("[AI Bridge] Voice query started, streaming audio...");
+    Serial.printf("[AI Bridge] Voice query started, streaming audio...\n");
     return true;
 }
 
@@ -166,7 +166,7 @@ void MqttAIBridge::process() {
         case AIBridgeState::WAITING_RESPONSE: {
             // Timeout after 30 seconds
             if (now - _streamStartMs > 30000) {
-                Serial.println("[AI Bridge] Response timeout");
+                Serial.printf("[AI Bridge] Response timeout\n");
                 _state = AIBridgeState::ERROR;
             }
             break;

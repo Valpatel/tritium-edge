@@ -27,23 +27,21 @@ uint8_t IOExpander::readPin(uint8_t pin) {
 
 #else // ESP32
 
-#include <Arduino.h>
-#include <Wire.h>
+#include "tritium_compat.h"
+#include "tritium_i2c.h"
 
 #ifndef HAS_IO_EXPANDER
 #define HAS_IO_EXPANDER 0
 #endif
 
-bool IOExpander::init(TwoWire &wire) {
+bool IOExpander::init() {
 #if !HAS_IO_EXPANDER
     return false;
 #else
-    _wire = &wire;
 
 #if defined(IO_EXP_I2C_ADDR)
     _addr = IO_EXP_I2C_ADDR;
-    _wire->beginTransmission(_addr);
-    if (_wire->endTransmission() == 0) {
+    if (i2c0.probe(_addr)) {
         _type = TCA9554;
         _dir_state = 0xFF;
         _output_state = 0x00;
@@ -52,8 +50,7 @@ bool IOExpander::init(TwoWire &wire) {
         return true;
     }
 #else
-    _wire->beginTransmission(CH422G_SET_ADDR);
-    if (_wire->endTransmission() == 0) {
+    if (i2c0.probe(CH422G_SET_ADDR)) {
         _type = CH422G;
         ch422g_set_config(0x01);
         _output_state = 0x00;
@@ -91,35 +88,27 @@ uint8_t IOExpander::readPin(uint8_t pin) {
 }
 
 void IOExpander::ch422g_write_output(uint8_t val) {
-    _wire->beginTransmission(CH422G_WR_IO_ADDR);
-    _wire->write(val);
-    _wire->endTransmission();
+    i2c0.write(CH422G_WR_IO_ADDR, &val, 1);
 }
 
 uint8_t IOExpander::ch422g_read_input() {
-    _wire->requestFrom((uint8_t)CH422G_RD_IO_ADDR, (uint8_t)1);
-    return _wire->available() ? _wire->read() : 0;
+    uint8_t val = 0;
+    i2c0.read(CH422G_RD_IO_ADDR, &val, 1);
+    return val;
 }
 
 void IOExpander::ch422g_set_config(uint8_t cfg) {
-    _wire->beginTransmission(CH422G_SET_ADDR);
-    _wire->write(cfg);
-    _wire->endTransmission();
+    i2c0.write(CH422G_SET_ADDR, &cfg, 1);
 }
 
 void IOExpander::tca9554_write_reg(uint8_t reg, uint8_t val) {
-    _wire->beginTransmission(_addr);
-    _wire->write(reg);
-    _wire->write(val);
-    _wire->endTransmission();
+    i2c0.writeReg(_addr, reg, val);
 }
 
 uint8_t IOExpander::tca9554_read_reg(uint8_t reg) {
-    _wire->beginTransmission(_addr);
-    _wire->write(reg);
-    _wire->endTransmission(false);
-    _wire->requestFrom(_addr, (uint8_t)1);
-    return _wire->available() ? _wire->read() : 0;
+    uint8_t val = 0;
+    i2c0.readReg(_addr, reg, &val);
+    return val;
 }
 
 #endif // SIMULATOR

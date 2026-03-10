@@ -13,8 +13,9 @@ EspNowHAL* EspNowHAL::_instance = nullptr;
 // ============================================================================
 #ifndef SIMULATOR
 
-#include <Arduino.h>
-#include <WiFi.h>
+#include "tritium_compat.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
 #include <esp_now.h>
 #include <esp_wifi.h>
 
@@ -72,10 +73,10 @@ bool EspNowHAL::init(EspNowRole role, uint8_t channel) {
     wifi_mode_t mode;
     esp_wifi_get_mode(&mode);
     if (mode == WIFI_MODE_NULL) {
-        WiFi.mode(WIFI_STA);
+        esp_wifi_set_mode(WIFI_MODE_STA);
         DBG_INFO(TAG, "Set WiFi mode to STA");
     } else if (mode == WIFI_MODE_AP) {
-        WiFi.mode(WIFI_AP_STA);
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
         DBG_INFO(TAG, "Set WiFi mode to AP+STA (was AP)");
     }
     // STA or AP_STA are fine, leave as-is

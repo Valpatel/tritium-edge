@@ -12,7 +12,7 @@
 #include <cstring>
 
 #ifndef SIMULATOR
-#include <Arduino.h>
+#include "tritium_compat.h"
 #else
 #include <cstdlib>
 static uint32_t millis() { return 0; }
@@ -440,7 +440,7 @@ bool PowerService::handleCommand(const char* cmd, const char* args) {
         int n = toJson(buf, sizeof(buf));
         if (n > 0) {
 #ifndef SIMULATOR
-            Serial.println(buf);
+            Serial.printf("%s\n", buf);
 #else
             printf("%s\n", buf);
 #endif

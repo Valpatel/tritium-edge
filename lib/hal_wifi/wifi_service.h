@@ -14,7 +14,10 @@
 #include <cstring>
 
 #ifndef SIMULATOR
-#include <WiFi.h>
+#include "tritium_compat.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_event.h"
 #endif
 
 class WifiService : public ServiceInterface {
@@ -30,26 +33,23 @@ public:
 #if defined(DEFAULT_WIFI_SSID) && defined(DEFAULT_WIFI_PASS)
         // Build-flag network: connect directly before WifiManager init
         // to avoid autoConnect picking a different saved network.
-        WiFi.mode(WIFI_STA);
-        WiFi.begin(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS);
-        Serial.printf("[WiFi] Connecting to %s...\n", DEFAULT_WIFI_SSID);
+        // We use the WifiManager's init which handles esp_wifi_start(),
+        // then connect via connectTo().
+        _wifi.init();
+        _wifi.connectTo(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, true);
 
         uint32_t start = millis();
-        while (WiFi.status() != WL_CONNECTED && (millis() - start) < 15000) {
+        while (!_wifi.isConnected() && (millis() - start) < 15000) {
             delay(250);
         }
 
-        if (WiFi.status() == WL_CONNECTED) {
+        if (_wifi.isConnected()) {
             Serial.printf("[WiFi] Connected to %s, IP: %s\n",
-                          DEFAULT_WIFI_SSID, WiFi.localIP().toString().c_str());
+                          _wifi.getSSID(), _wifi.getIP());
         } else {
             Serial.printf("[WiFi] Failed to connect to %s\n", DEFAULT_WIFI_SSID);
-            WiFi.disconnect(true);
+            _wifi.disconnect();
         }
-
-        // Now init the manager (it will detect the existing connection)
-        _wifi.init();
-        _wifi.addNetwork(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS);
 #else
         _wifi.init();
 
@@ -220,9 +220,9 @@ private:
 
     bool cmdScan() {
 #ifndef SIMULATOR
-        Serial.println("[WiFi] Scanning...");
+        Serial.printf("[WiFi] Scanning...\n");
         if (!_wifi.startScan()) {
-            Serial.println("[WiFi] Scan failed");
+            Serial.printf("[WiFi] Scan failed\n");
             return true;
         }
         ScanResult results[WIFI_MAX_SCAN_RESULTS];
@@ -244,7 +244,7 @@ private:
     bool cmdConnect(const char* args) {
 #ifndef SIMULATOR
         if (!args || strlen(args) == 0) {
-            Serial.println("[WiFi] Usage: WIFI_CONNECT <ssid> [password]");
+            Serial.printf("[WiFi] Usage: WIFI_CONNECT <ssid> [password]\n");
             return true;
         }
         char ssid[33] = {};
@@ -272,7 +272,7 @@ private:
     bool cmdAdd(const char* args) {
 #ifndef SIMULATOR
         if (!args || strlen(args) == 0) {
-            Serial.println("[WiFi] Usage: WIFI_ADD <ssid> <password> [priority]");
+            Serial.printf("[WiFi] Usage: WIFI_ADD <ssid> <password> [priority]\n");
             return true;
         }
         char ssid[33] = {}, pass[65] = {};
@@ -308,7 +308,7 @@ private:
     bool cmdRemove(const char* args) {
 #ifndef SIMULATOR
         if (!args || strlen(args) == 0) {
-            Serial.println("[WiFi] Usage: WIFI_REMOVE <ssid>");
+            Serial.printf("[WiFi] Usage: WIFI_REMOVE <ssid>\n");
             return true;
         }
         if (_wifi.removeNetwork(args)) {
@@ -358,15 +358,15 @@ private:
                 }
             }
             if (_wifi.startAP(ssid, pass)) {
-                Serial.println("[WiFi] AP started");
+                Serial.printf("[WiFi] AP started\n");
             } else {
-                Serial.println("[WiFi] AP start failed");
+                Serial.printf("[WiFi] AP start failed\n");
             }
         } else if (strncmp(args, "stop", 4) == 0) {
             _wifi.stopAP();
-            Serial.println("[WiFi] AP stopped");
+            Serial.printf("[WiFi] AP stopped\n");
         } else {
-            Serial.println("[WiFi] Usage: WIFI_AP [start|stop] [ssid] [password]");
+            Serial.printf("[WiFi] Usage: WIFI_AP [start|stop] [ssid] [password]\n");
         }
 #endif
         return true;
@@ -376,12 +376,12 @@ private:
     bool cmdReorder(const char* args) {
 #ifndef SIMULATOR
         if (!args || strlen(args) == 0) {
-            Serial.println("[WiFi] Usage: WIFI_REORDER <ssid> <priority>");
+            Serial.printf("[WiFi] Usage: WIFI_REORDER <ssid> <priority>\n");
             return true;
         }
         const char* sp = strrchr(args, ' ');
         if (!sp) {
-            Serial.println("[WiFi] Usage: WIFI_REORDER <ssid> <priority>");
+            Serial.printf("[WiFi] Usage: WIFI_REORDER <ssid> <priority>\n");
             return true;
         }
         char ssid[33] = {};

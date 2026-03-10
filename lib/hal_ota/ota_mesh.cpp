@@ -8,9 +8,15 @@ static constexpr const char* TAG = "ota_mesh";
 
 #ifndef SIMULATOR
 
-#include <Update.h>
-#include <SD_MMC.h>
+#include "tritium_compat.h"
+#include "esp_ota_ops.h"
+#include <esp_partition.h>
 #include <esp_random.h>
+#include <sys/stat.h>
+
+// ESP-IDF OTA state for mesh receiver
+static esp_ota_handle_t _mesh_ota_handle = 0;
+static const esp_partition_t* _mesh_ota_partition = nullptr;
 
 bool OtaMesh::init(EspNowHAL* espnow) {
     if (!espnow || !espnow->isReady()) {
@@ -43,23 +49,27 @@ bool OtaMesh::startSend(const char* otaFilePath) {
         return false;
     }
 
-    File f = SD_MMC.open(otaFilePath, FILE_READ);
+    char sdpath[128];
+    snprintf(sdpath, sizeof(sdpath), "/sdcard%s", otaFilePath);
+    FILE* f = fopen(sdpath, "rb");
     if (!f) {
         DBG_ERROR(TAG, "Cannot open %s", otaFilePath);
         return false;
     }
 
-    size_t fileSize = f.size();
+    fseek(f, 0, SEEK_END);
+    size_t fileSize = ftell(f);
+    fseek(f, 0, SEEK_SET);
     if (fileSize < 64) {
         DBG_ERROR(TAG, "File too small");
-        f.close();
+        fclose(f);
         return false;
     }
 
     // Read header
     uint8_t headerBuf[128];
-    f.read(headerBuf, sizeof(headerBuf));
-    f.close();
+    fread(headerBuf, 1, sizeof(headerBuf), f);
+    fclose(f);
 
     OtaFirmwareHeader hdr;
     memcpy(&hdr, headerBuf, sizeof(hdr));
@@ -340,10 +350,20 @@ void OtaMesh::handleChunk(const uint8_t* mac, const uint8_t* data, uint8_t len) 
     // Start flash on first chunk
     if (!_rx.flashStarted) {
         size_t flashSize = _rx.isEncrypted ? _rx.hdr.firmware_size - 16 : _rx.hdr.firmware_size;
-        if (!Update.begin(flashSize)) {
-            DBG_ERROR(TAG, "Update.begin failed: %s", Update.errorString());
+
+        _mesh_ota_partition = esp_ota_get_next_update_partition(NULL);
+        if (!_mesh_ota_partition) {
+            DBG_ERROR(TAG, "No OTA partition available");
             sendStatus(false, 3);
-            abortTransfer("Update.begin failed");
+            abortTransfer("No OTA partition");
+            return;
+        }
+
+        esp_err_t err = esp_ota_begin(_mesh_ota_partition, flashSize, &_mesh_ota_handle);
+        if (err != ESP_OK) {
+            DBG_ERROR(TAG, "esp_ota_begin failed: 0x%x", err);
+            sendStatus(false, 3);
+            abortTransfer("esp_ota_begin failed");
             return;
         }
         OtaVerify::crc32Begin();
@@ -355,7 +375,7 @@ void OtaMesh::handleChunk(const uint8_t* mac, const uint8_t* data, uint8_t len) 
     OtaVerify::crc32Update(chunkData, chunkLen);
     if (_rx.isSigned) OtaVerify::updateVerify(chunkData, chunkLen);
 
-    // Copy to mutable buffer (Update.write needs non-const, decryptBlock is in-place)
+    // Copy to mutable buffer (decryptBlock is in-place)
     uint8_t decBuf[OTA_MESH_CHUNK_SIZE];
     memcpy(decBuf, chunkData, chunkLen);
     uint8_t* writeData = decBuf;
@@ -365,7 +385,6 @@ void OtaMesh::handleChunk(const uint8_t* mac, const uint8_t* data, uint8_t len) 
         // First 16 bytes of payload are IV
         if (_rx.bytesReceived < 16) {
             size_t ivRemaining = 16 - _rx.bytesReceived;
-            size_t ivBytes = (chunkLen < ivRemaining) ? chunkLen : ivRemaining;
             // IV bytes are consumed but not written to flash
             if (_rx.bytesReceived + chunkLen <= 16) {
                 // Entire chunk is IV data
@@ -397,11 +416,11 @@ void OtaMesh::handleChunk(const uint8_t* mac, const uint8_t* data, uint8_t len) 
         }
     }
 
-    // Write to flash
+    // Write to flash via ESP-IDF OTA
     if (writeLen > 0) {
-        size_t w = Update.write(writeData, writeLen);
-        if (w != writeLen) {
-            DBG_ERROR(TAG, "Write failed at chunk %u", chk->seq);
+        esp_err_t werr = esp_ota_write(_mesh_ota_handle, writeData, writeLen);
+        if (werr != ESP_OK) {
+            DBG_ERROR(TAG, "esp_ota_write failed at chunk %u: 0x%x", chk->seq, werr);
             sendStatus(false, 3);
             abortTransfer("Flash write failed");
             return;
@@ -427,7 +446,7 @@ void OtaMesh::handleChunk(const uint8_t* mac, const uint8_t* data, uint8_t len) 
         uint32_t actualCrc = OtaVerify::crc32Finalize();
         if (actualCrc != _rx.hdr.firmware_crc32) {
             DBG_ERROR(TAG, "CRC mismatch: 0x%08X vs 0x%08X", actualCrc, _rx.hdr.firmware_crc32);
-            Update.abort();
+            esp_ota_abort(_mesh_ota_handle);
             sendStatus(false, 1);
             abortTransfer("CRC32 mismatch");
             _stats.transfers_failed++;
@@ -440,7 +459,7 @@ void OtaMesh::handleChunk(const uint8_t* mac, const uint8_t* data, uint8_t len) 
             bool sigOk = OtaVerify::finalizeVerify(_rx.sig.r, _rx.sig.s);
             if (!sigOk) {
                 DBG_ERROR(TAG, "Signature INVALID");
-                Update.abort();
+                esp_ota_abort(_mesh_ota_handle);
                 sendStatus(false, 2);
                 abortTransfer("Signature verification failed");
                 _stats.transfers_failed++;
@@ -449,10 +468,20 @@ void OtaMesh::handleChunk(const uint8_t* mac, const uint8_t* data, uint8_t len) 
             DBG_INFO(TAG, "ECDSA signature verified OK");
         }
 
-        if (!Update.end(true)) {
-            DBG_ERROR(TAG, "Update.end failed: %s", Update.errorString());
+        esp_err_t enderr = esp_ota_end(_mesh_ota_handle);
+        if (enderr != ESP_OK) {
+            DBG_ERROR(TAG, "esp_ota_end failed: 0x%x", enderr);
             sendStatus(false, 3);
             abortTransfer("Flash finalize failed");
+            _stats.transfers_failed++;
+            return;
+        }
+
+        enderr = esp_ota_set_boot_partition(_mesh_ota_partition);
+        if (enderr != ESP_OK) {
+            DBG_ERROR(TAG, "esp_ota_set_boot_partition failed: 0x%x", enderr);
+            sendStatus(false, 3);
+            abortTransfer("Set boot partition failed");
             _stats.transfers_failed++;
             return;
         }
@@ -460,7 +489,7 @@ void OtaMesh::handleChunk(const uint8_t* mac, const uint8_t* data, uint8_t len) 
         sendStatus(true, 0);
         _transferActive = false;
         _stats.transfers_completed++;
-        DBG_INFO(TAG, "Mesh OTA complete: v%s, %u bytes", _rx.hdr.version, _rx.bytesReceived);
+        DBG_INFO(TAG, "Mesh OTA complete: v%s, %u bytes", _rx.hdr.version, (unsigned)_rx.bytesReceived);
 
         if (_resultCb) _resultCb(true, _rx.hdr.version);
     }
@@ -532,7 +561,7 @@ void OtaMesh::handleAbort(const uint8_t* mac, const uint8_t* data, uint8_t len) 
         DBG_WARN(TAG, "Transfer aborted by receiver");
     }
     if (_transferActive && ab->session_id == _rx.session_id) {
-        if (_rx.flashStarted) Update.abort();
+        if (_rx.flashStarted) esp_ota_abort(_mesh_ota_handle);
         if (_rx.isEncrypted) OtaVerify::decryptEnd();
         _transferActive = false;
         DBG_WARN(TAG, "Transfer aborted by sender");
@@ -641,7 +670,7 @@ void OtaMesh::sendAbort() {
 
 void OtaMesh::abortTransfer(const char* reason) {
     DBG_ERROR(TAG, "Transfer aborted: %s", reason);
-    if (_rx.flashStarted) Update.abort();
+    if (_rx.flashStarted) esp_ota_abort(_mesh_ota_handle);
     if (_rx.isEncrypted) OtaVerify::decryptEnd();
     _transferActive = false;
     if (_resultCb) _resultCb(false, _rx.hdr.version);
@@ -659,11 +688,11 @@ size_t OtaMesh::readChunkData(uint16_t seq, uint8_t* out, size_t maxLen) {
         return toRead;
     } else {
         // Read from SD
-        File f = SD_MMC.open("/firmware.ota", FILE_READ);
+        FILE* f = fopen("/sdcard/firmware.ota", "rb");
         if (!f) return 0;
-        f.seek(_tx.headerSize + offset);
-        size_t n = f.read(out, toRead);
-        f.close();
+        fseek(f, _tx.headerSize + offset, SEEK_SET);
+        size_t n = fread(out, 1, toRead, f);
+        fclose(f);
         return n;
     }
 }

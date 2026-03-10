@@ -4,7 +4,7 @@
  */
 
 #include "os_events.h"
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/queue.h>

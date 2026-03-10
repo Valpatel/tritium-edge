@@ -32,9 +32,8 @@ bool RTCHAL::clearAlarm() { return _initialized; }
 
 #else // ESP32
 
-#include <Arduino.h>
-#include <Wire.h>
-#include <lgfx/v1/platforms/common.hpp>
+#include "tritium_compat.h"
+#include "tritium_i2c.h"
 
 #ifndef HAS_RTC
 #define HAS_RTC 0
@@ -55,12 +54,10 @@ bool RTCHAL::clearAlarm() { return _initialized; }
 #define PCF85063_DAY_ALARM 0x0E
 #define PCF85063_WD_ALARM  0x0F
 
-bool RTCHAL::init(TwoWire &wire) {
+bool RTCHAL::init() {
 #if !HAS_RTC
     return false;
 #else
-    _wire = &wire;
-    _use_lgfx = false;
 #if defined(RTC_I2C_ADDR)
     _addr = RTC_I2C_ADDR;
 #else
@@ -74,10 +71,8 @@ bool RTCHAL::initLgfx(uint8_t i2c_port, uint8_t addr) {
 #if !HAS_RTC
     return false;
 #else
-    _use_lgfx = true;
-    _lgfx_port = i2c_port;
+    // Legacy API — lgfx I2C no longer used, all I2C goes through i2c0
     _addr = addr;
-    _wire = nullptr;
     return initDevice();
 #endif
 }
@@ -138,45 +133,17 @@ bool RTCHAL::clearAlarm() {
 }
 
 void RTCHAL::writeReg(uint8_t reg, uint8_t val) {
-    if (_use_lgfx) {
-        uint8_t buf[2] = { reg, val };
-        lgfx::i2c::transactionWrite(_lgfx_port, _addr, buf, 2, 400000);
-    } else {
-        _wire->beginTransmission(_addr);
-        _wire->write(reg);
-        _wire->write(val);
-        _wire->endTransmission();
-    }
+    i2c0.writeReg(_addr, reg, val);
 }
 
 uint8_t RTCHAL::readReg(uint8_t reg) {
     uint8_t val = 0;
-    if (_use_lgfx) {
-        lgfx::i2c::transactionWriteRead(_lgfx_port, _addr,
-            &reg, 1, &val, 1, 400000);
-    } else {
-        _wire->beginTransmission(_addr);
-        _wire->write(reg);
-        _wire->endTransmission(false);
-        _wire->requestFrom(_addr, (uint8_t)1);
-        if (_wire->available()) val = _wire->read();
-    }
+    i2c0.readReg(_addr, reg, &val);
     return val;
 }
 
 void RTCHAL::readRegs(uint8_t reg, uint8_t *buf, uint8_t len) {
-    if (_use_lgfx) {
-        lgfx::i2c::transactionWriteRead(_lgfx_port, _addr,
-            &reg, 1, buf, len, 400000);
-    } else {
-        _wire->beginTransmission(_addr);
-        _wire->write(reg);
-        _wire->endTransmission(false);
-        _wire->requestFrom(_addr, len);
-        for (uint8_t i = 0; i < len && _wire->available(); i++) {
-            buf[i] = _wire->read();
-        }
-    }
+    i2c0.writeRead(_addr, &reg, 1, buf, len);
 }
 
 #endif // SIMULATOR

@@ -1,4 +1,4 @@
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <cstring>
 #include "service_registry.h"
 

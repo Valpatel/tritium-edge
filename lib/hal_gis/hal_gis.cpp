@@ -444,9 +444,11 @@ GisHAL::TestResult GisHAL::runTest() {
 // ============================================================================
 #else
 
-#include <Arduino.h>
-#include <SD_MMC.h>
-#include <FS.h>
+#include "tritium_compat.h"
+// SD card via VFS — use POSIX file ops on /sdcard/
+// Filesystem via VFS — use POSIX file ops
+#include <dirent.h>
+#include <sys/stat.h>
 
 #ifndef HAS_SDCARD
 #define HAS_SDCARD 0
@@ -505,24 +507,26 @@ bool GisHAL::loadManifest() {
     char path[256];
     snprintf(path, sizeof(path), "%s/gis/manifest.json", _config.sd_mount_point);
 
-    File f = SD_MMC.open(path, FILE_READ);
+    FILE* f = fopen(path, "rb");
     if (!f) {
         DBG_WARN(TAG, "Cannot open manifest: %s", path);
         return false;
     }
 
-    size_t sz = f.size();
+    fseek(f, 0, SEEK_END);
+    size_t sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
     if (sz == 0 || sz > 8192) {
         DBG_ERROR(TAG, "Manifest invalid size: %zu", sz);
-        f.close();
+        fclose(f);
         return false;
     }
 
     char* json = (char*)malloc(sz + 1);
-    if (!json) { f.close(); return false; }
-    f.readBytes(json, sz);
+    if (!json) { fclose(f); return false; }
+    fread(json, 1, sz, f);
     json[sz] = '\0';
-    f.close();
+    fclose(f);
 
     // Same minimal JSON parsing as simulator version
     _layerCount = 0;
@@ -618,36 +622,43 @@ bool GisHAL::scanLayerDir(const char* layer_name) {
 
     uint32_t count = 0;
 
-    File zRoot = SD_MMC.open(dirPath);
-    if (!zRoot || !zRoot.isDirectory()) {
+    DIR* zRoot = opendir(dirPath);
+    if (!zRoot) {
         layer->tile_count = 0;
         return false;
     }
 
-    File zEntry = zRoot.openNextFile();
-    while (zEntry) {
-        if (zEntry.isDirectory()) {
-            File xEntry = zEntry.openNextFile();
-            while (xEntry) {
-                if (xEntry.isDirectory()) {
-                    File yEntry = xEntry.openNextFile();
-                    while (yEntry) {
-                        if (!yEntry.isDirectory()) {
-                            const char* name = yEntry.name();
-                            const char* ext = strrchr(name, '.');
+    struct dirent* zEntry;
+    while ((zEntry = readdir(zRoot)) != nullptr) {
+        if (zEntry->d_type == DT_DIR && zEntry->d_name[0] != '.') {
+            char xPath[384];
+            snprintf(xPath, sizeof(xPath), "%s/%s", dirPath, zEntry->d_name);
+            DIR* xDir = opendir(xPath);
+            if (!xDir) continue;
+            struct dirent* xEntry;
+            while ((xEntry = readdir(xDir)) != nullptr) {
+                if (xEntry->d_type == DT_DIR && xEntry->d_name[0] != '.') {
+                    char yPath[512];
+                    snprintf(yPath, sizeof(yPath), "%s/%s", xPath, xEntry->d_name);
+                    DIR* yDir = opendir(yPath);
+                    if (!yDir) continue;
+                    struct dirent* yEntry;
+                    while ((yEntry = readdir(yDir)) != nullptr) {
+                        if (yEntry->d_type != DT_DIR) {
+                            const char* ext = strrchr(yEntry->d_name, '.');
                             if (ext && (strcmp(ext, ".png") == 0 ||
                                         strcmp(ext, ".jpg") == 0)) {
                                 count++;
                             }
                         }
-                        yEntry = xEntry.openNextFile();
                     }
+                    closedir(yDir);
                 }
-                xEntry = zEntry.openNextFile();
             }
+            closedir(xDir);
         }
-        zEntry = zRoot.openNextFile();
     }
+    closedir(zRoot);
 
     layer->tile_count = count;
     DBG_INFO(TAG, "Layer '%s': %u tiles", layer_name, count);
@@ -660,11 +671,13 @@ uint8_t* GisHAL::readTileFromSD(const char* path, size_t& outLen) {
 #if !HAS_SDCARD
     return nullptr;
 #else
-    File f = SD_MMC.open(path, FILE_READ);
+    FILE* f = fopen(path, "rb");
     if (!f) return nullptr;
 
-    size_t sz = f.size();
-    if (sz == 0) { f.close(); return nullptr; }
+    fseek(f, 0, SEEK_END);
+    size_t sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz == 0) { fclose(f); return nullptr; }
 
     // Allocate in PSRAM for large tiles
     uint8_t* buf = nullptr;
@@ -674,10 +687,10 @@ uint8_t* GisHAL::readTileFromSD(const char* path, size_t& outLen) {
     if (!buf) {
         buf = (uint8_t*)malloc(sz);
     }
-    if (!buf) { f.close(); return nullptr; }
+    if (!buf) { fclose(f); return nullptr; }
 
-    outLen = f.read(buf, sz);
-    f.close();
+    outLen = fread(buf, 1, sz, f);
+    fclose(f);
     return buf;
 #endif
 }
@@ -700,7 +713,8 @@ bool GisHAL::hasCoverage(const char* layer, double lat, double lon,
 
     char path[256];
     buildTilePath(path, sizeof(path), layer, zoom, tx, ty);
-    return SD_MMC.exists(path);
+    struct stat _st;
+    return (stat(path, &_st) == 0);
 #endif
 }
 
@@ -725,13 +739,13 @@ bool GisHAL::writeManifest() {
     snprintf(path, sizeof(path), "%s%s/manifest.json",
              _config.sd_mount_point, _config.tile_base_path);
 
-    File f = SD_MMC.open(path, FILE_WRITE);
+    FILE* f = fopen(path, "wb");
     if (!f) {
         DBG_ERROR(TAG, "Cannot write manifest: %s", path);
         return false;
     }
 
-    // Build JSON in a buffer to avoid many small File.print() calls
+    // Build JSON in a buffer to avoid many small fwrite() calls
     char buf[2048];
     int pos = 0;
     pos += snprintf(buf + pos, sizeof(buf) - pos, "{\n  \"layers\": [\n");
@@ -761,8 +775,8 @@ bool GisHAL::writeManifest() {
     }
     pos += snprintf(buf + pos, sizeof(buf) - pos, "  ]\n}\n");
 
-    f.write((const uint8_t*)buf, pos);
-    f.close();
+    fwrite(buf, 1, pos, f);
+    fclose(f);
 
     DBG_INFO(TAG, "Wrote manifest: %d layers", _layerCount);
     return true;

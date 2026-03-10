@@ -2,8 +2,9 @@
 #ifdef SIMULATOR
 #include "sim_hal.h"
 #else
-#include <Arduino.h>
-#include <WiFi.h>
+#include "tritium_compat.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
 #endif
 #include "debug_log.h"
 
@@ -361,13 +362,20 @@ void TestApp::testWiFi() {
 #ifdef SIMULATOR
     addResult("WiFi Scan", true, "sim: skipped", 0);
 #else
-    WiFi.mode(WIFI_STA);
-    int n = WiFi.scanNetworks(false, false, false, 3000);
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    wifi_scan_config_t scan_cfg = {};
+    scan_cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+    int n = -1;
+    if (esp_wifi_scan_start(&scan_cfg, true) == ESP_OK) {
+        uint16_t ap_count = 0;
+        esp_wifi_scan_get_ap_num(&ap_count);
+        n = (int)ap_count;
+    }
     uint32_t elapsed = millis() - t0;
     char detail[64];
     snprintf(detail, sizeof(detail), "Found %d networks", n);
     addResult("WiFi Scan", n >= 0, detail, elapsed);
-    WiFi.mode(WIFI_OFF);
+    esp_wifi_set_mode(WIFI_MODE_NULL);
 #endif
 }
 
@@ -378,10 +386,10 @@ void TestApp::testNTP() {
     return;
 #else
     // NTP requires WiFi — check if connected
-    if (WiFi.status() != WL_CONNECTED) {
+    { wifi_ap_record_t _ap; if (esp_wifi_sta_get_ap_info(&_ap) != ESP_OK) {
         addResult("NTP", false, "needs WiFi connection", millis() - t0);
         return;
-    }
+    } }
     NtpHAL ntp;
     auto r = ntp.runTest();
     char detail[64];

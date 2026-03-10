@@ -294,14 +294,32 @@ FsHAL::TestResult FsHAL::runTest(int cycles, size_t blockSize) {
 // ============================================================================
 #else
 
-#include <Arduino.h>
-#include <LittleFS.h>
-#include <FS.h>
+#include "tritium_compat.h"
+// LittleFS via VFS — use POSIX file ops on /littlefs/
+// Filesystem via VFS — use POSIX file ops
+
+#include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
+#include <cstdio>
+
+#include "esp_littlefs.h"
+
+// Mount prefix for LittleFS VFS (mounted by webserver_service.h)
+static constexpr const char* LFS_PREFIX = "/littlefs";
+
+// Build full VFS path from a relative LittleFS path
+static void lfs_fullpath(const char* path, char* out, size_t outSize) {
+    snprintf(out, outSize, "%s%s", LFS_PREFIX, path);
+}
 
 bool FsHAL::init(bool formatOnFail) {
     if (_ready) return true;
-    if (!LittleFS.begin(formatOnFail)) {
-        DBG_ERROR(TAG, "LittleFS mount failed");
+    // LittleFS is already mounted at /littlefs by esp_vfs_littlefs_register()
+    // in webserver_service.h. Just verify it's accessible.
+    size_t _total = 0, _used = 0;
+    if (esp_littlefs_info("littlefs", &_total, &_used) != ESP_OK) {
+        DBG_ERROR(TAG, "LittleFS not mounted at %s", LFS_PREFIX);
         _ready = false;
         return false;
     }
@@ -313,20 +331,26 @@ bool FsHAL::init(bool formatOnFail) {
 
 void FsHAL::deinit() {
     if (_ready) {
-        LittleFS.end();
+        // VFS unmount is handled by the webserver service
         _ready = false;
-        DBG_INFO(TAG, "LittleFS unmounted");
+        DBG_INFO(TAG, "LittleFS HAL deinitialized");
     }
 }
 
 bool FsHAL::isReady() const { return _ready; }
 
 size_t FsHAL::totalBytes() const {
-    return _ready ? LittleFS.totalBytes() : 0;
+    if (!_ready) return 0;
+    size_t total = 0, used = 0;
+    if (esp_littlefs_info("littlefs", &total, &used) != ESP_OK) return 0;
+    return total;
 }
 
 size_t FsHAL::usedBytes() const {
-    return _ready ? LittleFS.usedBytes() : 0;
+    if (!_ready) return 0;
+    size_t total = 0, used = 0;
+    if (esp_littlefs_info("littlefs", &total, &used) != ESP_OK) return 0;
+    return used;
 }
 
 size_t FsHAL::freeBytes() const {
@@ -335,26 +359,30 @@ size_t FsHAL::freeBytes() const {
 
 bool FsHAL::readFile(const char* path, char* buf, size_t bufSize, size_t* bytesRead) {
     if (!_ready) return false;
-    File f = LittleFS.open(path, "r");
+    char fp[512];
+    lfs_fullpath(path, fp, sizeof(fp));
+    FILE* f = fopen(fp, "r");
     if (!f) {
         DBG_WARN(TAG, "readFile: cannot open %s", path);
         return false;
     }
-    size_t n = f.readBytes(buf, bufSize);
-    f.close();
+    size_t n = fread(buf, 1, bufSize, f);
+    fclose(f);
     if (bytesRead) *bytesRead = n;
     return true;
 }
 
 bool FsHAL::writeFile(const char* path, const char* data, size_t len) {
     if (!_ready) return false;
-    File f = LittleFS.open(path, "w");
+    char fp[512];
+    lfs_fullpath(path, fp, sizeof(fp));
+    FILE* f = fopen(fp, "w");
     if (!f) {
         DBG_ERROR(TAG, "writeFile: cannot open %s", path);
         return false;
     }
-    size_t w = f.write((const uint8_t*)data, len);
-    f.close();
+    size_t w = fwrite(data, 1, len, f);
+    fclose(f);
     if (w != len) {
         DBG_ERROR(TAG, "writeFile: short write %zu/%zu on %s", w, len, path);
         return false;
@@ -368,43 +396,54 @@ bool FsHAL::writeFile(const char* path, const char* str) {
 
 bool FsHAL::appendFile(const char* path, const char* data, size_t len) {
     if (!_ready) return false;
-    File f = LittleFS.open(path, "a");
+    char fp[512];
+    lfs_fullpath(path, fp, sizeof(fp));
+    FILE* f = fopen(fp, "a");
     if (!f) {
         DBG_ERROR(TAG, "appendFile: cannot open %s", path);
         return false;
     }
-    size_t w = f.write((const uint8_t*)data, len);
-    f.close();
+    size_t w = fwrite(data, 1, len, f);
+    fclose(f);
     return w == len;
 }
 
 bool FsHAL::removeFile(const char* path) {
     if (!_ready) return false;
-    return LittleFS.remove(path);
+    char fp[512];
+    lfs_fullpath(path, fp, sizeof(fp));
+    return ::remove(fp) == 0;
 }
 
 bool FsHAL::exists(const char* path) {
     if (!_ready) return false;
-    return LittleFS.exists(path);
+    char fp[512];
+    lfs_fullpath(path, fp, sizeof(fp));
+    struct stat st;
+    return stat(fp, &st) == 0;
 }
 
 size_t FsHAL::fileSize(const char* path) {
     if (!_ready) return 0;
-    File f = LittleFS.open(path, "r");
-    if (!f) return 0;
-    size_t sz = f.size();
-    f.close();
-    return sz;
+    char fp[512];
+    lfs_fullpath(path, fp, sizeof(fp));
+    struct stat st;
+    if (stat(fp, &st) != 0) return 0;
+    return (size_t)st.st_size;
 }
 
 bool FsHAL::mkdir(const char* path) {
     if (!_ready) return false;
-    return LittleFS.mkdir(path);
+    char fp[512];
+    lfs_fullpath(path, fp, sizeof(fp));
+    return ::mkdir(fp, 0755) == 0;
 }
 
 bool FsHAL::rmdir(const char* path) {
     if (!_ready) return false;
-    return LittleFS.rmdir(path);
+    char fp[512];
+    lfs_fullpath(path, fp, sizeof(fp));
+    return unlink(fp) == 0;  // LittleFS VFS handles dir removal via unlink
 }
 
 bool FsHAL::format() {
@@ -413,39 +452,68 @@ bool FsHAL::format() {
         return false;
     }
     DBG_WARN(TAG, "Formatting LittleFS...");
-    bool ok = LittleFS.format();
-    if (ok) {
-        DBG_INFO(TAG, "Format complete");
-    } else {
-        DBG_ERROR(TAG, "Format failed");
+    // Unmount, format, and remount via ESP-IDF API
+    esp_vfs_littlefs_unregister("littlefs");
+    esp_vfs_littlefs_conf_t conf = {};
+    conf.base_path = LFS_PREFIX;
+    conf.partition_label = "littlefs";
+    conf.format_if_mount_failed = true;
+    // Format the partition
+    esp_err_t err = esp_littlefs_format("littlefs");
+    if (err != ESP_OK) {
+        DBG_ERROR(TAG, "Format failed: %s", esp_err_to_name(err));
+        // Try to remount
+        esp_vfs_littlefs_register(&conf);
+        return false;
     }
-    return ok;
+    // Remount
+    err = esp_vfs_littlefs_register(&conf);
+    if (err != ESP_OK) {
+        DBG_ERROR(TAG, "Remount after format failed: %s", esp_err_to_name(err));
+        _ready = false;
+        return false;
+    }
+    DBG_INFO(TAG, "Format complete");
+    return true;
 }
 
-static void listFilesRecursive(File root, int depth, int maxDepth) {
-    File f = root.openNextFile();
-    while (f) {
-        if (f.isDirectory()) {
-            DBG_INFO(TAG, "%*sDIR : %s", depth * 2, "", f.path());
+static void listFilesRecursive(const char* dirPath, int depth, int maxDepth) {
+    char fp[512];
+    snprintf(fp, sizeof(fp), "%s%s", LFS_PREFIX, dirPath);
+    DIR* d = opendir(fp);
+    if (!d) return;
+    struct dirent* ent;
+    while ((ent = readdir(d)) != nullptr) {
+        if (ent->d_name[0] == '.') continue;
+        char childPath[512];
+        snprintf(childPath, sizeof(childPath), "%s/%s", dirPath, ent->d_name);
+        char childFull[512];
+        snprintf(childFull, sizeof(childFull), "%s%s", LFS_PREFIX, childPath);
+        struct stat st;
+        if (stat(childFull, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            DBG_INFO(TAG, "%*sDIR : %s", depth * 2, "", childPath);
             if (depth < maxDepth) {
-                listFilesRecursive(f, depth + 1, maxDepth);
+                listFilesRecursive(childPath, depth + 1, maxDepth);
             }
         } else {
-            DBG_INFO(TAG, "%*sFILE: %s  SIZE: %zu", depth * 2, "", f.path(), (size_t)f.size());
+            DBG_INFO(TAG, "%*sFILE: %s  SIZE: %zu", depth * 2, "", childPath, (size_t)st.st_size);
         }
-        f = root.openNextFile();
     }
+    closedir(d);
 }
 
 void FsHAL::listFiles(const char* dir, int maxDepth) {
     if (!_ready) return;
-    File root = LittleFS.open(dir);
-    if (!root || !root.isDirectory()) {
+    char fp[512];
+    lfs_fullpath(dir, fp, sizeof(fp));
+    struct stat st;
+    if (stat(fp, &st) != 0 || !S_ISDIR(st.st_mode)) {
         DBG_WARN(TAG, "listFiles: cannot open %s", dir);
         return;
     }
     DBG_INFO(TAG, "Listing: %s", dir);
-    listFilesRecursive(root, 0, maxDepth);
+    listFilesRecursive(dir, 0, maxDepth);
 }
 
 bool FsHAL::readConfig(const char* path, char* buf, size_t bufSize) {

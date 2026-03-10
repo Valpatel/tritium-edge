@@ -16,6 +16,11 @@
 #include <cstdint>
 #include <functional>
 
+// ESP-IDF HTTP server handle (opaque pointer when header not included)
+#ifndef HTTPD_HANDLE_T_DEFINED
+typedef void* httpd_handle_t;
+#endif
+
 using WebRequestHandler = std::function<void(void* server)>;
 
 class WebServerHAL {
@@ -101,7 +106,7 @@ public:
     };
     TestResult runTest();
 
-private:
+    // Internal state — accessed by static ESP-IDF HTTP handler functions
     bool _running = false;
     uint16_t _port = 80;
     uint32_t _requestCount = 0;

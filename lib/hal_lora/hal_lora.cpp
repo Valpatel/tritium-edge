@@ -40,8 +40,8 @@ TestResult runTest() {
 
 #else  // ESP32
 
-#include <Arduino.h>
-#include <HardwareSerial.h>
+#include "tritium_compat.h"
+#include <driver/uart.h>
 #include "debug_log.h"
 
 // Meshtastic BLE service UUID
@@ -71,7 +71,8 @@ static uint32_t _msgs_sent = 0;
 static uint32_t _msgs_received = 0;
 
 // Meshtastic serial state (TEXTMSG mode — plain text, no protobuf)
-static HardwareSerial* _mesh_serial = nullptr;
+static uart_port_t _mesh_uart_port = UART_NUM_1;
+static bool _mesh_uart_installed = false;
 static char _mesh_rx_line[256];       // Line accumulator for incoming text
 static uint16_t _mesh_rx_pos = 0;
 static char _mesh_last_msg[256];      // Last complete received message
@@ -113,9 +114,9 @@ void shutdown() {
 
     DBG_INFO(TAG, "Shutting down (was %s)", get_mode());
 
-    if (_mode == Mode::MESHTASTIC_SERIAL && _mesh_serial) {
-        _mesh_serial->end();
-        _mesh_serial = nullptr;
+    if (_mode == Mode::MESHTASTIC_SERIAL && _mesh_uart_installed) {
+        uart_driver_delete(_mesh_uart_port);
+        _mesh_uart_installed = false;
     }
 
     // TODO: Put radio to sleep / deinit BLE client
@@ -170,21 +171,43 @@ bool init_meshtastic_serial(int uart_num, int rx_pin, int tx_pin, uint32_t baud)
     DBG_INFO(TAG, "Init Meshtastic serial: UART%d RX=%d TX=%d baud=%lu",
              uart_num, rx_pin, tx_pin, (unsigned long)baud);
 
-    // Use HardwareSerial for UART communication with Meshtastic node
-    // UART1 or UART2 depending on board config
-    switch (uart_num) {
-        case 1:
-            _mesh_serial = &Serial1;
-            break;
-        case 2:
-            _mesh_serial = &Serial2;
-            break;
-        default:
-            DBG_ERROR(TAG, "Invalid UART number: %d (use 1 or 2)", uart_num);
-            return false;
+    if (uart_num < 1 || uart_num > 2) {
+        DBG_ERROR(TAG, "Invalid UART number: %d (use 1 or 2)", uart_num);
+        return false;
     }
 
-    _mesh_serial->begin(baud, SERIAL_8N1, rx_pin, tx_pin);
+    _mesh_uart_port = (uart_port_t)uart_num;
+
+    // Configure UART parameters
+    uart_config_t uart_config = {};
+    uart_config.baud_rate = (int)baud;
+    uart_config.data_bits = UART_DATA_8_BITS;
+    uart_config.parity = UART_PARITY_DISABLE;
+    uart_config.stop_bits = UART_STOP_BITS_1;
+    uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+    uart_config.source_clk = UART_SCLK_DEFAULT;
+
+    esp_err_t err = uart_param_config(_mesh_uart_port, &uart_config);
+    if (err != ESP_OK) {
+        DBG_ERROR(TAG, "UART param config failed: 0x%x", err);
+        return false;
+    }
+
+    err = uart_set_pin(_mesh_uart_port, tx_pin, rx_pin,
+                       UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    if (err != ESP_OK) {
+        DBG_ERROR(TAG, "UART set pin failed: 0x%x", err);
+        return false;
+    }
+
+    // Install UART driver with 1KB RX buffer, 512B TX buffer
+    err = uart_driver_install(_mesh_uart_port, 1024, 512, 0, nullptr, 0);
+    if (err != ESP_OK) {
+        DBG_ERROR(TAG, "UART driver install failed: 0x%x", err);
+        return false;
+    }
+    _mesh_uart_installed = true;
+
     _mesh_rx_pos = 0;
     _mesh_last_msg[0] = '\0';
     _mesh_has_new_msg = false;
@@ -249,23 +272,23 @@ bool meshtastic_send_text(const char* text, uint32_t dest) {
     DBG_INFO(TAG, "Meshtastic send text to 0x%08lX: \"%s\"",
              (unsigned long)dest, text);
 
-    if (_mode == Mode::MESHTASTIC_SERIAL && _mesh_serial) {
+    if (_mode == Mode::MESHTASTIC_SERIAL && _mesh_uart_installed) {
         // TEXTMSG mode: write plain text + newline to UART.
         // The Meshtastic Serial Module in TEXTMSG mode accepts a line of text
         // and broadcasts it as a TEXT_MESSAGE_APP packet on the default channel.
         // Note: dest parameter is ignored in TEXTMSG mode (always broadcasts).
         size_t len = strlen(text);
-        size_t written = _mesh_serial->write((const uint8_t*)text, len);
-        _mesh_serial->write('\n');
-        _mesh_serial->flush();
+        int written = uart_write_bytes(_mesh_uart_port, text, len);
+        uart_write_bytes(_mesh_uart_port, "\n", 1);
+        uart_wait_tx_done(_mesh_uart_port, pdMS_TO_TICKS(100));
 
-        if (written == len) {
+        if (written >= 0 && (size_t)written == len) {
             _msgs_sent++;
             DBG_INFO(TAG, "Sent %u bytes via Meshtastic serial", (unsigned)len);
             return true;
         } else {
-            DBG_ERROR(TAG, "Serial write failed: wrote %u of %u bytes",
-                      (unsigned)written, (unsigned)len);
+            DBG_ERROR(TAG, "Serial write failed: wrote %d of %u bytes",
+                      written, (unsigned)len);
             return false;
         }
     }
@@ -280,12 +303,14 @@ bool meshtastic_send_text(const char* text, uint32_t dest) {
 }
 
 bool meshtastic_receive_poll() {
-    if (_mode != Mode::MESHTASTIC_SERIAL || !_mesh_serial) return false;
+    if (_mode != Mode::MESHTASTIC_SERIAL || !_mesh_uart_installed) return false;
 
     bool got_message = false;
 
-    while (_mesh_serial->available()) {
-        char c = (char)_mesh_serial->read();
+    // Read available bytes from UART (non-blocking)
+    uint8_t byte;
+    while (uart_read_bytes(_mesh_uart_port, &byte, 1, 0) > 0) {
+        char c = (char)byte;
         _mesh_last_rx_time = millis();
 
         if (c == '\n' || c == '\r') {
@@ -325,7 +350,7 @@ uint32_t meshtastic_get_last_message_time() {
 }
 
 bool meshtastic_is_connected() {
-    if (_mode != Mode::MESHTASTIC_SERIAL || !_mesh_serial) return false;
+    if (_mode != Mode::MESHTASTIC_SERIAL || !_mesh_uart_installed) return false;
     // Consider connected if we received any data within the last 60 seconds.
     // Meshtastic serial module sends periodic output (nodeinfo, telemetry).
     if (_mesh_last_rx_time == 0) return false;

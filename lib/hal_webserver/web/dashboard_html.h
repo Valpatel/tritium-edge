@@ -9,7 +9,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 #pragma once
 
-#include <pgmspace.h>
+// pgmspace.h not needed — PROGMEM is no-op on ESP32 (flash is memory-mapped)
 
 // The dashboard is served as a single self-contained HTML file with inline
 // CSS and JavaScript.  To update it, edit dashboard.html and re-run the

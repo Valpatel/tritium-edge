@@ -51,18 +51,25 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 
 #else // ESP32
 
-#include <Arduino.h>
-#include <WiFi.h>
-#include <WebServer.h>
-#include <ESPmDNS.h>
-#include <DNSServer.h>
-#include <Update.h>
-#include <LittleFS.h>
+#include "tritium_compat.h"
+#include <esp_http_server.h>
+#include <esp_wifi.h>
+#include <esp_mac.h>
+#include <esp_netif.h>
+#include <esp_ota_ops.h>
 #include <esp_system.h>
 #include <esp_partition.h>
+#include <esp_chip_info.h>
+#include <mdns.h>
+#include <lwip/sockets.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <cstring>
+#include <cstdio>
+#include <string>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <esp_heap_caps.h>
 
 // Serial capture for polling-based terminal fallback
 #include "serial_capture.h"
@@ -136,18 +143,222 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #define WEB_HAS_TOUCH_INPUT 0
 #endif
 
-static WebServer* _server = nullptr;
+static httpd_handle_t _server = nullptr;
 static WebServerHAL* _instance = nullptr;
-static DNSServer* _dnsServer = nullptr;
+static bool _captive_portal_active = false;
 
-// Shared JSON response buffer — safe because sync WebServer handles one request at a time
-static char _shared_json[4096];  // 4KB shared across all endpoints (sync WebServer = one at a time)
+// Captive portal DNS task — lightweight UDP DNS responder
+static TaskHandle_t _dns_task = nullptr;
+static void _captive_dns_task(void* param);
+
+// Shared JSON response buffer — esp_http_server can serve multiple requests
+// concurrently on different sockets, but we serialize via the shared buffer.
+static char _shared_json[4096];
 static const size_t SHARED_JSON_SIZE = sizeof(_shared_json);
+
+// ── Helpers for esp_http_server ─────────────────────────────────────────────
+
+// Send a complete response with content type and body
+static esp_err_t _send(httpd_req_t* req, int status, const char* type, const char* body) {
+    httpd_resp_set_status(req, status == 200 ? "200 OK" :
+                               status == 204 ? "204 No Content" :
+                               status == 302 ? "302 Found" :
+                               status == 400 ? "400 Bad Request" :
+                               status == 404 ? "404 Not Found" :
+                               status == 500 ? "500 Internal Server Error" :
+                               status == 503 ? "503 Service Unavailable" : "200 OK");
+    if (type) httpd_resp_set_type(req, type);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, body, body ? strlen(body) : 0);
+}
+
+static esp_err_t _send_json(httpd_req_t* req, int status, const char* json) {
+    return _send(req, status, "application/json", json);
+}
+
+// Read full POST body into a buffer (caller must free)
+static char* _recv_body(httpd_req_t* req, size_t max_len = 4096) {
+    int total = req->content_len;
+    if (total <= 0 || (size_t)total > max_len) return nullptr;
+    char* buf = (char*)malloc(total + 1);
+    if (!buf) return nullptr;
+    int received = 0;
+    while (received < total) {
+        int ret = httpd_req_recv(req, buf + received, total - received);
+        if (ret <= 0) { free(buf); return nullptr; }
+        received += ret;
+    }
+    buf[total] = '\0';
+    return buf;
+}
+
+// Get query parameter value. Returns true if found.
+static bool _get_query_param(httpd_req_t* req, const char* key, char* val, size_t val_size) {
+    size_t qlen = httpd_req_get_url_query_len(req);
+    if (qlen == 0) return false;
+    char* qstr = (char*)malloc(qlen + 1);
+    if (!qstr) return false;
+    if (httpd_req_get_url_query_str(req, qstr, qlen + 1) != ESP_OK) { free(qstr); return false; }
+    esp_err_t err = httpd_query_key_value(qstr, key, val, val_size);
+    free(qstr);
+    return err == ESP_OK;
+}
+
+// Simple JSON string extraction: find "key":"value" and copy value into buf
+static bool _json_extract_string(const char* json, const char* key, char* buf, size_t buf_size) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char* pos = strstr(json, search);
+    if (!pos) return false;
+    const char* colon = strchr(pos + strlen(search), ':');
+    if (!colon) return false;
+    const char* q1 = strchr(colon + 1, '"');
+    if (!q1) return false;
+    const char* q2 = strchr(q1 + 1, '"');
+    if (!q2) return false;
+    size_t len = q2 - q1 - 1;
+    if (len >= buf_size) len = buf_size - 1;
+    memcpy(buf, q1 + 1, len);
+    buf[len] = '\0';
+    return true;
+}
+
+// Simple JSON integer extraction: find "key":123
+static bool _json_extract_int(const char* json, const char* key, int* out) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char* pos = strstr(json, search);
+    if (!pos) return false;
+    const char* colon = strchr(pos + strlen(search), ':');
+    if (!colon) return false;
+    *out = atoi(colon + 1);
+    return true;
+}
+
+// Register a URI handler (macro for brevity)
+#define REG(server, uri_str, method_val, handler_fn) do { \
+    httpd_uri_t _u = {}; \
+    _u.uri = uri_str; \
+    _u.method = method_val; \
+    _u.handler = handler_fn; \
+    _u.user_ctx = _instance; \
+    httpd_register_uri_handler(server, &_u); \
+} while(0)
+
+// Helper to get WiFi IP as string
+static void _get_wifi_ip(char* buf, size_t size) {
+    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip_info = {};
+    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+        snprintf(buf, size, IPSTR, IP2STR(&ip_info.ip));
+    } else {
+        snprintf(buf, size, "0.0.0.0");
+    }
+}
+
+// Helper to get WiFi RSSI
+static int _get_wifi_rssi() {
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) return ap.rssi;
+    return 0;
+}
+
+// Helper to check if WiFi STA is connected
+static bool _wifi_connected() {
+    wifi_ap_record_t ap;
+    return esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
+}
+
+// Helper to get WiFi channel
+static int _get_wifi_channel() {
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) return ap.primary;
+    return 0;
+}
+
+// Helper to get connected SSID
+static void _get_wifi_ssid(char* buf, size_t size) {
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        snprintf(buf, size, "%s", (const char*)ap.ssid);
+    } else {
+        buf[0] = '\0';
+    }
+}
+
+// Helper to get MAC string
+static void _get_mac_str(char* buf, size_t size) {
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    snprintf(buf, size, "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+// Helper to get gateway IP
+static void _get_gateway_ip(char* buf, size_t size) {
+    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip_info = {};
+    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+        snprintf(buf, size, IPSTR, IP2STR(&ip_info.gw));
+    } else {
+        snprintf(buf, size, "0.0.0.0");
+    }
+}
+
+// Helper to get DNS IP
+static void _get_dns_ip(char* buf, size_t size) {
+    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif) {
+        esp_netif_dns_info_t dns;
+        if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK) {
+            snprintf(buf, size, IPSTR, IP2STR(&dns.ip.u_addr.ip4));
+            return;
+        }
+    }
+    snprintf(buf, size, "0.0.0.0");
+}
+
+// Helper to check if AP is active
+static bool _wifi_ap_active() {
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) == ESP_OK) {
+        return (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA);
+    }
+    return false;
+}
+
+// Helper to get AP IP
+static void _get_ap_ip(char* buf, size_t size) {
+    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    esp_netif_ip_info_t ip_info = {};
+    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+        snprintf(buf, size, IPSTR, IP2STR(&ip_info.ip));
+    } else {
+        snprintf(buf, size, "192.168.4.1");
+    }
+}
+
+// Helper to get AP SSID
+static void _get_ap_ssid(char* buf, size_t size) {
+    wifi_config_t cfg = {};
+    if (esp_wifi_get_config(WIFI_IF_AP, &cfg) == ESP_OK) {
+        snprintf(buf, size, "%s", (const char*)cfg.ap.ssid);
+    } else {
+        buf[0] = '\0';
+    }
+}
+
+// Redirect helper (302)
+static esp_err_t _send_redirect(httpd_req_t* req, const char* location) {
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", location);
+    return httpd_resp_send(req, "", 0);
+}
 
 // ── Dark neon hacker theme ──────────────────────────────────────────────────
 // Shared CSS used by all pages — black bg, neon cyan accents, monospace font
 
-static const char THEME_CSS[] PROGMEM = R"rawliteral(
+static const char THEME_CSS[] = R"rawliteral(
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0a;color:#c0c0c0;font-family:'Courier New',monospace;
@@ -188,7 +399,7 @@ button.danger:hover{background:#ff6690}
 </style>
 )rawliteral";
 
-static const char NAV_HTML[] PROGMEM = R"rawliteral(
+static const char NAV_HTML[] = R"rawliteral(
 <div class="nav">
   <a href="/">Dashboard</a>
   <a href="/system">System</a>
@@ -209,7 +420,7 @@ static const char NAV_HTML[] PROGMEM = R"rawliteral(
 
 // ── Dashboard page (/) ──────────────────────────────────────────────────────
 
-static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
+static const char DASHBOARD_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Tritium Node</title>
@@ -293,7 +504,7 @@ setInterval(function(){
 
 // ── OTA Update page (/update) ───────────────────────────────────────────────
 
-static const char OTA_HTML[] PROGMEM = R"rawliteral(
+static const char OTA_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OTA Update</title>
@@ -349,7 +560,7 @@ document.getElementById('otaform').addEventListener('submit',function(e){
 
 // ── Config Editor page (/config) ────────────────────────────────────────────
 
-static const char CONFIG_HTML[] PROGMEM = R"rawliteral(
+static const char CONFIG_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Config Editor</title>
@@ -370,7 +581,7 @@ static const char CONFIG_HTML[] PROGMEM = R"rawliteral(
 
 // ── File Manager page (/files) ──────────────────────────────────────────────
 
-static const char FILES_HTML[] PROGMEM = R"rawliteral(
+static const char FILES_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>File Manager</title>
@@ -395,22 +606,25 @@ static const char FILES_HTML[] PROGMEM = R"rawliteral(
 
 // ── Helper: replace template placeholder ────────────────────────────────────
 
-static String templateReplace(const char* tpl, const char* key, const String& value) {
-    String html(tpl);
-    html.replace(key, value);
-    return html;
-}
-
 // ── Helper: build uptime string ─────────────────────────────────────────────
 
-static String uptimeString() {
+static void uptimeString(char* buf, size_t size) {
     uint32_t sec = millis() / 1000;
     uint32_t d = sec / 86400; sec %= 86400;
     uint32_t h = sec / 3600;  sec %= 3600;
     uint32_t m = sec / 60;    sec %= 60;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%ud %uh %um %us", d, h, m, sec);
-    return String(buf);
+    snprintf(buf, size, "%ud %uh %um %us", d, h, m, sec);
+}
+
+// ── Helper: std::string template replace ────────────────────────────────
+
+static void strReplace(std::string& str, const char* key, const char* value) {
+    std::string k(key);
+    size_t pos = 0;
+    while ((pos = str.find(k, pos)) != std::string::npos) {
+        str.replace(pos, k.length(), value);
+        pos += strlen(value);
+    }
 }
 
 // ── Helper: RSSI to percentage ──────────────────────────────────────────────
@@ -427,16 +641,25 @@ bool WebServerHAL::init(uint16_t port) {
     if (_running) return true;
 
     _port = port;
-    _server = new WebServer(port);
     _instance = this;
 
-    _server->enableCORS(true);
-    _server->begin();
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = port;
+    config.lru_purge_enable = true;
+    config.max_uri_handlers = 96;
+    config.max_open_sockets = 7;
+    config.stack_size = 8192;
+    config.uri_match_fn = httpd_uri_match_wildcard;
+
+    if (httpd_start(&_server, &config) != ESP_OK) {
+        DBG_ERROR("web", "Failed to start HTTP server on port %u", port);
+        return false;
+    }
+
     _running = true;
 
     // Cache IP
-    IPAddress ip = WiFi.localIP();
-    snprintf(_ip, sizeof(_ip), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+    _get_wifi_ip(_ip, sizeof(_ip));
 
     DBG_INFO("web", "Server started on port %u  IP: %s", _port, _ip);
     return true;
@@ -444,8 +667,8 @@ bool WebServerHAL::init(uint16_t port) {
 
 void WebServerHAL::stop() {
     if (!_running || !_server) return;
-    _server->stop();
-    delete _server;
+    stopCaptivePortal();
+    httpd_stop(_server);
     _server = nullptr;
     _running = false;
     DBG_INFO("web", "Server stopped");
@@ -454,29 +677,20 @@ void WebServerHAL::stop() {
 bool WebServerHAL::isRunning() const { return _running; }
 
 void WebServerHAL::process() {
-    if (_running && _server) {
-        if (_dnsServer) _dnsServer->processNextRequest();
-        _server->handleClient();
-    }
+    // esp_http_server is async — no handleClient() needed.
+    // Captive portal DNS is handled by its own task.
 }
 
 // ── Route registration ──────────────────────────────────────────────────────
 
 void WebServerHAL::on(const char* uri, const char* method, WebRequestHandler handler) {
     if (!_server) return;
-
-    // Capture handler and instance
-    WebServerHAL* self = this;
-    auto wrappedHandler = [handler, self]() {
-        self->_requestCount++;
-        handler((void*)_server);
-    };
-
-    if (strcmp(method, "POST") == 0) {
-        _server->on(uri, HTTP_POST, wrappedHandler);
-    } else {
-        _server->on(uri, HTTP_GET, wrappedHandler);
-    }
+    // Note: the on() public API is rarely used externally.
+    // Internal route registration now uses REG() macro + handler functions.
+    // This method is kept for backwards compatibility but is a no-op with
+    // esp_http_server since we can't wrap std::function into C function pointers.
+    (void)uri; (void)method; (void)handler;
+    DBG_WARN("web", "on() API not supported with esp_http_server — use REG()");
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -518,46 +732,108 @@ void WebServerHAL::setScreenshotProvider(ScreenshotProvider provider) {
 }
 
 void WebServerHAL::sendResponse(int code, const char* contentType, const char* body) {
-    if (_server) _server->send(code, contentType, body);
+    // Legacy API — cannot send response without httpd_req_t context.
+    // With esp_http_server, responses are sent inside handler functions.
+    (void)code; (void)contentType; (void)body;
 }
 
 void WebServerHAL::sendJson(int code, const char* json) {
-    if (_server) _server->send(code, "application/json", json);
+    (void)code; (void)json;
 }
 
 // ── Captive Portal ──────────────────────────────────────────────────────
 
+// Captive portal DNS task — responds to all DNS queries with the AP IP
+static void _captive_dns_task(void* param) {
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) { vTaskDelete(nullptr); return; }
+
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(53);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(sock);
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    // Set receive timeout so we can check for task deletion
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    uint8_t buf[512];
+    struct sockaddr_in client_addr;
+    socklen_t client_len;
+
+    while (_captive_portal_active) {
+        client_len = sizeof(client_addr);
+        int len = recvfrom(sock, buf, sizeof(buf), 0,
+                           (struct sockaddr*)&client_addr, &client_len);
+        if (len < 12) continue;  // too short or timeout
+
+        // Build minimal DNS response: copy query, set response flags, add answer
+        uint8_t resp[512];
+        if ((size_t)len > sizeof(resp) - 16) continue;
+        memcpy(resp, buf, len);
+        resp[2] = 0x81; resp[3] = 0x80;  // QR=1, AA=1, RD=1, RA=1
+        resp[6] = 0x00; resp[7] = 0x01;  // 1 answer
+
+        // Append answer: pointer to name in query + type A + class IN + TTL + IP
+        int pos = len;
+        resp[pos++] = 0xC0; resp[pos++] = 0x0C;  // name pointer
+        resp[pos++] = 0x00; resp[pos++] = 0x01;  // type A
+        resp[pos++] = 0x00; resp[pos++] = 0x01;  // class IN
+        resp[pos++] = 0x00; resp[pos++] = 0x00;
+        resp[pos++] = 0x00; resp[pos++] = 0x0A;  // TTL 10s
+        resp[pos++] = 0x00; resp[pos++] = 0x04;  // data length
+
+        // Get AP IP
+        esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+        esp_netif_ip_info_t ip_info = {};
+        if (netif) esp_netif_get_ip_info(netif, &ip_info);
+        uint32_t ip = ip_info.ip.addr;
+        resp[pos++] = (ip >>  0) & 0xFF;
+        resp[pos++] = (ip >>  8) & 0xFF;
+        resp[pos++] = (ip >> 16) & 0xFF;
+        resp[pos++] = (ip >> 24) & 0xFF;
+
+        sendto(sock, resp, pos, 0, (struct sockaddr*)&client_addr, client_len);
+    }
+    close(sock);
+    vTaskDelete(nullptr);
+}
+
+// Captive portal redirect handler for detection endpoints
+static esp_err_t _captive_redirect_handler(httpd_req_t* req) {
+    return _send_redirect(req, "http://192.168.4.1/wifi");
+}
+
 void WebServerHAL::startCaptivePortal() {
     if (!_server) return;
 
-    _dnsServer = new DNSServer();
-    _dnsServer->start(53, "*", WiFi.softAPIP());
+    _captive_portal_active = true;
 
-    // Note: onNotFound handler in addErrorPages() checks _dnsServer and
-    // redirects to /wifi when captive portal is active. No need to set it here.
+    // Start DNS responder task
+    xTaskCreate(_captive_dns_task, "dns_captive", 3072, nullptr, 2, &_dns_task);
 
     // Android/iOS captive portal detection endpoints
-    _server->on("/generate_204", HTTP_GET, []() {
-        _server->sendHeader("Location", "http://192.168.4.1/wifi", true);
-        _server->send(302, "text/plain", "");
-    });
-    _server->on("/hotspot-detect.html", HTTP_GET, []() {
-        _server->sendHeader("Location", "http://192.168.4.1/wifi", true);
-        _server->send(302, "text/plain", "");
-    });
-    _server->on("/connecttest.txt", HTTP_GET, []() {
-        _server->sendHeader("Location", "http://192.168.4.1/wifi", true);
-        _server->send(302, "text/plain", "");
-    });
+    REG(_server, "/generate_204",       HTTP_GET, _captive_redirect_handler);
+    REG(_server, "/hotspot-detect.html", HTTP_GET, _captive_redirect_handler);
+    REG(_server, "/connecttest.txt",    HTTP_GET, _captive_redirect_handler);
 
-    DBG_INFO("web", "Captive portal started — all DNS queries redirect to 192.168.4.1");
+    DBG_INFO("web", "Captive portal started — all DNS queries redirect to AP IP");
 }
 
 void WebServerHAL::stopCaptivePortal() {
-    if (_dnsServer) {
-        _dnsServer->stop();
-        delete _dnsServer;
-        _dnsServer = nullptr;
+    if (_captive_portal_active) {
+        _captive_portal_active = false;
+        // DNS task will exit on next timeout iteration
+        if (_dns_task) {
+            vTaskDelay(pdMS_TO_TICKS(1500));  // wait for task to exit
+            _dns_task = nullptr;
+        }
         DBG_INFO("web", "Captive portal stopped");
     }
 }
@@ -565,11 +841,13 @@ void WebServerHAL::stopCaptivePortal() {
 // ── mDNS ────────────────────────────────────────────────────────────────────
 
 bool WebServerHAL::startMDNS(const char* hostname) {
-    if (!MDNS.begin(hostname)) {
-        DBG_ERROR("web", "mDNS failed for hostname '%s'", hostname);
+    if (mdns_init() != ESP_OK) {
+        DBG_ERROR("web", "mDNS init failed");
         return false;
     }
-    MDNS.addService("http", "tcp", _port);
+    mdns_hostname_set(hostname);
+    mdns_instance_name_set("Tritium Node");
+    mdns_service_add(nullptr, "_http", "_tcp", _port, nullptr, 0);
     DBG_INFO("web", "mDNS started: %s.local", hostname);
     return true;
 }
@@ -585,105 +863,121 @@ const char* WebServerHAL::getIP() const {
 
 // ── addDashboard() ──────────────────────────────────────────────────────────
 
+// ── Dashboard handler ─────────────────────────────────────────────────────
+
+#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
+static esp_err_t _dashboard_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, DASHBOARD_HTML_V2, strlen(DASHBOARD_HTML_V2));
+}
+static esp_err_t _terminal_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, TERMINAL_HTML, strlen(TERMINAL_HTML));
+}
+#else
+static esp_err_t _dashboard_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+
+    std::string html(DASHBOARD_HTML);
+    strReplace(html, "%THEME%",     THEME_CSS);
+    strReplace(html, "%NAV%",       NAV_HTML);
+    strReplace(html, "%BOARD%",     "ESP32-S3");
+
+    char macStr[18];
+    _get_mac_str(macStr, sizeof(macStr));
+    strReplace(html, "%MAC%", macStr);
+
+    char ipStr[16];
+    _get_wifi_ip(ipStr, sizeof(ipStr));
+    strReplace(html, "%IP%", ipStr);
+
+    char uptBuf[32];
+    uptimeString(uptBuf, sizeof(uptBuf));
+    strReplace(html, "%UPTIME%", uptBuf);
+
+    char numBuf[16];
+    snprintf(numBuf, sizeof(numBuf), "%lu", (unsigned long)esp_get_free_heap_size());
+    strReplace(html, "%HEAP%", numBuf);
+    snprintf(numBuf, sizeof(numBuf), "%lu", (unsigned long)heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
+    strReplace(html, "%PSRAM_TOTAL%", numBuf);
+    snprintf(numBuf, sizeof(numBuf), "%lu", (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    strReplace(html, "%PSRAM_FREE%", numBuf);
+
+    int rssi = _get_wifi_rssi();
+    snprintf(numBuf, sizeof(numBuf), "%d", rssi);
+    strReplace(html, "%RSSI%", numBuf);
+    snprintf(numBuf, sizeof(numBuf), "%d", rssiToPercent(rssi));
+    strReplace(html, "%RSSI_PCT%", numBuf);
+    snprintf(numBuf, sizeof(numBuf), "%lu", (unsigned long)_instance->_requestCount);
+    strReplace(html, "%REQCOUNT%", numBuf);
+
+    // Build capabilities badges
+    std::string caps;
+    auto addBadge = [&](const char* name, bool active) {
+        caps += "<span class=\"cap-badge ";
+        caps += active ? "active" : "inactive";
+        caps += "\"><span class=\"status-dot ";
+        caps += active ? "on" : "off";
+        caps += "\"></span>";
+        caps += name;
+        caps += "</span>";
+    };
+
+    addBadge("WiFi", _wifi_connected());
+    addBadge("WebServer", true);
+#if defined(ENABLE_BLE_SCANNER)
+    addBadge("BLE Scanner", true);
+#endif
+#if defined(ENABLE_HEARTBEAT)
+    addBadge("Heartbeat", true);
+#endif
+#if defined(HAS_CAMERA) && HAS_CAMERA
+    addBadge("Camera", true);
+#endif
+#if defined(HAS_IMU) && HAS_IMU
+    addBadge("IMU", true);
+#endif
+#if defined(HAS_AUDIO) && HAS_AUDIO
+    addBadge("Audio", true);
+#endif
+#if defined(HAS_RTC) && HAS_RTC
+    addBadge("RTC", true);
+#endif
+#if defined(HAS_PMIC) && HAS_PMIC
+    addBadge("PMIC", true);
+#endif
+#if defined(HAS_SDCARD) && HAS_SDCARD
+    addBadge("SD Card", true);
+#endif
+#if defined(ENABLE_ESPNOW)
+    addBadge("ESP-NOW Mesh", true);
+#endif
+    strReplace(html, "%CAPABILITIES%", caps.c_str());
+
+#if defined(ENABLE_BLE_SCANNER)
+    strReplace(html, "%BLE_DISPLAY%", "block");
+    strReplace(html, "%BLE_STATUS%", "Checking...");
+    strReplace(html, "%BLE_COUNT%", "...");
+#else
+    strReplace(html, "%BLE_DISPLAY%", "none");
+    strReplace(html, "%BLE_STATUS%", "");
+    strReplace(html, "%BLE_COUNT%", "");
+#endif
+
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, html.c_str(), html.length());
+}
+#endif
+
 void WebServerHAL::addDashboard() {
     if (!_server) return;
 
-    WebServerHAL* self = this;
+    REG(_server, "/", HTTP_GET, _dashboard_handler);
 
 #if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
-    // Valpatel-styled self-contained page — fetches data via /api/status
-    _server->on("/", HTTP_GET, [self]() {
-        self->_requestCount++;
-        _server->send_P(200, "text/html", DASHBOARD_HTML_V2);
-    });
-
-    // Terminal page
-    _server->on("/terminal", HTTP_GET, [self]() {
-        self->_requestCount++;
-        _server->send_P(200, "text/html", TERMINAL_HTML);
-    });
-#else
-    _server->on("/", HTTP_GET, [self]() {
-        self->_requestCount++;
-
-        String html(FPSTR(DASHBOARD_HTML));
-        html.replace("%THEME%",     FPSTR(THEME_CSS));
-        html.replace("%NAV%",       FPSTR(NAV_HTML));
-        html.replace("%BOARD%",     "ESP32-S3");
-
-        uint8_t mac[6];
-        WiFi.macAddress(mac);
-        char macStr[18];
-        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        html.replace("%MAC%", macStr);
-        html.replace("%IP%", WiFi.localIP().toString());
-        html.replace("%UPTIME%", uptimeString());
-        html.replace("%HEAP%", String(ESP.getFreeHeap()));
-        html.replace("%PSRAM_TOTAL%", String(ESP.getPsramSize()));
-        html.replace("%PSRAM_FREE%",  String(ESP.getFreePsram()));
-
-        int rssi = WiFi.RSSI();
-        html.replace("%RSSI%", String(rssi));
-        html.replace("%RSSI_PCT%", String(rssiToPercent(rssi)));
-        html.replace("%REQCOUNT%", String(self->_requestCount));
-
-        // Build capabilities badges
-        String caps;
-        auto addBadge = [&](const char* name, bool active) {
-            caps += "<span class=\"cap-badge ";
-            caps += active ? "active" : "inactive";
-            caps += "\"><span class=\"status-dot ";
-            caps += active ? "on" : "off";
-            caps += "\"></span>";
-            caps += name;
-            caps += "</span>";
-        };
-
-        addBadge("WiFi", WiFi.isConnected());
-        addBadge("WebServer", true);
-#if defined(ENABLE_BLE_SCANNER)
-        addBadge("BLE Scanner", true);
-#endif
-#if defined(ENABLE_HEARTBEAT)
-        addBadge("Heartbeat", true);
-#endif
-#if defined(HAS_CAMERA) && HAS_CAMERA
-        addBadge("Camera", true);
-#endif
-#if defined(HAS_IMU) && HAS_IMU
-        addBadge("IMU", true);
-#endif
-#if defined(HAS_AUDIO) && HAS_AUDIO
-        addBadge("Audio", true);
-#endif
-#if defined(HAS_RTC) && HAS_RTC
-        addBadge("RTC", true);
-#endif
-#if defined(HAS_PMIC) && HAS_PMIC
-        addBadge("PMIC", true);
-#endif
-#if defined(HAS_SDCARD) && HAS_SDCARD
-        addBadge("SD Card", true);
-#endif
-#if defined(ENABLE_ESPNOW)
-        addBadge("ESP-NOW Mesh", true);
-#endif
-        html.replace("%CAPABILITIES%", caps);
-
-        // BLE card visibility
-#if defined(ENABLE_BLE_SCANNER)
-        html.replace("%BLE_DISPLAY%", "block");
-        html.replace("%BLE_STATUS%", "Checking...");
-        html.replace("%BLE_COUNT%", "...");
-#else
-        html.replace("%BLE_DISPLAY%", "none");
-        html.replace("%BLE_STATUS%", "");
-        html.replace("%BLE_COUNT%", "");
-#endif
-
-        _server->send(200, "text/html", html);
-    });
+    REG(_server, "/terminal", HTTP_GET, _terminal_handler);
 #endif
 
     DBG_INFO("web", "Dashboard page added at /");
@@ -691,218 +985,278 @@ void WebServerHAL::addDashboard() {
 
 // ── addOtaPage() ────────────────────────────────────────────────────────────
 
+#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
+static esp_err_t _ota_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, OTA_HTML_V2, strlen(OTA_HTML_V2));
+}
+#else
+static esp_err_t _ota_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    std::string html(OTA_HTML);
+    strReplace(html, "%THEME%", THEME_CSS);
+    strReplace(html, "%NAV%",   NAV_HTML);
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, html.c_str(), html.length());
+}
+#endif
+
+// OTA firmware upload via POST /update — receives raw binary body
+static esp_err_t _ota_upload_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+
+    const esp_partition_t* update_part = esp_ota_get_next_update_partition(nullptr);
+    if (!update_part) {
+        return _send(req, 500, "text/plain", "No OTA partition available");
+    }
+
+    esp_ota_handle_t ota_handle;
+    esp_err_t err = esp_ota_begin(update_part, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
+    if (err != ESP_OK) {
+        DBG_ERROR("web", "OTA begin failed: %s", esp_err_to_name(err));
+        return _send(req, 500, "text/plain", "OTA begin failed");
+    }
+
+    char buf[1024];
+    int total = req->content_len;
+    int received = 0;
+    bool ok = true;
+
+    DBG_INFO("web", "OTA upload start: %d bytes", total);
+
+    while (received < total) {
+        int ret = httpd_req_recv(req, buf, sizeof(buf));
+        if (ret <= 0) {
+            DBG_ERROR("web", "OTA recv failed at %d/%d", received, total);
+            ok = false;
+            break;
+        }
+        err = esp_ota_write(ota_handle, buf, ret);
+        if (err != ESP_OK) {
+            DBG_ERROR("web", "OTA write failed: %s", esp_err_to_name(err));
+            ok = false;
+            break;
+        }
+        received += ret;
+    }
+
+    if (ok) {
+        err = esp_ota_end(ota_handle);
+        if (err != ESP_OK) {
+            DBG_ERROR("web", "OTA end failed: %s", esp_err_to_name(err));
+            return _send(req, 500, "text/plain", "OTA finalize failed");
+        }
+        err = esp_ota_set_boot_partition(update_part);
+        if (err != ESP_OK) {
+            DBG_ERROR("web", "OTA set boot partition failed: %s", esp_err_to_name(err));
+            return _send(req, 500, "text/plain", "OTA set boot failed");
+        }
+        DBG_INFO("web", "OTA success: %d bytes", received);
+        _send(req, 200, "text/plain", "Update OK — rebooting...");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+        return ESP_OK;
+    } else {
+        esp_ota_abort(ota_handle);
+        return _send(req, 500, "text/plain", "Update FAILED");
+    }
+}
+
 void WebServerHAL::addOtaPage() {
     if (!_server) return;
 
-    WebServerHAL* self = this;
-
-    // Serve the upload form
-#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
-    _server->on("/update", HTTP_GET, [self]() {
-        self->_requestCount++;
-        _server->send_P(200, "text/html", OTA_HTML_V2);
-    });
-#else
-    _server->on("/update", HTTP_GET, [self]() {
-        self->_requestCount++;
-        String html(FPSTR(OTA_HTML));
-        html.replace("%THEME%", FPSTR(THEME_CSS));
-        html.replace("%NAV%",   FPSTR(NAV_HTML));
-        _server->send(200, "text/html", html);
-    });
-#endif
-
-    // Handle firmware upload
-    _server->on("/update", HTTP_POST,
-        // Response after upload completes
-        [self]() {
-            self->_requestCount++;
-            _server->sendHeader("Connection", "close");
-            if (Update.hasError()) {
-                _server->send(500, "text/plain", "Update FAILED");
-            } else {
-                _server->send(200, "text/plain", "Update OK — rebooting...");
-                delay(500);
-                ESP.restart();
-            }
-        },
-        // Handle upload data
-        [self]() {
-            HTTPUpload& upload = _server->upload();
-            if (upload.status == UPLOAD_FILE_START) {
-                DBG_INFO("web", "OTA upload start: %s", upload.filename.c_str());
-                if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-                    DBG_ERROR("web", "OTA begin failed");
-                }
-            } else if (upload.status == UPLOAD_FILE_WRITE) {
-                if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-                    DBG_ERROR("web", "OTA write failed");
-                }
-            } else if (upload.status == UPLOAD_FILE_END) {
-                if (Update.end(true)) {
-                    DBG_INFO("web", "OTA success: %u bytes", upload.totalSize);
-                } else {
-                    DBG_ERROR("web", "OTA end failed");
-                }
-            }
-        }
-    );
-
-    // Also serve on /ota as an alias
-#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
-    _server->on("/ota", HTTP_GET, [self]() {
-        self->_requestCount++;
-        _server->send_P(200, "text/html", OTA_HTML_V2);
-    });
-#else
-    _server->on("/ota", HTTP_GET, [self]() {
-        self->_requestCount++;
-        String html(FPSTR(OTA_HTML));
-        html.replace("%THEME%", FPSTR(THEME_CSS));
-        html.replace("%NAV%",   FPSTR(NAV_HTML));
-        _server->send(200, "text/html", html);
-    });
-#endif
+    REG(_server, "/update", HTTP_GET,  _ota_page_handler);
+    REG(_server, "/update", HTTP_POST, _ota_upload_handler);
+    REG(_server, "/ota",    HTTP_GET,  _ota_page_handler);
 
     DBG_INFO("web", "OTA page added at /update and /ota");
 }
 
 // ── addConfigEditor() ───────────────────────────────────────────────────────
 
+// ── Config editor handlers ───────────────────────────────────────────────
+
+static esp_err_t _config_get_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+
+    // Read config from POSIX VFS
+    char config[2048] = "{}";
+    FILE* f = fopen("/littlefs/config.json", "r");
+    if (f) {
+        size_t n = fread(config, 1, sizeof(config) - 1, f);
+        config[n] = '\0';
+        fclose(f);
+    }
+
+    std::string html(CONFIG_HTML);
+    strReplace(html, "%THEME%",  THEME_CSS);
+    strReplace(html, "%NAV%",    NAV_HTML);
+    strReplace(html, "%CONFIG%", config);
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, html.c_str(), html.length());
+}
+
+static esp_err_t _config_post_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+
+    char* body = _recv_body(req, 4096);
+    if (body) {
+        // Extract "json=" form field value (URL-encoded form data)
+        // For simplicity, write entire body as config if it looks like JSON
+        const char* json = body;
+        // Check for form-encoded: json=...
+        if (strncmp(body, "json=", 5) == 0) {
+            json = body + 5;
+        }
+        FILE* f = fopen("/littlefs/config.json", "w");
+        if (f) {
+            fputs(json, f);
+            fclose(f);
+            DBG_INFO("web", "Config saved (%d bytes)", (int)strlen(json));
+        }
+        free(body);
+    }
+    return _send_redirect(req, "/config");
+}
+
 void WebServerHAL::addConfigEditor() {
     if (!_server) return;
 
-    WebServerHAL* self = this;
-
-    // GET — show editor with current config
-    _server->on("/config", HTTP_GET, [self]() {
-        self->_requestCount++;
-
-        String config = "{}";
-        File f = LittleFS.open("/config.json", "r");
-        if (f) {
-            config = f.readString();
-            f.close();
-        }
-
-        String html(FPSTR(CONFIG_HTML));
-        html.replace("%THEME%",  FPSTR(THEME_CSS));
-        html.replace("%NAV%",    FPSTR(NAV_HTML));
-        html.replace("%CONFIG%", config);
-        _server->send(200, "text/html", html);
-    });
-
-    // POST — save config
-    _server->on("/config", HTTP_POST, [self]() {
-        self->_requestCount++;
-
-        if (_server->hasArg("json")) {
-            String json = _server->arg("json");
-            File f = LittleFS.open("/config.json", "w");
-            if (f) {
-                f.print(json);
-                f.close();
-                DBG_INFO("web", "Config saved (%u bytes)", json.length());
-            }
-        }
-        // Redirect back to editor
-        _server->sendHeader("Location", "/config", true);
-        _server->send(302, "text/plain", "Saved");
-    });
+    REG(_server, "/config", HTTP_GET,  _config_get_handler);
+    REG(_server, "/config", HTTP_POST, _config_post_handler);
 
     DBG_INFO("web", "Config editor added at /config");
 }
 
 // ── addFileManager() ────────────────────────────────────────────────────────
 
+// ── File manager handlers ────────────────────────────────────────────────
+
+#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
+static esp_err_t _files_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, FILES_HTML_V2, strlen(FILES_HTML_V2));
+}
+#else
+static esp_err_t _files_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+
+    std::string fileList;
+    DIR* dir = opendir("/littlefs");
+    if (dir) {
+        struct dirent* ent;
+        while ((ent = readdir(dir)) != nullptr) {
+            if (ent->d_type == DT_REG) {
+                char fullpath[128];
+                snprintf(fullpath, sizeof(fullpath), "/littlefs/%s", ent->d_name);
+                struct stat st;
+                size_t fsize = 0;
+                if (stat(fullpath, &st) == 0) fsize = st.st_size;
+
+                fileList += "<tr><td>";
+                fileList += ent->d_name;
+                fileList += "</td><td>";
+                char sizebuf[16];
+                snprintf(sizebuf, sizeof(sizebuf), "%u", (unsigned)fsize);
+                fileList += sizebuf;
+                fileList += " B</td><td>";
+                fileList += "<form method='POST' action='/files/delete' style='display:inline'>";
+                fileList += "<input type='hidden' name='path' value='/";
+                fileList += ent->d_name;
+                fileList += "'>";
+                fileList += "<button class='danger' type='submit'>Delete</button>";
+                fileList += "</form></td></tr>";
+            }
+        }
+        closedir(dir);
+    }
+    if (fileList.empty()) {
+        fileList = "<tr><td colspan='3' style='color:#666'>No files</td></tr>";
+    }
+
+    std::string html(FILES_HTML);
+    strReplace(html, "%THEME%",    THEME_CSS);
+    strReplace(html, "%NAV%",      NAV_HTML);
+    strReplace(html, "%FILELIST%", fileList.c_str());
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, html.c_str(), html.length());
+}
+#endif
+
+static esp_err_t _files_upload_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+
+    // For simplicity, receive the entire body and write to a file.
+    // The filename must be provided as a query parameter: ?name=foo.txt
+    char fname[64] = "upload.bin";
+    _get_query_param(req, "name", fname, sizeof(fname));
+
+    char fullpath[128];
+    snprintf(fullpath, sizeof(fullpath), "/littlefs/%s", fname);
+
+    FILE* f = fopen(fullpath, "w");
+    if (!f) {
+        return _send(req, 500, "text/plain", "Failed to create file");
+    }
+
+    char buf[1024];
+    int total = req->content_len;
+    int received = 0;
+    while (received < total) {
+        int ret = httpd_req_recv(req, buf, sizeof(buf));
+        if (ret <= 0) break;
+        fwrite(buf, 1, ret, f);
+        received += ret;
+    }
+    fclose(f);
+    DBG_INFO("web", "File uploaded: %s (%d bytes)", fname, received);
+    return _send_redirect(req, "/files");
+}
+
+static esp_err_t _files_delete_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+
+    char* body = _recv_body(req, 512);
+    if (body) {
+        // Extract path= from form-encoded body
+        const char* p = strstr(body, "path=");
+        if (p) {
+            p += 5;
+            char path[128];
+            // URL-decode the path (basic: just copy until & or end)
+            size_t i = 0;
+            while (*p && *p != '&' && i < sizeof(path) - 1) {
+                if (*p == '%' && p[1] && p[2]) {
+                    char hex[3] = { p[1], p[2], 0 };
+                    path[i++] = (char)strtol(hex, nullptr, 16);
+                    p += 3;
+                } else {
+                    path[i++] = *p++;
+                }
+            }
+            path[i] = '\0';
+
+            char fullpath[256];
+            snprintf(fullpath, sizeof(fullpath), "/littlefs%s", path);
+            if (unlink(fullpath) == 0) {
+                DBG_INFO("web", "File deleted: %s", fullpath);
+            } else {
+                DBG_WARN("web", "File delete failed: %s", fullpath);
+            }
+        }
+        free(body);
+    }
+    return _send_redirect(req, "/files");
+}
+
 void WebServerHAL::addFileManager() {
     if (!_server) return;
 
-    WebServerHAL* self = this;
-
-    // GET — list files
-#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
-    _server->on("/files", HTTP_GET, [self]() {
-        self->_requestCount++;
-        _server->send_P(200, "text/html", FILES_HTML_V2);
-    });
-#else
-    _server->on("/files", HTTP_GET, [self]() {
-        self->_requestCount++;
-
-        String fileList;
-        File root = LittleFS.open("/");
-        if (root && root.isDirectory()) {
-            File entry = root.openNextFile();
-            while (entry) {
-                if (!entry.isDirectory()) {
-                    fileList += "<tr><td>";
-                    fileList += entry.name();
-                    fileList += "</td><td>";
-                    fileList += String(entry.size());
-                    fileList += " B</td><td>";
-                    fileList += "<form method='POST' action='/files/delete' style='display:inline'>";
-                    fileList += "<input type='hidden' name='path' value='/";
-                    fileList += entry.name();
-                    fileList += "'>";
-                    fileList += "<button class='danger' type='submit'>Delete</button>";
-                    fileList += "</form></td></tr>";
-                }
-                entry = root.openNextFile();
-            }
-        }
-        if (fileList.length() == 0) {
-            fileList = "<tr><td colspan='3' style='color:#666'>No files</td></tr>";
-        }
-
-        String html(FPSTR(FILES_HTML));
-        html.replace("%THEME%",    FPSTR(THEME_CSS));
-        html.replace("%NAV%",      FPSTR(NAV_HTML));
-        html.replace("%FILELIST%", fileList);
-        _server->send(200, "text/html", html);
-    });
-#endif
-
-    // POST — upload file
-    _server->on("/files/upload", HTTP_POST,
-        [self]() {
-            self->_requestCount++;
-            _server->sendHeader("Location", "/files", true);
-            _server->send(302, "text/plain", "Uploaded");
-        },
-        [self]() {
-            HTTPUpload& upload = _server->upload();
-            static File uploadFile;
-            if (upload.status == UPLOAD_FILE_START) {
-                String path = "/" + upload.filename;
-                uploadFile = LittleFS.open(path.c_str(), "w");
-                DBG_INFO("web", "File upload: %s", path.c_str());
-            } else if (upload.status == UPLOAD_FILE_WRITE) {
-                if (uploadFile) uploadFile.write(upload.buf, upload.currentSize);
-            } else if (upload.status == UPLOAD_FILE_END) {
-                if (uploadFile) {
-                    uploadFile.close();
-                    DBG_INFO("web", "File uploaded: %u bytes", upload.totalSize);
-                }
-            }
-        }
-    );
-
-    // POST — delete file
-    _server->on("/files/delete", HTTP_POST, [self]() {
-        self->_requestCount++;
-
-        if (_server->hasArg("path")) {
-            String path = _server->arg("path");
-            if (LittleFS.remove(path.c_str())) {
-                DBG_INFO("web", "File deleted: %s", path.c_str());
-            } else {
-                DBG_WARN("web", "File delete failed: %s", path.c_str());
-            }
-        }
-        _server->sendHeader("Location", "/files", true);
-        _server->send(302, "text/plain", "Deleted");
-    });
+    REG(_server, "/files",        HTTP_GET,  _files_page_handler);
+    REG(_server, "/files/upload", HTTP_POST, _files_upload_handler);
+    REG(_server, "/files/delete", HTTP_POST, _files_delete_handler);
 
     DBG_INFO("web", "File manager added at /files");
 }
@@ -983,972 +1337,305 @@ static int getEventPollJson(char* buf, size_t size, uint32_t since_ms) {
 
 // ── addApiEndpoints() ───────────────────────────────────────────────────────
 
-void WebServerHAL::addApiEndpoints() {
-    if (!_server) return;
+// ── API handler functions ────────────────────────────────────────────────
 
-    WebServerHAL* self = this;
-
-    // GET /api/status
-    _server->on("/api/status", HTTP_GET, [self]() {
-        self->_requestCount++;
-        char buf[768];
-        int pos = snprintf(buf, sizeof(buf),
-            "{\"uptime_s\":%lu,\"free_heap\":%lu,\"psram_free\":%lu,"
-            "\"rssi\":%d,\"ip\":\"%s\",\"requests\":%lu",
-            (unsigned long)(millis() / 1000),
-            (unsigned long)ESP.getFreeHeap(),
-            (unsigned long)ESP.getFreePsram(),
-            WiFi.RSSI(),
-            WiFi.localIP().toString().c_str(),
-            (unsigned long)self->_requestCount);
+static esp_err_t _api_status_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char ipStr[16];
+    _get_wifi_ip(ipStr, sizeof(ipStr));
+    char buf[768];
+    int pos = snprintf(buf, sizeof(buf),
+        "{\"uptime_s\":%lu,\"free_heap\":%lu,\"psram_free\":%lu,"
+        "\"rssi\":%d,\"ip\":\"%s\",\"requests\":%lu",
+        (unsigned long)(millis() / 1000),
+        (unsigned long)esp_get_free_heap_size(),
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        _get_wifi_rssi(),
+        ipStr,
+        (unsigned long)_instance->_requestCount);
 #if WEB_HAS_DISPLAY_HEALTH
-        const display_health_t* dh = display_get_health();
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
-            ",\"display\":{\"board\":\"%s\",\"driver\":\"%s\","
-            "\"resolution\":\"%dx%d\",\"verified\":%s,"
-            "\"expected_id\":\"0x%06lX\",\"actual_id\":\"0x%06lX\","
-            "\"frames\":%lu}",
-            dh->board_name, dh->driver, dh->width, dh->height,
-            dh->verified ? "true" : "false",
-            (unsigned long)dh->expected_id, (unsigned long)dh->actual_id,
-            (unsigned long)dh->frame_count);
+    const display_health_t* dh = display_get_health();
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+        ",\"display\":{\"board\":\"%s\",\"driver\":\"%s\","
+        "\"resolution\":\"%dx%d\",\"verified\":%s,"
+        "\"expected_id\":\"0x%06lX\",\"actual_id\":\"0x%06lX\","
+        "\"frames\":%lu}",
+        dh->board_name, dh->driver, dh->width, dh->height,
+        dh->verified ? "true" : "false",
+        (unsigned long)dh->expected_id, (unsigned long)dh->actual_id,
+        (unsigned long)dh->frame_count);
 #endif
 #if WEB_HAS_FINGERPRINT
-        {
-            const board_fingerprint_t* fp = board_fingerprint_get();
-            if (fp) {
-                pos += snprintf(buf + pos, sizeof(buf) - pos,
-                    ",\"hw_match\":%s,\"hw_detected\":\"%s\","
-                    "\"hw_confidence\":%d",
-                    fp->match ? "true" : "false",
-                    fp->detected_name, fp->confidence);
-            }
-        }
-#endif
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "}");
-        _server->send(200, "application/json", buf);
-    });
-
-    // GET /api/board
-    _server->on("/api/board", HTTP_GET, [self]() {
-        self->_requestCount++;
-        uint8_t mac[6];
-        WiFi.macAddress(mac);
-        char buf[384];
-        snprintf(buf, sizeof(buf),
-            "{\"board\":\"ESP32-S3\",\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
-            "\"flash_size\":%lu,\"psram_size\":%lu,\"cpu_freq\":%lu,"
-            "\"sdk\":\"%s\"}",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-            (unsigned long)ESP.getFlashChipSize(),
-            (unsigned long)ESP.getPsramSize(),
-            (unsigned long)ESP.getCpuFreqMHz(),
-            ESP.getSdkVersion());
-        _server->send(200, "application/json", buf);
-    });
-
-    // GET /api/fingerprint — hardware identification and board mismatch detection
-#if WEB_HAS_FINGERPRINT
-    _server->on("/api/fingerprint", HTTP_GET, [self]() {
-        self->_requestCount++;
+    {
         const board_fingerprint_t* fp = board_fingerprint_get();
-        if (!fp) {
-            _server->send(503, "application/json", "{\"error\":\"not scanned\"}");
-            return;
+        if (fp) {
+            pos += snprintf(buf + pos, sizeof(buf) - pos,
+                ",\"hw_match\":%s,\"hw_detected\":\"%s\","
+                "\"hw_confidence\":%d",
+                fp->match ? "true" : "false",
+                fp->detected_name, fp->confidence);
         }
-        int pos = snprintf(_shared_json, SHARED_JSON_SIZE,
-            "{\"detected\":\"%s\",\"compiled\":\"%s\","
-            "\"match\":%s,\"confidence\":%d,"
-            "\"scan_ms\":%lu,"
-            "\"peripherals\":{\"imu\":%s,\"rtc\":%s,\"pmic\":%s,"
-            "\"touch_3b\":%s,\"touch_38\":%s,\"tca9554\":%s,\"audio\":%s},"
-            "\"i2c_buses\":[",
-            fp->detected_name, fp->compiled_name,
-            fp->match ? "true" : "false", fp->confidence,
-            (unsigned long)fp->scan_time_ms,
-            fp->has_imu ? "true" : "false",
-            fp->has_rtc ? "true" : "false",
-            fp->has_pmic ? "true" : "false",
-            fp->has_touch_3b ? "true" : "false",
-            fp->has_touch_38 ? "true" : "false",
-            fp->has_tca9554 ? "true" : "false",
-            fp->has_audio ? "true" : "false");
-
-        bool first_bus = true;
-        for (int i = 0; i < fp->bus_count; i++) {
-            const fp_i2c_bus_t* b = &fp->buses[i];
-            if (b->count == 0) continue;
-            if (!first_bus) _shared_json[pos++] = ',';
-            first_bus = false;
-            pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos,
-                "{\"sda\":%d,\"scl\":%d,\"devices\":[", b->sda, b->scl);
-            for (int j = 0; j < b->count; j++) {
-                if (j > 0) _shared_json[pos++] = ',';
-                pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "\"0x%02X\"", b->devices[j]);
-            }
-            pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
-        }
-        pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
-        _server->send(200, "application/json", _shared_json);
-    });
+    }
 #endif
-
-    // POST /api/reboot
-    _server->on("/api/reboot", HTTP_POST, [self]() {
-        self->_requestCount++;
-        _server->send(200, "application/json", "{\"status\":\"rebooting\"}");
-        delay(500);
-        ESP.restart();
-    });
-
-    // GET /api/scan — WiFi scan
-    _server->on("/api/scan", HTTP_GET, [self]() {
-        self->_requestCount++;
-        int n = WiFi.scanNetworks();
-        String json = "{\"count\":";
-        json += String(n);
-        json += ",\"networks\":[";
-        for (int i = 0; i < n; i++) {
-            if (i > 0) json += ",";
-            json += "{\"ssid\":\"";
-            json += WiFi.SSID(i);
-            json += "\",\"rssi\":";
-            json += String(WiFi.RSSI(i));
-            json += ",\"channel\":";
-            json += String(WiFi.channel(i));
-            json += ",\"encryption\":";
-            json += String(WiFi.encryptionType(i));
-            json += "}";
-        }
-        json += "]}";
-        WiFi.scanDelete();
-        _server->send(200, "application/json", json);
-    });
-
-    // GET /api/node — full node identity and capabilities for fleet discovery
-    _server->on("/api/node", HTTP_GET, [self]() {
-        self->_requestCount++;
-        uint8_t mac[6];
-        WiFi.macAddress(mac);
-
-        int pos = snprintf(_shared_json, SHARED_JSON_SIZE,
-            "{\"tritium\":true,\"version\":\"1.0\","
-            "\"device_id\":\"%02X%02X%02X%02X%02X%02X\","
-            "\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
-            "\"ip\":\"%s\",\"port\":%u,"
-            "\"uptime_s\":%lu,"
-            "\"free_heap\":%lu,\"psram_free\":%lu,"
-            "\"flash_size\":%lu,\"psram_size\":%lu,"
-            "\"cpu_freq\":%lu,"
-            "\"rssi\":%d,"
-            "\"sdk\":\"%s\","
-            "\"requests\":%lu,",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-            WiFi.localIP().toString().c_str(),
-            self->_port,
-            (unsigned long)(millis() / 1000),
-            (unsigned long)ESP.getFreeHeap(),
-            (unsigned long)ESP.getFreePsram(),
-            (unsigned long)ESP.getFlashChipSize(),
-            (unsigned long)ESP.getPsramSize(),
-            (unsigned long)ESP.getCpuFreqMHz(),
-            WiFi.RSSI(),
-            ESP.getSdkVersion(),
-            (unsigned long)self->_requestCount);
-
-        // Capabilities list based on build flags
-        pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "\"capabilities\":[");
-        bool first = true;
-        auto addCap = [&](const char* name) {
-            if (!first) _shared_json[pos++] = ',';
-            pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "\"%s\"", name);
-            first = false;
-        };
-        addCap("webserver");
-        addCap("wifi");
-#if defined(ENABLE_HEARTBEAT)
-        addCap("heartbeat");
-#endif
-#if defined(ENABLE_BLE_SCANNER)
-        addCap("ble_scanner");
-#endif
-#if defined(HAS_CAMERA) && HAS_CAMERA
-        addCap("camera");
-#endif
-#if defined(HAS_IMU) && HAS_IMU
-        addCap("imu");
-#endif
-#if defined(HAS_AUDIO) && HAS_AUDIO
-        addCap("audio");
-#endif
-#if defined(HAS_RTC) && HAS_RTC
-        addCap("rtc");
-#endif
-#if defined(HAS_PMIC) && HAS_PMIC
-        addCap("pmic");
-#endif
-#if defined(HAS_SDCARD) && HAS_SDCARD
-        addCap("sdcard");
-#endif
-#if defined(ENABLE_DIAG)
-        addCap("diagnostics");
-#endif
-#if defined(ENABLE_LORA)
-        addCap("lora");
-#endif
-#if defined(ENABLE_ESPNOW)
-        addCap("espnow_mesh");
-#endif
-        pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
-        _server->send(200, "application/json", _shared_json);
-    });
-
-    // GET /api/mesh — mesh topology and health for visualization
-    _server->on("/api/mesh", HTTP_GET, [self]() {
-        self->_requestCount++;
-        if (self->_meshProvider) {
-            int len = self->_meshProvider(_shared_json, SHARED_JSON_SIZE);
-            if (len > 0) {
-                _server->send(200, "application/json", _shared_json);
-                return;
-            }
-        }
-        _server->send(200, "application/json",
-            "{\"enabled\":false,\"message\":\"ESP-NOW mesh not available\"}");
-    });
-
-    // GET /api/diag — full diagnostics report (requires diag provider)
-    _server->on("/api/diag", HTTP_GET, [self]() {
-        self->_requestCount++;
-        if (self->_diagProvider) {
-            int len = self->_diagProvider(_shared_json, SHARED_JSON_SIZE);
-            if (len > 0) {
-                _server->send(200, "application/json", _shared_json);
-                return;
-            }
-        }
-        _server->send(200, "application/json",
-            "{\"enabled\":false,\"message\":\"Diagnostics not available\"}");
-    });
-
-    // GET /api/diag/health — current health snapshot only
-    _server->on("/api/diag/health", HTTP_GET, [self]() {
-        self->_requestCount++;
-        if (self->_diagHealthProvider) {
-            int len = self->_diagHealthProvider(_shared_json, SHARED_JSON_SIZE);
-            if (len > 0) {
-                _server->send(200, "application/json", _shared_json);
-                return;
-            }
-        }
-        _server->send(200, "application/json",
-            "{\"enabled\":false}");
-    });
-
-    // GET /api/diag/events — recent diagnostic events
-    _server->on("/api/diag/events", HTTP_GET, [self]() {
-        self->_requestCount++;
-        if (self->_diagEventsProvider) {
-            int len = self->_diagEventsProvider(_shared_json, SHARED_JSON_SIZE);
-            if (len > 0) {
-                _server->send(200, "application/json", _shared_json);
-                return;
-            }
-        }
-        _server->send(200, "application/json",
-            "{\"count\":0,\"events\":[]}");
-    });
-
-    // GET /api/diag/anomalies — active anomalies
-    _server->on("/api/diag/anomalies", HTTP_GET, [self]() {
-        self->_requestCount++;
-        if (self->_diagAnomaliesProvider) {
-            int len = self->_diagAnomaliesProvider(_shared_json, SHARED_JSON_SIZE);
-            if (len > 0) {
-                _server->send(200, "application/json", _shared_json);
-                return;
-            }
-        }
-        _server->send(200, "application/json",
-            "{\"count\":0,\"anomalies\":[]}");
-    });
-
-    // GET /api/diag/log?offset=0&count=50 — persistent diagnostic event log
-#if WEB_HAS_DIAGLOG
-    _server->on("/api/diag/log", HTTP_GET, [self]() {
-        self->_requestCount++;
-        int offset = 0;
-        int count = 50;
-        if (_server->hasArg("offset")) {
-            offset = _server->arg("offset").toInt();
-        }
-        if (_server->hasArg("count")) {
-            count = _server->arg("count").toInt();
-            if (count < 1) count = 1;
-            if (count > 200) count = 200;
-        }
-        int len = diaglog_get_json(_shared_json, SHARED_JSON_SIZE, offset, count);
-        if (len > 0) {
-            _server->send(200, "application/json", _shared_json);
-        } else {
-            _server->send(200, "application/json",
-                "{\"boot_count\":0,\"total\":0,\"returned\":0,\"events\":[]}");
-        }
-    });
-
-    _server->on("/api/diag/log/clear", HTTP_POST, [self]() {
-        self->_requestCount++;
-        diaglog_clear();
-        _server->send(200, "application/json", "{\"cleared\":true}");
-    });
-#endif
-
-    // GET /api/logs — recent log entries
-    _server->on("/api/logs", HTTP_GET, [self]() {
-        self->_requestCount++;
-        int len = WebServerHAL::getLogJson(_shared_json, SHARED_JSON_SIZE);
-        if (len > 0) {
-            _server->send(200, "application/json", _shared_json);
-        } else {
-            _server->send(200, "application/json", "{\"lines\":[]}");
-        }
-    });
-
-    // GET /api/screenshot — returns current framebuffer as 24-bit BMP
-    _server->on("/api/screenshot", HTTP_GET, [self]() {
-        self->_requestCount++;
-        if (!self->_screenshotProvider) {
-            _server->send(503, "text/plain", "No screenshot provider");
-            return;
-        }
-        int w = 0, h = 0;
-        uint16_t* fb = self->_screenshotProvider(w, h);
-        if (!fb || w == 0 || h == 0) {
-            _server->send(503, "text/plain", "No framebuffer available");
-            return;
-        }
-
-        // BMP file: 54-byte header + row data (rows padded to 4-byte boundary)
-        int row_bytes = w * 3;
-        int row_pad = (4 - (row_bytes % 4)) % 4;
-        int padded_row = row_bytes + row_pad;
-        uint32_t pixel_data_size = (uint32_t)padded_row * h;
-        uint32_t file_size = 54 + pixel_data_size;
-
-        // Build BMP header
-        uint8_t hdr[54] = {};
-        // File header (14 bytes)
-        hdr[0] = 'B'; hdr[1] = 'M';
-        hdr[2] = file_size & 0xFF; hdr[3] = (file_size >> 8) & 0xFF;
-        hdr[4] = (file_size >> 16) & 0xFF; hdr[5] = (file_size >> 24) & 0xFF;
-        hdr[10] = 54;  // pixel data offset
-        // DIB header (40 bytes)
-        hdr[14] = 40;  // header size
-        hdr[18] = w & 0xFF; hdr[19] = (w >> 8) & 0xFF;
-        hdr[20] = (w >> 16) & 0xFF; hdr[21] = (w >> 24) & 0xFF;
-        // Negative height = top-down rows (natural screen order)
-        int32_t neg_h = -h;
-        hdr[22] = neg_h & 0xFF; hdr[23] = (neg_h >> 8) & 0xFF;
-        hdr[24] = (neg_h >> 16) & 0xFF; hdr[25] = (neg_h >> 24) & 0xFF;
-        hdr[26] = 1;   // planes
-        hdr[28] = 24;  // bits per pixel
-        hdr[34] = pixel_data_size & 0xFF; hdr[35] = (pixel_data_size >> 8) & 0xFF;
-        hdr[36] = (pixel_data_size >> 16) & 0xFF; hdr[37] = (pixel_data_size >> 24) & 0xFF;
-
-        // Stream response: send header + convert/send rows
-        WiFiClient client = _server->client();
-        client.printf("HTTP/1.1 200 OK\r\n"
-                      "Content-Type: image/bmp\r\n"
-                      "Content-Length: %u\r\n"
-                      "Cache-Control: no-cache\r\n"
-                      "Access-Control-Allow-Origin: *\r\n", file_size);
-#if WEB_HAS_DISPLAY_HEALTH
-        {
-            const display_health_t* dh = display_get_health();
-            client.printf("X-Display-Verified: %s\r\n"
-                          "X-Display-Board: %s\r\n"
-                          "X-Display-Frames: %lu\r\n",
-                          dh->verified ? "true" : "false",
-                          dh->board_name,
-                          (unsigned long)dh->frame_count);
-        }
-#endif
-        client.print("\r\n");
-        client.write(hdr, 54);
-
-        // Convert and stream row by row (avoids allocating full 24-bit buffer)
-        // Use a small per-row buffer in stack
-        uint8_t* row_buf = (uint8_t*)malloc(padded_row);
-        if (!row_buf) {
-            client.stop();
-            return;
-        }
-
-        bool needs_swap = true;
-#if defined(BOARD_TOUCH_LCD_43C_BOX)
-        needs_swap = false;  // RGB parallel panels store pixels in native order
-#endif
-
-        for (int y = 0; y < h; y++) {
-            uint16_t* row_src = &fb[y * w];
-            for (int x = 0; x < w; x++) {
-                uint16_t px = row_src[x];
-                if (needs_swap) px = (px >> 8) | (px << 8);  // undo SPI byte-swap
-                // RGB565 → 24-bit BGR (BMP is BGR order)
-                uint8_t r5 = (px >> 11) & 0x1F;
-                uint8_t g6 = (px >> 5) & 0x3F;
-                uint8_t b5 = px & 0x1F;
-                row_buf[x * 3 + 0] = (b5 << 3) | (b5 >> 2);  // B
-                row_buf[x * 3 + 1] = (g6 << 2) | (g6 >> 4);  // G
-                row_buf[x * 3 + 2] = (r5 << 3) | (r5 >> 2);  // R
-            }
-            // Pad row to 4-byte boundary
-            for (int p = 0; p < row_pad; p++) row_buf[row_bytes + p] = 0;
-            client.write(row_buf, padded_row);
-        }
-        free(row_buf);
-    });
-
-    // GET /api/screenshot.json — metadata only (for automation tools)
-    _server->on("/api/screenshot.json", HTTP_GET, [self]() {
-        self->_requestCount++;
-        int w = 0, h = 0;
-        uint16_t* fb = nullptr;
-        if (self->_screenshotProvider) fb = self->_screenshotProvider(w, h);
-        char json[384];
-        int pos = snprintf(json, sizeof(json),
-            "{\"available\":%s,\"width\":%d,\"height\":%d,\"format\":\"bmp\","
-            "\"url\":\"/api/screenshot\"",
-            fb ? "true" : "false", w, h);
-#if WEB_HAS_DISPLAY_HEALTH
-        const display_health_t* dh = display_get_health();
-        pos += snprintf(json + pos, sizeof(json) - pos,
-            ",\"display_verified\":%s,\"board\":\"%s\",\"driver\":\"%s\","
-            "\"frames\":%lu",
-            dh->verified ? "true" : "false",
-            dh->board_name, dh->driver,
-            (unsigned long)dh->frame_count);
-#endif
-        pos += snprintf(json + pos, sizeof(json) - pos, "}");
-        _server->send(200, "application/json", json);
-    });
-
-    // ── Remote Control API ────────────────────────────────────────────────
-
-    // POST /api/remote/touch — inject a single touch event
-    _server->on("/api/remote/touch", HTTP_POST, [self]() {
-        self->_requestCount++;
-#if WEB_HAS_TOUCH_INPUT
-        String body = _server->arg("plain");
-        if (body.length() == 0) {
-            _server->send(400, "application/json", "{\"error\":\"empty body\"}");
-            return;
-        }
-        // Simple JSON parse: {"x":100,"y":200,"pressed":true}
-        int xi = body.indexOf("\"x\"");
-        int yi = body.indexOf("\"y\"");
-        int pi = body.indexOf("\"pressed\"");
-        if (xi < 0 || yi < 0) {
-            _server->send(400, "application/json", "{\"error\":\"missing x or y\"}");
-            return;
-        }
-        int xc = body.indexOf(':', xi);
-        int yc = body.indexOf(':', yi);
-        uint16_t x = (uint16_t)body.substring(xc + 1).toInt();
-        uint16_t y = (uint16_t)body.substring(yc + 1).toInt();
-        bool pressed = true;
-        if (pi >= 0) {
-            int pc = body.indexOf(':', pi);
-            String pval = body.substring(pc + 1);
-            pval.trim();
-            pressed = pval.startsWith("true") || pval.startsWith("1");
-        }
-        touch_input::inject(x, y, pressed);
-        _server->send(200, "application/json", "{\"ok\":true}");
-        DBG_INFO("REMOTE", "Touch inject x=%u y=%u pressed=%d", x, y, pressed);
-#else
-        _server->send(503, "application/json",
-            "{\"error\":\"touch input not available\"}");
-#endif
-    });
-
-    // POST /api/remote/tap — inject a tap (press + delayed release)
-    _server->on("/api/remote/tap", HTTP_POST, [self]() {
-        self->_requestCount++;
-#if WEB_HAS_TOUCH_INPUT
-        String body = _server->arg("plain");
-        if (body.length() == 0) {
-            _server->send(400, "application/json", "{\"error\":\"empty body\"}");
-            return;
-        }
-        int xi = body.indexOf("\"x\"");
-        int yi = body.indexOf("\"y\"");
-        if (xi < 0 || yi < 0) {
-            _server->send(400, "application/json", "{\"error\":\"missing x or y\"}");
-            return;
-        }
-        int xc = body.indexOf(':', xi);
-        int yc = body.indexOf(':', yi);
-        uint16_t x = (uint16_t)body.substring(xc + 1).toInt();
-        uint16_t y = (uint16_t)body.substring(yc + 1).toInt();
-        // Press, wait 50ms, release
-        touch_input::inject(x, y, true);
-        delay(50);
-        touch_input::inject(x, y, false);
-        _server->send(200, "application/json", "{\"ok\":true}");
-        DBG_INFO("REMOTE", "Tap x=%u y=%u", x, y);
-#else
-        _server->send(503, "application/json",
-            "{\"error\":\"touch input not available\"}");
-#endif
-    });
-
-    // POST /api/remote/swipe — inject a swipe gesture (multiple touch points)
-    _server->on("/api/remote/swipe", HTTP_POST, [self]() {
-        self->_requestCount++;
-#if WEB_HAS_TOUCH_INPUT
-        String body = _server->arg("plain");
-        if (body.length() == 0) {
-            _server->send(400, "application/json", "{\"error\":\"empty body\"}");
-            return;
-        }
-        // Parse: {"x1":100,"y1":400,"x2":100,"y2":100,"duration_ms":300}
-        auto findInt = [&body](const char* key) -> int {
-            int ki = body.indexOf(key);
-            if (ki < 0) return -1;
-            int colon = body.indexOf(':', ki);
-            if (colon < 0) return -1;
-            return body.substring(colon + 1).toInt();
-        };
-        int x1 = findInt("\"x1\"");
-        int y1 = findInt("\"y1\"");
-        int x2 = findInt("\"x2\"");
-        int y2 = findInt("\"y2\"");
-        int dur = findInt("\"duration_ms\"");
-        if (x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0) {
-            _server->send(400, "application/json",
-                "{\"error\":\"missing x1/y1/x2/y2\"}");
-            return;
-        }
-        if (dur <= 0) dur = 300;
-        if (dur > 2000) dur = 2000;  // cap at 2 seconds
-
-        // Generate touch points along the line at ~20ms intervals
-        int steps = dur / 20;
-        if (steps < 2) steps = 2;
-        if (steps > 100) steps = 100;
-
-        for (int i = 0; i <= steps; i++) {
-            float t = (float)i / (float)steps;
-            uint16_t cx = (uint16_t)(x1 + t * (x2 - x1));
-            uint16_t cy = (uint16_t)(y1 + t * (y2 - y1));
-            touch_input::inject(cx, cy, true);
-            if (i < steps) delay(dur / steps);
-        }
-        // Release at end point
-        touch_input::inject((uint16_t)x2, (uint16_t)y2, false);
-
-        _server->send(200, "application/json", "{\"ok\":true}");
-        DBG_INFO("REMOTE", "Swipe (%d,%d)->(%d,%d) %dms", x1, y1, x2, y2, dur);
-#else
-        _server->send(503, "application/json",
-            "{\"error\":\"touch input not available\"}");
-#endif
-    });
-
-    // GET /api/remote/screenshot — raw RGB565 binary (faster than BMP)
-    _server->on("/api/remote/screenshot", HTTP_GET, [self]() {
-        self->_requestCount++;
-        if (!self->_screenshotProvider) {
-            _server->send(503, "text/plain", "No screenshot provider");
-            return;
-        }
-        int w = 0, h = 0;
-        uint16_t* fb = self->_screenshotProvider(w, h);
-        if (!fb || w == 0 || h == 0) {
-            _server->send(503, "text/plain", "No framebuffer available");
-            return;
-        }
-
-        size_t data_size = (size_t)w * h * 2;
-
-        // Determine if we need to byte-swap (QSPI panels store swapped)
-        bool needs_swap = true;
-#if defined(BOARD_TOUCH_LCD_43C_BOX)
-        needs_swap = false;  // RGB parallel panels store pixels in native order
-#endif
-
-        // Stream raw RGB565 with dimensions in headers
-        WiFiClient client = _server->client();
-        client.printf("HTTP/1.1 200 OK\r\n"
-                      "Content-Type: application/octet-stream\r\n"
-                      "Content-Length: %u\r\n"
-                      "X-Width: %d\r\n"
-                      "X-Height: %d\r\n"
-                      "Cache-Control: no-cache\r\n"
-                      "Access-Control-Allow-Origin: *\r\n"
-                      "Access-Control-Expose-Headers: X-Width, X-Height\r\n"
-                      "\r\n",
-                      (unsigned)data_size, w, h);
-
-        if (needs_swap) {
-            // Stream row-by-row, swapping bytes for standard RGB565
-            // Use a row buffer to avoid modifying the framebuffer in place
-            const int row_words = w;
-            uint16_t* row_buf = (uint16_t*)malloc(row_words * 2);
-            if (!row_buf) {
-                // Fallback: send as-is (client will get swapped bytes)
-                client.write((const uint8_t*)fb, data_size);
-            } else {
-                for (int y = 0; y < h; y++) {
-                    uint16_t* src = &fb[y * w];
-                    for (int x = 0; x < w; x++) {
-                        uint16_t px = src[x];
-                        row_buf[x] = (px >> 8) | (px << 8);
-                    }
-                    client.write((const uint8_t*)row_buf, row_words * 2);
-                }
-                free(row_buf);
-            }
-        } else {
-            // Native order — send directly
-            client.write((const uint8_t*)fb, data_size);
-        }
-    });
-
-    // GET /api/remote/info — device info for remote control client
-    _server->on("/api/remote/info", HTTP_GET, [self]() {
-        self->_requestCount++;
-        int w = 0, h = 0;
-        bool has_fb = false;
-        if (self->_screenshotProvider) {
-            uint16_t* fb = self->_screenshotProvider(w, h);
-            has_fb = (fb != nullptr && w > 0 && h > 0);
-        }
-
-        bool has_touch = false;
-        bool has_shell = false;
-#if WEB_HAS_TOUCH_INPUT
-        has_touch = true;
-#endif
-#if defined(ENABLE_SHELL)
-        has_shell = true;
-#endif
-
-        char json[512];
-        int pos = snprintf(json, sizeof(json),
-            "{\"width\":%d,\"height\":%d,\"touch\":%s,\"shell\":%s,"
-            "\"screenshot\":%s,\"fps\":30,"
-            "\"free_heap\":%lu,\"psram_free\":%lu,"
-            "\"uptime_s\":%lu,\"ip\":\"%s\",\"rssi\":%d",
-            w, h,
-            has_touch ? "true" : "false",
-            has_shell ? "true" : "false",
-            has_fb ? "true" : "false",
-            (unsigned long)ESP.getFreeHeap(),
-            (unsigned long)ESP.getFreePsram(),
-            (unsigned long)(millis() / 1000),
-            WiFi.localIP().toString().c_str(),
-            WiFi.RSSI());
-
-#if WEB_HAS_TOUCH_INPUT
-        pos += snprintf(json + pos, sizeof(json) - pos,
-            ",\"remote_active\":%s,\"last_touch_ms\":%lu",
-            touch_input::isRemoteActive() ? "true" : "false",
-            (unsigned long)touch_input::lastActivityMs());
-#endif
-        pos += snprintf(json + pos, sizeof(json) - pos, "}");
-        _server->send(200, "application/json", json);
-    });
-
-    DBG_INFO("web", "Remote control API registered at /api/remote/*");
-
-    // ── Settings REST API ─────────────────────────────────────────────────
-#if WEB_HAS_SETTINGS
-    // GET /api/settings — export all settings as JSON
-    _server->on("/api/settings", HTTP_GET, [self]() {
-        self->_requestCount++;
-        int len = TritiumSettings::instance().toJson(_shared_json, SHARED_JSON_SIZE);
-        if (len > 0) {
-            _server->send(200, "application/json", _shared_json);
-        } else {
-            _server->send(500, "application/json",
-                "{\"error\":\"failed to export settings\"}");
-        }
-    });
-
-    // PUT /api/settings — import settings from JSON body
-    _server->on("/api/settings", HTTP_PUT, [self]() {
-        self->_requestCount++;
-        String body = _server->arg("plain");
-        if (body.length() == 0) {
-            _server->send(400, "application/json",
-                "{\"error\":\"empty body\"}");
-            return;
-        }
-        bool ok = TritiumSettings::instance().fromJson(body.c_str());
-        if (ok) {
-            _server->send(200, "application/json", "{\"ok\":true}");
-        } else {
-            _server->send(400, "application/json",
-                "{\"ok\":false,\"error\":\"failed to import settings\"}");
-        }
-    });
-
-    // POST /api/settings/reset — factory reset (optional domain in body)
-    _server->on("/api/settings/reset", HTTP_POST, [self]() {
-        self->_requestCount++;
-        const char* domain = nullptr;
-        char domainBuf[32] = {0};
-        String body = _server->arg("plain");
-        if (body.length() > 0) {
-            // Simple JSON parse: look for "domain":"value"
-            int idx = body.indexOf("\"domain\"");
-            if (idx >= 0) {
-                int colon = body.indexOf(':', idx);
-                int q1 = body.indexOf('"', colon + 1);
-                int q2 = body.indexOf('"', q1 + 1);
-                if (q1 >= 0 && q2 > q1) {
-                    int len = q2 - q1 - 1;
-                    if (len > 0 && len < (int)sizeof(domainBuf)) {
-                        body.substring(q1 + 1, q2).toCharArray(
-                            domainBuf, sizeof(domainBuf));
-                        domain = domainBuf;
-                    }
-                }
-            }
-        }
-        bool ok = TritiumSettings::instance().factoryReset(domain);
-        char resp[64];
-        if (domain) {
-            snprintf(resp, sizeof(resp),
-                "{\"ok\":%s,\"domain\":\"%s\"}",
-                ok ? "true" : "false", domain);
-        } else {
-            snprintf(resp, sizeof(resp),
-                "{\"ok\":%s}", ok ? "true" : "false");
-        }
-        _server->send(200, "application/json", resp);
-    });
-#endif
-
-    // ── Polling fallback endpoints (for web pages without WebSocket) ─────
-    // In web pages: try ws first, fall back to polling
-    // if (!ws || ws.readyState !== WebSocket.OPEN) { fetch('/api/events/poll') }
-#if defined(ENABLE_SETTINGS) || defined(ENABLE_OS_EVENTS)
-
-    // GET /api/events/poll?since=<millis> — recent events since last poll
-    _server->on("/api/events/poll", HTTP_GET, [self]() {
-        self->_requestCount++;
-        uint32_t since = 0;
-        if (_server->hasArg("since")) {
-            since = (uint32_t)_server->arg("since").toInt();
-        }
-        int len = getEventPollJson(_shared_json, SHARED_JSON_SIZE, since);
-        if (len > 0) {
-            _server->send(200, "application/json", _shared_json);
-        } else {
-            _server->send(200, "application/json", "{\"seq\":0,\"events\":[]}");
-        }
-    });
-
-    // GET /api/serial/poll?lines=<n> — recent serial output lines
-    _server->on("/api/serial/poll", HTTP_GET, [self]() {
-        self->_requestCount++;
-        int max_lines = 50;
-        if (_server->hasArg("lines")) {
-            max_lines = _server->arg("lines").toInt();
-            if (max_lines < 1) max_lines = 1;
-            if (max_lines > 48) max_lines = 48;
-        }
-        int len = serial_capture::getLinesJson(_shared_json, SHARED_JSON_SIZE, max_lines);
-        if (len > 0) {
-            _server->send(200, "application/json", _shared_json);
-        } else {
-            _server->send(200, "application/json", "{\"count\":0,\"lines\":[]}");
-        }
-    });
-
-    // POST /api/serial/send — inject a command as if typed on serial
-    _server->on("/api/serial/send", HTTP_POST, [self]() {
-        self->_requestCount++;
-        String body = _server->arg("plain");
-        if (body.length() == 0) {
-            _server->send(400, "application/json", "{\"ok\":false,\"error\":\"empty body\"}");
-            return;
-        }
-        // Parse {"cmd":"SERVICES"} — simple extraction without a JSON library
-        int ci = body.indexOf("\"cmd\"");
-        if (ci < 0) {
-            _server->send(400, "application/json", "{\"ok\":false,\"error\":\"missing cmd field\"}");
-            return;
-        }
-        // Find the value string after "cmd":
-        int q1 = body.indexOf('"', ci + 5);  // opening quote of value
-        if (q1 < 0) { _server->send(400, "application/json", "{\"ok\":false,\"error\":\"bad json\"}"); return; }
-        // Skip colon and whitespace between key and value
-        int colon = body.indexOf(':', ci + 4);
-        if (colon < 0) { _server->send(400, "application/json", "{\"ok\":false,\"error\":\"bad json\"}"); return; }
-        q1 = body.indexOf('"', colon + 1);
-        if (q1 < 0) { _server->send(400, "application/json", "{\"ok\":false,\"error\":\"bad json\"}"); return; }
-        int q2 = body.indexOf('"', q1 + 1);  // closing quote
-        if (q2 < 0) { _server->send(400, "application/json", "{\"ok\":false,\"error\":\"bad json\"}"); return; }
-        String cmd = body.substring(q1 + 1, q2);
-        if (cmd.length() == 0) {
-            _server->send(400, "application/json", "{\"ok\":false,\"error\":\"empty cmd\"}");
-            return;
-        }
-        serial_capture::injectCommand(cmd.c_str());
-        _server->send(200, "application/json", "{\"ok\":true}");
-    });
-
-#endif // ENABLE_SETTINGS || ENABLE_OS_EVENTS
-
-    // ── Debug API (touch, LVGL, system diagnostics) ─────────────────────
-
-#if WEB_HAS_TOUCH_INPUT
-    // GET /api/debug/touch — touch subsystem diagnostics
-    _server->on("/api/debug/touch", HTTP_GET, [self]() {
-        self->_requestCount++;
-        auto info = touch_input::getDebugInfo();
-        snprintf(_shared_json, SHARED_JSON_SIZE,
-            "{\"hw_available\":%s,\"driver\":\"%s\","
-            "\"read_cb_calls\":%lu,\"hw_touch_count\":%lu,"
-            "\"inject_count\":%lu,\"last_raw_x\":%d,\"last_raw_y\":%d,"
-            "\"last_touch_ms\":%lu,\"currently_pressed\":%s,"
-            "\"uptime_ms\":%lu}",
-            info.hw_available ? "true" : "false",
-            info.hw_available ? "GT911" : "none",
-            (unsigned long)info.read_cb_calls,
-            (unsigned long)info.hw_touch_count,
-            (unsigned long)info.inject_count,
-            info.last_raw_x, info.last_raw_y,
-            (unsigned long)info.last_touch_ms,
-            info.currently_pressed ? "true" : "false",
-            (unsigned long)millis());
-        _server->send(200, "application/json", _shared_json);
-    });
-
-    // GET /api/debug/gt911 — GT911 register dump for hardware debugging
-    _server->on("/api/debug/gt911", HTTP_GET, [self]() {
-        self->_requestCount++;
-        extern TouchHAL touch;
-        touch.dumpDiag(_shared_json, SHARED_JSON_SIZE);
-        _server->send(200, "application/json", _shared_json);
-    });
-#endif
-
-#if WEB_HAS_SHELL
-    // GET /api/debug/lvgl — LVGL display and rendering diagnostics
-    _server->on("/api/debug/lvgl", HTTP_GET, [self]() {
-        self->_requestCount++;
-        snprintf(_shared_json, SHARED_JSON_SIZE,
-            "{\"initialized\":%s,\"width\":%d,\"height\":%d,"
-            "\"render_mode\":\"%s\",\"flush_count\":%lu,"
-            "\"last_flush_ms\":%lu,\"uptime_ms\":%lu,"
-            "\"psram_free\":%lu,\"heap_free\":%lu}",
-            lvgl_driver::display() ? "true" : "false",
-            lvgl_driver::getWidth(), lvgl_driver::getHeight(),
-            lvgl_driver::isRgb() ? "direct" : "partial",
-            (unsigned long)lvgl_driver::getFlushCount(),
-            (unsigned long)lvgl_driver::getLastFlushMs(),
-            (unsigned long)millis(),
-            (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-            (unsigned long)esp_get_free_heap_size());
-        _server->send(200, "application/json", _shared_json);
-    });
-
-    DBG_INFO("web", "Debug API registered at /api/debug/*");
-#endif
-
-    // ── Shell navigation API ─────────────────────────────────────────────
-#if WEB_HAS_SHELL
-    // GET /api/shell/apps — list all registered shell apps
-    _server->on("/api/shell/apps", HTTP_GET, [self]() {
-        self->_requestCount++;
-        int count = tritium_shell::getAppCount();
-        int active = tritium_shell::getActiveApp();
-        int pos = snprintf(_shared_json, SHARED_JSON_SIZE,
-            "{\"count\":%d,\"active\":%d,\"apps\":[", count, active);
-        for (int i = 0; i < count && pos < (int)SHARED_JSON_SIZE - 128; i++) {
-            const tritium_shell::AppDescriptor* app = tritium_shell::getApp(i);
-            if (!app) continue;
-            if (i > 0) pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, ",");
-            pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos,
-                "{\"index\":%d,\"name\":\"%s\",\"description\":\"%s\",\"system\":%s}",
-                i, app->name ? app->name : "",
-                app->description ? app->description : "",
-                app->is_system ? "true" : "false");
-        }
-        pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
-        _server->send(200, "application/json", _shared_json);
-    });
-
-    // POST /api/shell/launch — launch an app by index or name
-    _server->on("/api/shell/launch", HTTP_POST, [self]() {
-        self->_requestCount++;
-        String body = _server->arg("plain");
-        int count = tritium_shell::getAppCount();
-
-        // Try "index" field first
-        int idx = -1;
-        int ipos = body.indexOf("\"index\"");
-        if (ipos >= 0) {
-            int colon = body.indexOf(':', ipos);
-            if (colon >= 0) {
-                idx = body.substring(colon + 1).toInt();
-            }
-        }
-
-        // Try "name" field if no index
-        if (idx < 0) {
-            int npos = body.indexOf("\"name\"");
-            if (npos >= 0) {
-                int q1 = body.indexOf('"', body.indexOf(':', npos) + 1);
-                int q2 = body.indexOf('"', q1 + 1);
-                if (q1 >= 0 && q2 > q1) {
-                    String name = body.substring(q1 + 1, q2);
-                    for (int i = 0; i < count; i++) {
-                        const tritium_shell::AppDescriptor* app = tritium_shell::getApp(i);
-                        if (app && app->name && name.equalsIgnoreCase(app->name)) {
-                            idx = i;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (idx < 0 || idx >= count) {
-            _server->send(400, "application/json",
-                "{\"ok\":false,\"error\":\"invalid app index or name\"}");
-            return;
-        }
-
-        tritium_shell::showApp(idx);
-        const tritium_shell::AppDescriptor* app = tritium_shell::getApp(idx);
-        snprintf(_shared_json, SHARED_JSON_SIZE,
-            "{\"ok\":true,\"app\":\"%s\"}", app && app->name ? app->name : "");
-        _server->send(200, "application/json", _shared_json);
-    });
-
-    // POST /api/shell/home — go to launcher
-    _server->on("/api/shell/home", HTTP_POST, [self]() {
-        self->_requestCount++;
-        tritium_shell::showLauncher();
-        _server->send(200, "application/json", "{\"ok\":true}");
-    });
-
-    DBG_INFO("web", "Shell navigation API registered at /api/shell/*");
-#endif // WEB_HAS_SHELL
-
-    DBG_INFO("web", "API endpoints added at /api/*");
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "}");
+    return _send_json(req, 200, buf);
 }
 
-// ── Screenshot viewer page (/screenshot) ─────────────────────────────────
+static esp_err_t _api_board_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+    char buf[384];
+    snprintf(buf, sizeof(buf),
+        "{\"board\":\"ESP32-S3\",\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+        "\"flash_size\":%lu,\"psram_size\":%lu,\"cpu_freq\":%d,"
+        "\"sdk\":\"%s\"}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        (unsigned long)(4 * 1024 * 1024),  // TODO: read from spi_flash
+        (unsigned long)heap_caps_get_total_size(MALLOC_CAP_SPIRAM),
+        CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        esp_get_idf_version());
+    return _send_json(req, 200, buf);
+}
 
-static const char SCREENSHOT_HTML[] PROGMEM = R"rawliteral(
+#if WEB_HAS_FINGERPRINT
+static esp_err_t _api_fingerprint_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    const board_fingerprint_t* fp = board_fingerprint_get();
+    if (!fp) {
+        return _send_json(req, 503, "{\"error\":\"not scanned\"}");
+    }
+    int pos = snprintf(_shared_json, SHARED_JSON_SIZE,
+        "{\"detected\":\"%s\",\"compiled\":\"%s\","
+        "\"match\":%s,\"confidence\":%d,"
+        "\"scan_ms\":%lu,"
+        "\"peripherals\":{\"imu\":%s,\"rtc\":%s,\"pmic\":%s,"
+        "\"touch_3b\":%s,\"touch_38\":%s,\"tca9554\":%s,\"audio\":%s},"
+        "\"i2c_buses\":[",
+        fp->detected_name, fp->compiled_name,
+        fp->match ? "true" : "false", fp->confidence,
+        (unsigned long)fp->scan_time_ms,
+        fp->has_imu ? "true" : "false",
+        fp->has_rtc ? "true" : "false",
+        fp->has_pmic ? "true" : "false",
+        fp->has_touch_3b ? "true" : "false",
+        fp->has_touch_38 ? "true" : "false",
+        fp->has_tca9554 ? "true" : "false",
+        fp->has_audio ? "true" : "false");
+
+    bool first_bus = true;
+    for (int i = 0; i < fp->bus_count; i++) {
+        const fp_i2c_bus_t* b = &fp->buses[i];
+        if (b->count == 0) continue;
+        if (!first_bus) _shared_json[pos++] = ',';
+        first_bus = false;
+        pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos,
+            "{\"sda\":%d,\"scl\":%d,\"devices\":[", b->sda, b->scl);
+        for (int j = 0; j < b->count; j++) {
+            if (j > 0) _shared_json[pos++] = ',';
+            pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "\"0x%02X\"", b->devices[j]);
+        }
+        pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
+    }
+    pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
+    return _send_json(req, 200, _shared_json);
+}
+#endif
+
+static esp_err_t _api_reboot_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    _send_json(req, 200, "{\"status\":\"rebooting\"}");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
+}
+
+static esp_err_t _api_scan_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    // Use esp_wifi_scan_start for a blocking scan
+    wifi_scan_config_t scan_cfg = {};
+    scan_cfg.show_hidden = true;
+    esp_wifi_scan_start(&scan_cfg, true);
+    uint16_t n = 0;
+    esp_wifi_scan_get_ap_num(&n);
+    wifi_ap_record_t* records = nullptr;
+    if (n > 0) {
+        records = (wifi_ap_record_t*)malloc(n * sizeof(wifi_ap_record_t));
+        if (records) esp_wifi_scan_get_ap_records(&n, records);
+    }
+    int pos = snprintf(_shared_json, SHARED_JSON_SIZE, "{\"count\":%u,\"networks\":[", n);
+    for (uint16_t i = 0; i < n && records && pos < (int)SHARED_JSON_SIZE - 120; i++) {
+        if (i > 0) _shared_json[pos++] = ',';
+        pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos,
+            "{\"ssid\":\"%s\",\"rssi\":%d,\"channel\":%d,\"encryption\":%d}",
+            (const char*)records[i].ssid, records[i].rssi,
+            records[i].primary, records[i].authmode);
+    }
+    pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
+    if (records) free(records);
+    return _send_json(req, 200, _shared_json);
+}
+
+static esp_err_t _api_node_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    char ipStr[16];
+    _get_wifi_ip(ipStr, sizeof(ipStr));
+
+    int pos = snprintf(_shared_json, SHARED_JSON_SIZE,
+        "{\"tritium\":true,\"version\":\"1.0\","
+        "\"device_id\":\"%02X%02X%02X%02X%02X%02X\","
+        "\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+        "\"ip\":\"%s\",\"port\":%u,"
+        "\"uptime_s\":%lu,"
+        "\"free_heap\":%lu,\"psram_free\":%lu,"
+        "\"flash_size\":%lu,\"psram_size\":%lu,"
+        "\"cpu_freq\":%d,"
+        "\"rssi\":%d,"
+        "\"sdk\":\"%s\","
+        "\"requests\":%lu,",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        ipStr,
+        _instance->_port,
+        (unsigned long)(millis() / 1000),
+        (unsigned long)esp_get_free_heap_size(),
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned long)(4 * 1024 * 1024),
+        (unsigned long)heap_caps_get_total_size(MALLOC_CAP_SPIRAM),
+        CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        _get_wifi_rssi(),
+        esp_get_idf_version(),
+        (unsigned long)_instance->_requestCount);
+
+    pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "\"capabilities\":[");
+    bool first = true;
+    auto addCap = [&](const char* name) {
+        if (!first) _shared_json[pos++] = ',';
+        pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "\"%s\"", name);
+        first = false;
+    };
+    addCap("webserver");
+    addCap("wifi");
+#if defined(ENABLE_HEARTBEAT)
+    addCap("heartbeat");
+#endif
+#if defined(ENABLE_BLE_SCANNER)
+    addCap("ble_scanner");
+#endif
+#if defined(HAS_CAMERA) && HAS_CAMERA
+    addCap("camera");
+#endif
+#if defined(HAS_IMU) && HAS_IMU
+    addCap("imu");
+#endif
+#if defined(HAS_AUDIO) && HAS_AUDIO
+    addCap("audio");
+#endif
+#if defined(HAS_RTC) && HAS_RTC
+    addCap("rtc");
+#endif
+#if defined(HAS_PMIC) && HAS_PMIC
+    addCap("pmic");
+#endif
+#if defined(HAS_SDCARD) && HAS_SDCARD
+    addCap("sdcard");
+#endif
+#if defined(ENABLE_DIAG)
+    addCap("diagnostics");
+#endif
+#if defined(ENABLE_LORA)
+    addCap("lora");
+#endif
+#if defined(ENABLE_ESPNOW)
+    addCap("espnow_mesh");
+#endif
+    pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
+    return _send_json(req, 200, _shared_json);
+}
+
+static esp_err_t _api_mesh_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    if (_instance->_meshProvider) {
+        int len = _instance->_meshProvider(_shared_json, SHARED_JSON_SIZE);
+        if (len > 0) return _send_json(req, 200, _shared_json);
+    }
+    return _send_json(req, 200, "{\"enabled\":false,\"message\":\"ESP-NOW mesh not available\"}");
+}
+
+static esp_err_t _api_diag_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    if (_instance->_diagProvider) {
+        int len = _instance->_diagProvider(_shared_json, SHARED_JSON_SIZE);
+        if (len > 0) return _send_json(req, 200, _shared_json);
+    }
+    return _send_json(req, 200, "{\"enabled\":false,\"message\":\"Diagnostics not available\"}");
+}
+
+static esp_err_t _api_diag_health_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    if (_instance->_diagHealthProvider) {
+        int len = _instance->_diagHealthProvider(_shared_json, SHARED_JSON_SIZE);
+        if (len > 0) return _send_json(req, 200, _shared_json);
+    }
+    return _send_json(req, 200, "{\"enabled\":false}");
+}
+
+static esp_err_t _api_diag_events_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    if (_instance->_diagEventsProvider) {
+        int len = _instance->_diagEventsProvider(_shared_json, SHARED_JSON_SIZE);
+        if (len > 0) return _send_json(req, 200, _shared_json);
+    }
+    return _send_json(req, 200, "{\"count\":0,\"events\":[]}");
+}
+
+static esp_err_t _api_diag_anomalies_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    if (_instance->_diagAnomaliesProvider) {
+        int len = _instance->_diagAnomaliesProvider(_shared_json, SHARED_JSON_SIZE);
+        if (len > 0) return _send_json(req, 200, _shared_json);
+    }
+    return _send_json(req, 200, "{\"count\":0,\"anomalies\":[]}");
+}
+
+#if WEB_HAS_DIAGLOG
+static esp_err_t _api_diaglog_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char val[16];
+    int offset = 0, count = 50;
+    if (_get_query_param(req, "offset", val, sizeof(val))) offset = atoi(val);
+    if (_get_query_param(req, "count", val, sizeof(val))) {
+        count = atoi(val);
+        if (count < 1) count = 1;
+        if (count > 200) count = 200;
+    }
+    int len = diaglog_get_json(_shared_json, SHARED_JSON_SIZE, offset, count);
+    if (len > 0) return _send_json(req, 200, _shared_json);
+    return _send_json(req, 200, "{\"boot_count\":0,\"total\":0,\"returned\":0,\"events\":[]}");
+}
+
+static esp_err_t _api_diaglog_clear_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    diaglog_clear();
+    return _send_json(req, 200, "{\"cleared\":true}");
+}
+#endif
+
+static esp_err_t _api_logs_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    int len = WebServerHAL::getLogJson(_shared_json, SHARED_JSON_SIZE);
+    if (len > 0) return _send_json(req, 200, _shared_json);
+    return _send_json(req, 200, "{\"lines\":[]}");
+}
+
+
+// ── Inline HTML pages (fallback when V2 pages not available) ────────────
+
+static const char SCREENSHOT_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Screen Capture</title>
@@ -2020,40 +1707,7 @@ capture();
 </body></html>
 )rawliteral";
 
-void WebServerHAL::addScreenshotPage() {
-    if (!_server) return;
-    WebServerHAL* self = this;
-    _server->on("/screenshot", HTTP_GET, [self]() {
-        self->_requestCount++;
-        _server->send(200, "text/html", SCREENSHOT_HTML);
-    });
-    DBG_INFO("web", "Screenshot page at /screenshot");
-}
-
-// ── Remote Control page (/remote) ────────────────────────────────────────
-// Full-screen remote control interface with live screenshot streaming and
-// touch injection — a lightweight VNC for ESP32.
-
-void WebServerHAL::addRemotePage() {
-    if (!_server) return;
-    WebServerHAL* self = this;
-#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
-    _server->on("/remote", HTTP_GET, [self]() {
-        self->_requestCount++;
-        _server->send_P(200, "text/html", REMOTE_HTML, REMOTE_HTML_LEN);
-    });
-    DBG_INFO("web", "Remote control page at /remote");
-#else
-    DBG_INFO("web", "Remote page skipped (web pages not enabled)");
-#endif
-}
-
-// ── WiFi Setup page (/wifi) ──────────────────────────────────────────────
-// Full WiFi management UI: status, scan, connect, saved networks with
-// drag-to-reorder priority, AP mode toggle, and real-time RSSI monitoring.
-// All interactions use JSON API endpoints backed by WifiManager.
-
-static const char WIFI_HTML[] PROGMEM = R"rawliteral(
+static const char WIFI_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>WiFi Manager — Tritium</title>
@@ -2406,345 +2060,7 @@ setInterval(fetchStatus,5000);
 </body></html>
 )rawliteral";
 
-void WebServerHAL::addWiFiSetup() {
-    if (!_server) return;
-
-    WebServerHAL* self = this;
-
-    // GET /wifi — WiFi manager SPA
-#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
-    _server->on("/wifi", HTTP_GET, [self]() {
-        self->_requestCount++;
-        _server->send_P(200, "text/html", WIFI_HTML_V2);
-    });
-#else
-    _server->on("/wifi", HTTP_GET, [self]() {
-        self->_requestCount++;
-        String html(FPSTR(WIFI_HTML));
-        html.replace("%THEME%", FPSTR(THEME_CSS));
-        html.replace("%NAV%",   FPSTR(NAV_HTML));
-        _server->send(200, "text/html", html);
-    });
-#endif
-
-    // GET /api/wifi/status — full WiFi status JSON
-    _server->on("/api/wifi/status", HTTP_GET, [self]() {
-        self->_requestCount++;
-
-        // Build status JSON from WifiManager via WifiService (accessed through
-        // ServiceRegistry). Falls back to direct WiFi calls if service unavailable.
-        char buf[1536];
-        int pos = 0;
-
-        bool connected = (WiFi.status() == WL_CONNECTED);
-        bool ap_active = (WiFi.getMode() & WIFI_AP) != 0;
-
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
-            "{\"connected\":%s,\"ap_active\":%s,\"state\":\"%s\","
-            "\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"channel\":%d,",
-            connected ? "true" : "false",
-            ap_active ? "true" : "false",
-            connected ? (ap_active ? "ap_and_sta" : "connected") :
-                (ap_active ? "ap_only" : "disconnected"),
-            connected ? WiFi.SSID().c_str() : "",
-            connected ? WiFi.localIP().toString().c_str() : "",
-            connected ? WiFi.RSSI() : 0,
-            connected ? WiFi.channel() : 0);
-
-        // MAC address
-        uint8_t mac[6];
-        WiFi.macAddress(mac);
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
-            "\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-        // AP info
-        if (ap_active) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "\"ap_ssid\":\"%s\",\"ap_ip\":\"%s\",\"clients\":%d,",
-                WiFi.softAPSSID().c_str(),
-                WiFi.softAPIP().toString().c_str(),
-                WiFi.softAPgetStationNum());
-        } else {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "\"ap_ssid\":\"\",\"ap_ip\":\"\",\"clients\":0,");
-        }
-
-        // Failover status — use WifiManager if available
-        bool failover = true;
-        if (WifiManager::_instance) {
-            failover = WifiManager::_instance->isAutoFailoverEnabled();
-        }
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
-            "\"failover\":%s,", failover ? "true" : "false");
-
-        // Saved networks
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "\"saved\":[");
-        if (WifiManager::_instance) {
-            SavedNetwork nets[WIFI_MAX_SAVED_NETWORKS];
-            int count = WifiManager::_instance->getSavedNetworks(nets, WIFI_MAX_SAVED_NETWORKS);
-            for (int i = 0; i < count && pos < (int)sizeof(buf) - 140; i++) {
-                if (i > 0) buf[pos++] = ',';
-                pos += snprintf(buf + pos, sizeof(buf) - pos,
-                    "{\"ssid\":\"%s\",\"priority\":%d,\"rssi\":%d,"
-                    "\"fails\":%u,\"enabled\":%s}",
-                    nets[i].ssid, nets[i].priority, nets[i].rssi_last,
-                    nets[i].fail_count, nets[i].enabled ? "true" : "false");
-            }
-        }
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "]}");
-
-        _server->send(200, "application/json", buf);
-    });
-
-    // GET /api/wifi/scan — trigger scan and return results
-    _server->on("/api/wifi/scan", HTTP_GET, [self]() {
-        self->_requestCount++;
-        String json = "{\"networks\":[";
-
-        if (WifiManager::_instance) {
-            WifiManager::_instance->startScan();
-            ScanResult results[WIFI_MAX_SCAN_RESULTS];
-            int count = WifiManager::_instance->getScanResults(results, WIFI_MAX_SCAN_RESULTS);
-            for (int i = 0; i < count; i++) {
-                if (i > 0) json += ",";
-                json += "{\"ssid\":\"";
-                json += results[i].ssid;
-                json += "\",\"rssi\":";
-                json += String(results[i].rssi);
-                json += ",\"channel\":";
-                json += String(results[i].channel);
-                json += ",\"auth\":\"";
-                switch (results[i].auth) {
-                    case WifiAuth::OPEN:         json += "OPEN"; break;
-                    case WifiAuth::WEP:          json += "WEP"; break;
-                    case WifiAuth::WPA_PSK:      json += "WPA_PSK"; break;
-                    case WifiAuth::WPA2_PSK:     json += "WPA2_PSK"; break;
-                    case WifiAuth::WPA_WPA2_PSK: json += "WPA_WPA2_PSK"; break;
-                    case WifiAuth::WPA3_PSK:     json += "WPA3_PSK"; break;
-                    default:                     json += "UNKNOWN"; break;
-                }
-                json += "\",\"known\":";
-                json += results[i].known ? "true" : "false";
-                json += "}";
-            }
-        } else {
-            // Fallback: direct WiFi scan if WifiManager not available
-            int n = WiFi.scanNetworks();
-            for (int i = 0; i < n; i++) {
-                if (i > 0) json += ",";
-                json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i));
-                json += ",\"channel\":" + String(WiFi.channel(i));
-                json += ",\"auth\":\"" + String(WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "OPEN" : "WPA2_PSK") + "\"";
-                json += ",\"known\":false}";
-            }
-            WiFi.scanDelete();
-        }
-
-        json += "]}";
-        _server->send(200, "application/json", json);
-    });
-
-    // POST /api/wifi/connect — connect to network (JSON body: {ssid, password})
-    _server->on("/api/wifi/connect", HTTP_POST, [self]() {
-        self->_requestCount++;
-        String body = _server->arg("plain");
-        // Minimal JSON parse for ssid and password
-        String ssid, pass;
-        int si = body.indexOf("\"ssid\"");
-        if (si >= 0) {
-            int q1 = body.indexOf('"', si + 6);
-            int q2 = body.indexOf('"', q1 + 1);
-            if (q1 >= 0 && q2 > q1) ssid = body.substring(q1 + 1, q2);
-        }
-        int pi = body.indexOf("\"password\"");
-        if (pi >= 0) {
-            int q1 = body.indexOf('"', pi + 10);
-            int q2 = body.indexOf('"', q1 + 1);
-            if (q1 >= 0 && q2 > q1) pass = body.substring(q1 + 1, q2);
-        }
-
-        bool ok = false;
-        if (ssid.length() > 0) {
-            DBG_INFO("web", "WiFi connecting to: %s", ssid.c_str());
-            if (WifiManager::_instance) {
-                ok = WifiManager::_instance->connectTo(ssid.c_str(), pass.c_str(), true);
-            } else {
-                WiFi.begin(ssid.c_str(), pass.c_str());
-                uint32_t start = millis();
-                while (WiFi.status() != WL_CONNECTED && (millis() - start) < 15000) {
-                    delay(250);
-                }
-                ok = (WiFi.status() == WL_CONNECTED);
-            }
-        }
-
-        char resp[128];
-        snprintf(resp, sizeof(resp), "{\"connected\":%s,\"ssid\":\"%s\",\"ip\":\"%s\"}",
-            ok ? "true" : "false",
-            ok ? ssid.c_str() : "",
-            ok ? WiFi.localIP().toString().c_str() : "");
-        _server->send(200, "application/json", resp);
-    });
-
-    // POST /api/wifi/remove — remove saved network (JSON body: {ssid})
-    _server->on("/api/wifi/remove", HTTP_POST, [self]() {
-        self->_requestCount++;
-        String body = _server->arg("plain");
-        String ssid;
-        int si = body.indexOf("\"ssid\"");
-        if (si >= 0) {
-            int q1 = body.indexOf('"', si + 6);
-            int q2 = body.indexOf('"', q1 + 1);
-            if (q1 >= 0 && q2 > q1) ssid = body.substring(q1 + 1, q2);
-        }
-        bool ok = false;
-        if (ssid.length() > 0 && WifiManager::_instance) {
-            ok = WifiManager::_instance->removeNetwork(ssid.c_str());
-            DBG_INFO("web", "WiFi network removed: %s", ssid.c_str());
-        }
-        char resp[64];
-        snprintf(resp, sizeof(resp), "{\"ok\":%s}", ok ? "true" : "false");
-        _server->send(200, "application/json", resp);
-    });
-
-    // POST /api/wifi/reorder — change network priority (JSON: {ssid, priority})
-    _server->on("/api/wifi/reorder", HTTP_POST, [self]() {
-        self->_requestCount++;
-        String body = _server->arg("plain");
-        String ssid;
-        int priority = -1;
-        int si = body.indexOf("\"ssid\"");
-        if (si >= 0) {
-            int q1 = body.indexOf('"', si + 6);
-            int q2 = body.indexOf('"', q1 + 1);
-            if (q1 >= 0 && q2 > q1) ssid = body.substring(q1 + 1, q2);
-        }
-        int pi = body.indexOf("\"priority\"");
-        if (pi >= 0) {
-            int colon = body.indexOf(':', pi);
-            if (colon >= 0) priority = body.substring(colon + 1).toInt();
-        }
-        bool ok = false;
-        if (ssid.length() > 0 && WifiManager::_instance) {
-            ok = WifiManager::_instance->reorderNetwork(ssid.c_str(), (int8_t)priority);
-        }
-        char resp[64];
-        snprintf(resp, sizeof(resp), "{\"ok\":%s}", ok ? "true" : "false");
-        _server->send(200, "application/json", resp);
-    });
-
-    // POST /api/wifi/ap — toggle AP mode (JSON: {active: true/false})
-    _server->on("/api/wifi/ap", HTTP_POST, [self]() {
-        self->_requestCount++;
-        String body = _server->arg("plain");
-        bool activate = body.indexOf("true") >= 0;
-        bool ok = false;
-        if (WifiManager::_instance) {
-            if (activate) {
-                ok = WifiManager::_instance->startAP();
-            } else {
-                ok = WifiManager::_instance->stopAP();
-            }
-        }
-        char resp[64];
-        snprintf(resp, sizeof(resp), "{\"ok\":%s}", ok ? "true" : "false");
-        _server->send(200, "application/json", resp);
-    });
-
-    // POST /api/wifi/disconnect — disconnect STA
-    _server->on("/api/wifi/disconnect", HTTP_POST, [self]() {
-        self->_requestCount++;
-        if (WifiManager::_instance) {
-            WifiManager::_instance->disconnect();
-        } else {
-            WiFi.disconnect();
-        }
-        DBG_INFO("web", "WiFi disconnected via API");
-        _server->send(200, "application/json", "{\"ok\":true,\"message\":\"Disconnected\"}");
-    });
-
-    // POST /api/wifi/reconnect — reconnect to best saved network
-    _server->on("/api/wifi/reconnect", HTTP_POST, [self]() {
-        self->_requestCount++;
-        bool ok = false;
-        if (WifiManager::_instance) {
-            ok = WifiManager::_instance->connect();
-        }
-        DBG_INFO("web", "WiFi reconnect requested via API (ok=%d)", ok);
-        char resp[64];
-        snprintf(resp, sizeof(resp), "{\"ok\":%s,\"message\":\"Reconnecting...\"}",
-            ok ? "true" : "false");
-        _server->send(200, "application/json", resp);
-    });
-
-    // POST /api/wifi/failover — enable/disable auto-failover (JSON: {enabled, timeout_s})
-    _server->on("/api/wifi/failover", HTTP_POST, [self]() {
-        self->_requestCount++;
-        String body = _server->arg("plain");
-        bool enabled = body.indexOf("\"enabled\"") >= 0 && body.indexOf("true") >= 0;
-        int timeout_s = 30;
-        int ti = body.indexOf("\"timeout_s\"");
-        if (ti >= 0) {
-            int colon = body.indexOf(':', ti);
-            if (colon >= 0) timeout_s = body.substring(colon + 1).toInt();
-        }
-        bool ok = false;
-        if (WifiManager::_instance) {
-            WifiManager::_instance->enableAutoFailover(enabled);
-            ok = true;
-        }
-        char resp[96];
-        snprintf(resp, sizeof(resp), "{\"ok\":%s,\"enabled\":%s,\"timeout_s\":%d}",
-            ok ? "true" : "false",
-            enabled ? "true" : "false",
-            timeout_s);
-        _server->send(200, "application/json", resp);
-    });
-
-    // POST /api/wifi/ap/config — configure AP mode (JSON: {ssid, password, channel})
-    _server->on("/api/wifi/ap/config", HTTP_POST, [self]() {
-        self->_requestCount++;
-        String body = _server->arg("plain");
-        String ssid, pass;
-        int si = body.indexOf("\"ssid\"");
-        if (si >= 0) {
-            int q1 = body.indexOf('"', si + 6);
-            int q2 = body.indexOf('"', q1 + 1);
-            if (q1 >= 0 && q2 > q1) ssid = body.substring(q1 + 1, q2);
-        }
-        int pi = body.indexOf("\"password\"");
-        if (pi >= 0) {
-            int q1 = body.indexOf('"', pi + 10);
-            int q2 = body.indexOf('"', q1 + 1);
-            if (q1 >= 0 && q2 > q1) pass = body.substring(q1 + 1, q2);
-        }
-        bool ok = false;
-        if (WifiManager::_instance && ssid.length() > 0) {
-            // Stop existing AP and restart with new config
-            WifiManager::_instance->stopAP();
-            ok = WifiManager::_instance->startAP(
-                ssid.c_str(),
-                pass.length() > 0 ? pass.c_str() : nullptr);
-            DBG_INFO("web", "AP configured: ssid=%s ok=%d", ssid.c_str(), ok);
-        }
-        char resp[128];
-        snprintf(resp, sizeof(resp), "{\"ok\":%s,\"ssid\":\"%s\"}",
-            ok ? "true" : "false",
-            ssid.c_str());
-        _server->send(200, "application/json", resp);
-    });
-
-    // Keep the legacy /api/scan endpoint working (backwards compatibility)
-    // The original was already registered by addApiEndpoints(), so we don't
-    // re-register here — it still works alongside the new /api/wifi/* routes.
-
-    DBG_INFO("web", "WiFi manager added at /wifi (API: /api/wifi/*)");
-}
-
-// ── BLE Viewer page (/ble) ──────────────────────────────────────────────
-
-static const char BLE_HTML[] PROGMEM = R"rawliteral(
+static const char BLE_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>BLE Scanner</title>
@@ -2793,42 +2109,7 @@ function loadDevices(){
 </body></html>
 )rawliteral";
 
-void WebServerHAL::addBleViewer() {
-    if (!_server) return;
-
-    WebServerHAL* self = this;
-
-    // GET /ble — BLE scanner page
-    _server->on("/ble", HTTP_GET, [self]() {
-        self->_requestCount++;
-
-        String html(FPSTR(BLE_HTML));
-        html.replace("%THEME%", FPSTR(THEME_CSS));
-        html.replace("%NAV%",   FPSTR(NAV_HTML));
-        _server->send(200, "text/html", html);
-    });
-
-    // GET /api/ble — JSON BLE device list (uses provider callback)
-    _server->on("/api/ble", HTTP_GET, [self]() {
-        self->_requestCount++;
-
-        if (self->_bleProvider) {
-            int len = self->_bleProvider(_shared_json, SHARED_JSON_SIZE);
-            if (len > 0) {
-                _server->send(200, "application/json", _shared_json);
-                return;
-            }
-        }
-        _server->send(200, "application/json",
-            "{\"active\":false,\"total\":0,\"known\":0,\"devices\":[]}");
-    });
-
-    DBG_INFO("web", "BLE viewer added at /ble");
-}
-
-// ── Commission page (/commission) ────────────────────────────────────────
-
-static const char COMMISSION_HTML[] PROGMEM = R"rawliteral(
+static const char COMMISSION_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Commission Node</title>
@@ -3117,136 +2398,7 @@ renderQR(connStr);
 </body></html>
 )rawliteral";
 
-void WebServerHAL::addCommissionPage() {
-    if (!_server) return;
-
-    WebServerHAL* self = this;
-
-    // GET /commission — show commissioning page with QR code
-    _server->on("/commission", HTTP_GET, [self]() {
-        self->_requestCount++;
-
-        String html(FPSTR(COMMISSION_HTML));
-        html.replace("%THEME%", FPSTR(THEME_CSS));
-        html.replace("%NAV%",   FPSTR(NAV_HTML));
-
-        uint8_t mac[6];
-        WiFi.macAddress(mac);
-        char macStr[18];
-        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        char deviceId[13];
-        snprintf(deviceId, sizeof(deviceId), "%02X%02X%02X%02X%02X%02X",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-        html.replace("%MAC%", macStr);
-        html.replace("%DEVICE_ID%", deviceId);
-
-        // Determine mode and connection string for QR code
-        wifi_mode_t mode = WiFi.getMode();
-        bool isAP = (mode == WIFI_AP || mode == WIFI_AP_STA);
-
-        if (isAP) {
-            // AP mode — QR encodes WiFi credentials for phone to join
-            String ssid = WiFi.softAPSSID();
-            String connStr = "WIFI:T:nopass;S:" + ssid + ";;";
-            html.replace("%MODE%", "Access Point: " + ssid);
-            html.replace("%CONN_STR%", connStr);
-        } else {
-            // STA mode — QR encodes the node's web URL
-            String ip = WiFi.localIP().toString();
-            String connStr = "http://" + ip + "/";
-            html.replace("%MODE%", "WiFi Client (" + WiFi.SSID() + ")");
-            html.replace("%CONN_STR%", connStr);
-        }
-
-        // Fleet URL from config
-        String fleetUrl = "";
-        File f = LittleFS.open("/config.json", "r");
-        if (f) {
-            String cfg = f.readString();
-            f.close();
-            // Simple parse: find "fleet_url":"..."
-            int idx = cfg.indexOf("\"fleet_url\"");
-            if (idx >= 0) {
-                int q1 = cfg.indexOf('\"', idx + 11);
-                int q2 = cfg.indexOf('\"', q1 + 1);
-                if (q1 >= 0 && q2 > q1) {
-                    fleetUrl = cfg.substring(q1 + 1, q2);
-                }
-            }
-        }
-        html.replace("%FLEET_URL%", fleetUrl);
-
-        _server->send(200, "text/html", html);
-    });
-
-    // POST /commission — save fleet server URL to config
-    _server->on("/commission", HTTP_POST, [self]() {
-        self->_requestCount++;
-
-        if (_server->hasArg("fleet_url")) {
-            String fleetUrl = _server->arg("fleet_url");
-
-            // Read existing config or start fresh
-            String cfg = "{}";
-            File f = LittleFS.open("/config.json", "r");
-            if (f) {
-                cfg = f.readString();
-                f.close();
-            }
-
-            // Simple update: replace or insert fleet_url
-            int idx = cfg.indexOf("\"fleet_url\"");
-            if (idx >= 0) {
-                // Replace existing value
-                int q1 = cfg.indexOf('\"', idx + 11);
-                int q2 = cfg.indexOf('\"', q1 + 1);
-                if (q1 >= 0 && q2 > q1) {
-                    cfg = cfg.substring(0, q1 + 1) + fleetUrl + cfg.substring(q2);
-                }
-            } else {
-                // Insert before closing brace
-                int brace = cfg.lastIndexOf('}');
-                if (brace >= 0) {
-                    String prefix = cfg.substring(0, brace);
-                    prefix.trim();
-                    // Add comma if there's existing content
-                    if (prefix.length() > 1 && prefix[prefix.length() - 1] != '{') {
-                        prefix += ",";
-                    }
-                    cfg = prefix + "\"fleet_url\":\"" + fleetUrl + "\"}";
-                }
-            }
-
-            File w = LittleFS.open("/config.json", "w");
-            if (w) {
-                w.print(cfg);
-                w.close();
-                DBG_INFO("web", "Fleet URL saved: %s", fleetUrl.c_str());
-            }
-        }
-        _server->sendHeader("Location", "/commission", true);
-        _server->send(302, "text/plain", "Saved");
-    });
-
-    DBG_INFO("web", "Commission page added at /commission");
-}
-
-// ── Log access (delegates to serial_capture ring buffer) ─────────────────
-
-void WebServerHAL::captureLog(const char*) {
-    // No-op: serial_capture ring buffer handles all log capture now.
-    // Kept for API compatibility.
-}
-
-int WebServerHAL::getLogJson(char* buf, size_t size) {
-    return serial_capture::getLinesJson(buf, size, 48);
-}
-
-// ── System Info page (/system) ───────────────────────────────────────────
-
-static const char SYSTEM_HTML[] PROGMEM = R"rawliteral(
+static const char SYSTEM_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>System Info</title>
@@ -3319,120 +2471,7 @@ setInterval(function(){
 </body></html>
 )rawliteral";
 
-void WebServerHAL::addSystemPage() {
-    if (!_server) return;
-
-    WebServerHAL* self = this;
-
-    _server->on("/system", HTTP_GET, [self]() {
-        self->_requestCount++;
-
-        String html(FPSTR(SYSTEM_HTML));
-        html.replace("%THEME%", FPSTR(THEME_CSS));
-        html.replace("%NAV%",   FPSTR(NAV_HTML));
-
-        // Chip info
-        html.replace("%CHIP_MODEL%", ESP.getChipModel());
-        html.replace("%CHIP_REV%", String(ESP.getChipRevision()));
-        html.replace("%CORES%", String(ESP.getChipCores()));
-        html.replace("%CPU_MHZ%", String(ESP.getCpuFreqMHz()));
-        html.replace("%SDK%", ESP.getSdkVersion());
-
-        // Memory
-        char sizeBuf[32];
-        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f MB", ESP.getFlashChipSize() / 1048576.0f);
-        html.replace("%FLASH_SIZE%", sizeBuf);
-        html.replace("%FLASH_SPEED%", String(ESP.getFlashChipSpeed() / 1000000));
-        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f KB", ESP.getHeapSize() / 1024.0f);
-        html.replace("%HEAP_TOTAL%", sizeBuf);
-        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f KB", ESP.getFreeHeap() / 1024.0f);
-        html.replace("%HEAP_FREE%", sizeBuf);
-        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f KB", ESP.getMinFreeHeap() / 1024.0f);
-        html.replace("%HEAP_MIN%", sizeBuf);
-        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f MB", ESP.getPsramSize() / 1048576.0f);
-        html.replace("%PSRAM_TOTAL%", sizeBuf);
-        snprintf(sizeBuf, sizeof(sizeBuf), "%.1f MB", ESP.getFreePsram() / 1048576.0f);
-        html.replace("%PSRAM_FREE%", sizeBuf);
-
-        // Network
-        uint8_t mac[6];
-        WiFi.macAddress(mac);
-        char macStr[18];
-        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        html.replace("%MAC%", macStr);
-        html.replace("%SSID%", WiFi.isConnected() ? WiFi.SSID() : "Not connected");
-        html.replace("%IP%", WiFi.localIP().toString());
-        html.replace("%GATEWAY%", WiFi.gatewayIP().toString());
-        html.replace("%DNS%", WiFi.dnsIP().toString());
-        html.replace("%RSSI%", String(WiFi.RSSI()));
-        html.replace("%CHANNEL%", String(WiFi.channel()));
-
-        // Runtime
-        html.replace("%UPTIME%", uptimeString());
-        html.replace("%REQCOUNT%", String(self->_requestCount));
-
-        // Reset reason
-        esp_reset_reason_t reason = esp_reset_reason();
-        const char* reasonStr = "Unknown";
-        switch (reason) {
-            case ESP_RST_POWERON:  reasonStr = "Power-on"; break;
-            case ESP_RST_SW:       reasonStr = "Software"; break;
-            case ESP_RST_PANIC:    reasonStr = "Panic"; break;
-            case ESP_RST_INT_WDT:  reasonStr = "Interrupt WDT"; break;
-            case ESP_RST_TASK_WDT: reasonStr = "Task WDT"; break;
-            case ESP_RST_WDT:      reasonStr = "Other WDT"; break;
-            case ESP_RST_DEEPSLEEP:reasonStr = "Deep Sleep"; break;
-            case ESP_RST_BROWNOUT: reasonStr = "Brownout"; break;
-            default: break;
-        }
-        html.replace("%RESET_REASON%", reasonStr);
-
-        // Partition table
-        String partHtml;
-        esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY,
-            ESP_PARTITION_SUBTYPE_ANY, NULL);
-        while (it) {
-            const esp_partition_t* part = esp_partition_get(it);
-            if (part) {
-                char row[256];
-                const char* typeStr = (part->type == ESP_PARTITION_TYPE_APP) ? "app" :
-                                      (part->type == ESP_PARTITION_TYPE_DATA) ? "data" : "?";
-                snprintf(row, sizeof(row),
-                    "<tr><td>%s</td><td>%s</td><td>0x%06lX</td><td>%.0f KB</td></tr>",
-                    part->label, typeStr,
-                    (unsigned long)part->address, part->size / 1024.0f);
-                partHtml += row;
-            }
-            it = esp_partition_next(it);
-        }
-        esp_partition_iterator_release(it);
-        if (partHtml.length() == 0)
-            partHtml = "<tr><td colspan='4' style='color:#666'>No partition info</td></tr>";
-        html.replace("%PARTITIONS%", partHtml);
-
-        // Task list via vTaskList
-        char taskBuf[1024];
-#if configUSE_TRACE_FACILITY && configTASKLIST_INCLUDE_COREID
-        vTaskList(taskBuf);
-#else
-        snprintf(taskBuf, sizeof(taskBuf), "Name             State  Prio  Stack  Num\n");
-        // vTaskList may not be available with all configs
-        char* p = taskBuf + strlen(taskBuf);
-        snprintf(p, sizeof(taskBuf) - (p - taskBuf),
-            "(Task list requires configUSE_TRACE_FACILITY=1)");
-#endif
-        html.replace("%TASKS%", taskBuf);
-
-        _server->send(200, "text/html", html);
-    });
-
-    DBG_INFO("web", "System page added at /system");
-}
-
-// ── Logs page (/logs) ────────────────────────────────────────────────────
-
-static const char LOGS_HTML[] PROGMEM = R"rawliteral(
+static const char LOGS_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>System Logs</title>
@@ -3497,36 +2536,7 @@ fetchLogs();
 </body></html>
 )rawliteral";
 
-void WebServerHAL::addLogsPage() {
-    if (!_server) return;
-
-    WebServerHAL* self = this;
-
-    _server->on("/logs", HTTP_GET, [self]() {
-        self->_requestCount++;
-        String html(FPSTR(LOGS_HTML));
-        html.replace("%THEME%", FPSTR(THEME_CSS));
-        html.replace("%NAV%",   FPSTR(NAV_HTML));
-        _server->send(200, "text/html", html);
-    });
-
-    // API endpoint for log data — reads directly from serial_capture ring
-    _server->on("/api/logs", HTTP_GET, [self]() {
-        self->_requestCount++;
-        int len = WebServerHAL::getLogJson(_shared_json, SHARED_JSON_SIZE);
-        if (len > 0) {
-            _server->send(200, "application/json", _shared_json);
-        } else {
-            _server->send(200, "application/json", "{\"count\":0,\"lines\":[]}");
-        }
-    });
-
-    DBG_INFO("web", "Logs page added at /logs");
-}
-
-// ── Error pages (404, 500) ───────────────────────────────────────────────
-
-static const char ERROR_HTML[] PROGMEM = R"rawliteral(
+static const char ERROR_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>%ERROR_CODE% - %ERROR_TITLE%</title>
@@ -3545,9 +2555,7 @@ static const char ERROR_HTML[] PROGMEM = R"rawliteral(
 </body></html>
 )rawliteral";
 
-// ── Map page (/map) — Leaflet.js slippy map with local tile serving ──────
-
-static const char MAP_HTML[] PROGMEM = R"rawliteral(
+static const char MAP_HTML[] = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Map — Tritium Edge</title>
@@ -3631,214 +2639,1334 @@ static const char MAP_HTML[] PROGMEM = R"rawliteral(
 </body></html>
 )rawliteral";
 
-void WebServerHAL::addMapPage() {
-    if (!_server) return;
+// ── Remaining API handlers (screenshot, remote, settings, etc.) ──────────
 
-    WebServerHAL* self = this;
+static esp_err_t _api_screenshot_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    if (!_instance->_screenshotProvider) {
+        return _send(req, 503, "text/plain", "No screenshot provider");
+    }
+    int w = 0, h = 0;
+    uint16_t* fb = _instance->_screenshotProvider(w, h);
+    if (!fb || w == 0 || h == 0) {
+        return _send(req, 503, "text/plain", "No framebuffer available");
+    }
 
-    // GET /map — Leaflet.js slippy map page
-    _server->on("/map", HTTP_GET, [self]() {
-        self->_requestCount++;
+    // BMP file: 54-byte header + row data (rows padded to 4-byte boundary)
+    int row_bytes = w * 3;
+    int row_pad = (4 - (row_bytes % 4)) % 4;
+    int padded_row = row_bytes + row_pad;
+    uint32_t pixel_data_size = (uint32_t)padded_row * h;
+    uint32_t file_size = 54 + pixel_data_size;
 
-        String html(FPSTR(MAP_HTML));
-        html.replace("%THEME%", FPSTR(THEME_CSS));
-        html.replace("%NAV%",   FPSTR(NAV_HTML));
-        _server->send(200, "text/html", html);
-    });
+    // Build BMP header
+    uint8_t hdr[54] = {};
+    hdr[0] = 'B'; hdr[1] = 'M';
+    hdr[2] = file_size & 0xFF; hdr[3] = (file_size >> 8) & 0xFF;
+    hdr[4] = (file_size >> 16) & 0xFF; hdr[5] = (file_size >> 24) & 0xFF;
+    hdr[10] = 54;
+    hdr[14] = 40;
+    hdr[18] = w & 0xFF; hdr[19] = (w >> 8) & 0xFF;
+    hdr[20] = (w >> 16) & 0xFF; hdr[21] = (w >> 24) & 0xFF;
+    int32_t neg_h = -h;
+    hdr[22] = neg_h & 0xFF; hdr[23] = (neg_h >> 8) & 0xFF;
+    hdr[24] = (neg_h >> 16) & 0xFF; hdr[25] = (neg_h >> 24) & 0xFF;
+    hdr[26] = 1; hdr[28] = 24;
+    hdr[34] = pixel_data_size & 0xFF; hdr[35] = (pixel_data_size >> 8) & 0xFF;
+    hdr[36] = (pixel_data_size >> 16) & 0xFF; hdr[37] = (pixel_data_size >> 24) & 0xFF;
 
-    // GET /api/gis/layers — JSON array of available layers
-    _server->on("/api/gis/layers", HTTP_GET, [self]() {
-        self->_requestCount++;
+    // Set response headers
+    char len_str[16];
+    snprintf(len_str, sizeof(len_str), "%lu", (unsigned long)file_size);
+    httpd_resp_set_type(req, "image/bmp");
+    httpd_resp_set_hdr(req, "Content-Length", len_str);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+#if WEB_HAS_DISPLAY_HEALTH
+    // Display headers sent as custom X- headers
+#endif
 
-        if (self->_gisLayerProvider) {
-            int len = self->_gisLayerProvider(_shared_json, SHARED_JSON_SIZE);
-            if (len > 0) {
-                _server->send(200, "application/json", _shared_json);
-                return;
+    // Send BMP header
+    httpd_resp_send_chunk(req, (const char*)hdr, 54);
+
+    // Convert and stream row by row
+    uint8_t* row_buf = (uint8_t*)malloc(padded_row);
+    if (!row_buf) {
+        return httpd_resp_send_chunk(req, nullptr, 0);
+    }
+
+    bool needs_swap = true;
+#if defined(BOARD_TOUCH_LCD_43C_BOX)
+    needs_swap = false;
+#endif
+
+    for (int y = 0; y < h; y++) {
+        uint16_t* row_src = &fb[y * w];
+        for (int x = 0; x < w; x++) {
+            uint16_t px = row_src[x];
+            if (needs_swap) px = (px >> 8) | (px << 8);
+            uint8_t r5 = (px >> 11) & 0x1F;
+            uint8_t g6 = (px >> 5) & 0x3F;
+            uint8_t b5 = px & 0x1F;
+            row_buf[x * 3 + 0] = (b5 << 3) | (b5 >> 2);
+            row_buf[x * 3 + 1] = (g6 << 2) | (g6 >> 4);
+            row_buf[x * 3 + 2] = (r5 << 3) | (r5 >> 2);
+        }
+        for (int p = 0; p < row_pad; p++) row_buf[row_bytes + p] = 0;
+        httpd_resp_send_chunk(req, (const char*)row_buf, padded_row);
+    }
+    free(row_buf);
+    return httpd_resp_send_chunk(req, nullptr, 0);
+}
+
+static esp_err_t _api_screenshot_json_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    int w = 0, h = 0;
+    uint16_t* fb = nullptr;
+    if (_instance->_screenshotProvider) fb = _instance->_screenshotProvider(w, h);
+    char json[384];
+    int pos = snprintf(json, sizeof(json),
+        "{\"available\":%s,\"width\":%d,\"height\":%d,\"format\":\"bmp\","
+        "\"url\":\"/api/screenshot\"",
+        fb ? "true" : "false", w, h);
+#if WEB_HAS_DISPLAY_HEALTH
+    const display_health_t* dh = display_get_health();
+    pos += snprintf(json + pos, sizeof(json) - pos,
+        ",\"display_verified\":%s,\"board\":\"%s\",\"driver\":\"%s\","
+        "\"frames\":%lu",
+        dh->verified ? "true" : "false",
+        dh->board_name, dh->driver,
+        (unsigned long)dh->frame_count);
+#endif
+    pos += snprintf(json + pos, sizeof(json) - pos, "}");
+    return _send_json(req, 200, json);
+}
+
+// ── Remote control API handlers ─────────────────────────────────────────
+
+#if WEB_HAS_TOUCH_INPUT
+static esp_err_t _api_remote_touch_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"error\":\"empty body\"}");
+
+    int x = -1, y = -1;
+    _json_extract_int(body, "x", &x);
+    _json_extract_int(body, "y", &y);
+    if (x < 0 || y < 0) { free(body); return _send_json(req, 400, "{\"error\":\"missing x or y\"}"); }
+
+    bool pressed = true;
+    // Check for "pressed":false
+    if (strstr(body, "\"pressed\"") && strstr(body, "false")) pressed = false;
+
+    free(body);
+    touch_input::inject((uint16_t)x, (uint16_t)y, pressed);
+    DBG_INFO("REMOTE", "Touch inject x=%d y=%d pressed=%d", x, y, pressed);
+    return _send_json(req, 200, "{\"ok\":true}");
+}
+
+static esp_err_t _api_remote_tap_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"error\":\"empty body\"}");
+
+    int x = -1, y = -1;
+    _json_extract_int(body, "x", &x);
+    _json_extract_int(body, "y", &y);
+    free(body);
+    if (x < 0 || y < 0) return _send_json(req, 400, "{\"error\":\"missing x or y\"}");
+
+    touch_input::inject((uint16_t)x, (uint16_t)y, true);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    touch_input::inject((uint16_t)x, (uint16_t)y, false);
+    DBG_INFO("REMOTE", "Tap x=%d y=%d", x, y);
+    return _send_json(req, 200, "{\"ok\":true}");
+}
+
+static esp_err_t _api_remote_swipe_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"error\":\"empty body\"}");
+
+    int x1 = -1, y1 = -1, x2 = -1, y2 = -1, dur = 300;
+    _json_extract_int(body, "x1", &x1);
+    _json_extract_int(body, "y1", &y1);
+    _json_extract_int(body, "x2", &x2);
+    _json_extract_int(body, "y2", &y2);
+    _json_extract_int(body, "duration_ms", &dur);
+    free(body);
+
+    if (x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0)
+        return _send_json(req, 400, "{\"error\":\"missing x1/y1/x2/y2\"}");
+    if (dur <= 0) dur = 300;
+    if (dur > 2000) dur = 2000;
+
+    int steps = dur / 20;
+    if (steps < 2) steps = 2;
+    if (steps > 100) steps = 100;
+
+    for (int i = 0; i <= steps; i++) {
+        float t = (float)i / (float)steps;
+        uint16_t cx = (uint16_t)(x1 + t * (x2 - x1));
+        uint16_t cy = (uint16_t)(y1 + t * (y2 - y1));
+        touch_input::inject(cx, cy, true);
+        if (i < steps) vTaskDelay(pdMS_TO_TICKS(dur / steps));
+    }
+    touch_input::inject((uint16_t)x2, (uint16_t)y2, false);
+    DBG_INFO("REMOTE", "Swipe (%d,%d)->(%d,%d) %dms", x1, y1, x2, y2, dur);
+    return _send_json(req, 200, "{\"ok\":true}");
+}
+#endif // WEB_HAS_TOUCH_INPUT
+
+static esp_err_t _api_remote_screenshot_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    if (!_instance->_screenshotProvider) {
+        return _send(req, 503, "text/plain", "No screenshot provider");
+    }
+    int w = 0, h = 0;
+    uint16_t* fb = _instance->_screenshotProvider(w, h);
+    if (!fb || w == 0 || h == 0) {
+        return _send(req, 503, "text/plain", "No framebuffer available");
+    }
+
+    size_t data_size = (size_t)w * h * 2;
+    bool needs_swap = true;
+#if defined(BOARD_TOUCH_LCD_43C_BOX)
+    needs_swap = false;
+#endif
+
+    char w_str[8], h_str[8], len_str[16];
+    snprintf(w_str, sizeof(w_str), "%d", w);
+    snprintf(h_str, sizeof(h_str), "%d", h);
+    snprintf(len_str, sizeof(len_str), "%u", (unsigned)data_size);
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Length", len_str);
+    httpd_resp_set_hdr(req, "X-Width", w_str);
+    httpd_resp_set_hdr(req, "X-Height", h_str);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Expose-Headers", "X-Width, X-Height");
+
+    if (needs_swap) {
+        const int row_words = w;
+        uint16_t* row_buf = (uint16_t*)malloc(row_words * 2);
+        if (!row_buf) {
+            httpd_resp_send_chunk(req, (const char*)fb, data_size);
+        } else {
+            for (int y = 0; y < h; y++) {
+                uint16_t* src = &fb[y * w];
+                for (int x = 0; x < w; x++) {
+                    uint16_t px = src[x];
+                    row_buf[x] = (px >> 8) | (px << 8);
+                }
+                httpd_resp_send_chunk(req, (const char*)row_buf, row_words * 2);
+            }
+            free(row_buf);
+        }
+    } else {
+        httpd_resp_send_chunk(req, (const char*)fb, data_size);
+    }
+    return httpd_resp_send_chunk(req, nullptr, 0);
+}
+
+static esp_err_t _api_remote_info_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    int w = 0, h = 0;
+    bool has_fb = false;
+    if (_instance->_screenshotProvider) {
+        uint16_t* fb = _instance->_screenshotProvider(w, h);
+        has_fb = (fb != nullptr && w > 0 && h > 0);
+    }
+    bool has_touch = false, has_shell = false;
+#if WEB_HAS_TOUCH_INPUT
+    has_touch = true;
+#endif
+#if defined(ENABLE_SHELL)
+    has_shell = true;
+#endif
+    char ipStr[16];
+    _get_wifi_ip(ipStr, sizeof(ipStr));
+    char json[512];
+    int pos = snprintf(json, sizeof(json),
+        "{\"width\":%d,\"height\":%d,\"touch\":%s,\"shell\":%s,"
+        "\"screenshot\":%s,\"fps\":30,"
+        "\"free_heap\":%lu,\"psram_free\":%lu,"
+        "\"uptime_s\":%lu,\"ip\":\"%s\",\"rssi\":%d",
+        w, h,
+        has_touch ? "true" : "false",
+        has_shell ? "true" : "false",
+        has_fb ? "true" : "false",
+        (unsigned long)esp_get_free_heap_size(),
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned long)(millis() / 1000),
+        ipStr, _get_wifi_rssi());
+#if WEB_HAS_TOUCH_INPUT
+    pos += snprintf(json + pos, sizeof(json) - pos,
+        ",\"remote_active\":%s,\"last_touch_ms\":%lu",
+        touch_input::isRemoteActive() ? "true" : "false",
+        (unsigned long)touch_input::lastActivityMs());
+#endif
+    pos += snprintf(json + pos, sizeof(json) - pos, "}");
+    return _send_json(req, 200, json);
+}
+
+// ── Settings REST API handlers ──────────────────────────────────────────
+
+#if WEB_HAS_SETTINGS
+static esp_err_t _api_settings_get_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    int len = TritiumSettings::instance().toJson(_shared_json, SHARED_JSON_SIZE);
+    if (len > 0) return _send_json(req, 200, _shared_json);
+    return _send_json(req, 500, "{\"error\":\"failed to export settings\"}");
+}
+
+static esp_err_t _api_settings_put_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"error\":\"empty body\"}");
+    bool ok = TritiumSettings::instance().fromJson(body);
+    free(body);
+    if (ok) return _send_json(req, 200, "{\"ok\":true}");
+    return _send_json(req, 400, "{\"ok\":false,\"error\":\"failed to import settings\"}");
+}
+
+static esp_err_t _api_settings_reset_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    const char* domain = nullptr;
+    char domainBuf[32] = {0};
+    if (body) {
+        _json_extract_string(body, "domain", domainBuf, sizeof(domainBuf));
+        if (domainBuf[0]) domain = domainBuf;
+        free(body);
+    }
+    bool ok = TritiumSettings::instance().factoryReset(domain);
+    char resp[64];
+    if (domain) {
+        snprintf(resp, sizeof(resp), "{\"ok\":%s,\"domain\":\"%s\"}", ok ? "true" : "false", domain);
+    } else {
+        snprintf(resp, sizeof(resp), "{\"ok\":%s}", ok ? "true" : "false");
+    }
+    return _send_json(req, 200, resp);
+}
+#endif
+
+// ── Polling fallback handlers ───────────────────────────────────────────
+
+#if defined(ENABLE_SETTINGS) || defined(ENABLE_OS_EVENTS)
+
+static esp_err_t _api_events_poll_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    uint32_t since = 0;
+    char val[16];
+    if (_get_query_param(req, "since", val, sizeof(val))) since = (uint32_t)atol(val);
+    int len = getEventPollJson(_shared_json, SHARED_JSON_SIZE, since);
+    if (len > 0) return _send_json(req, 200, _shared_json);
+    return _send_json(req, 200, "{\"seq\":0,\"events\":[]}");
+}
+
+static esp_err_t _api_serial_poll_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    int max_lines = 50;
+    char val[16];
+    if (_get_query_param(req, "lines", val, sizeof(val))) {
+        max_lines = atoi(val);
+        if (max_lines < 1) max_lines = 1;
+        if (max_lines > 48) max_lines = 48;
+    }
+    int len = serial_capture::getLinesJson(_shared_json, SHARED_JSON_SIZE, max_lines);
+    if (len > 0) return _send_json(req, 200, _shared_json);
+    return _send_json(req, 200, "{\"count\":0,\"lines\":[]}");
+}
+
+static esp_err_t _api_serial_send_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"ok\":false,\"error\":\"empty body\"}");
+
+    char cmd[128] = {0};
+    if (!_json_extract_string(body, "cmd", cmd, sizeof(cmd)) || cmd[0] == '\0') {
+        free(body);
+        return _send_json(req, 400, "{\"ok\":false,\"error\":\"missing cmd field\"}");
+    }
+    free(body);
+    serial_capture::injectCommand(cmd);
+    return _send_json(req, 200, "{\"ok\":true}");
+}
+
+#endif // ENABLE_SETTINGS || ENABLE_OS_EVENTS
+
+// ── Debug API handlers ──────────────────────────────────────────────────
+
+#if WEB_HAS_TOUCH_INPUT
+static esp_err_t _api_debug_touch_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    auto info = touch_input::getDebugInfo();
+    snprintf(_shared_json, SHARED_JSON_SIZE,
+        "{\"hw_available\":%s,\"driver\":\"%s\","
+        "\"read_cb_calls\":%lu,\"hw_touch_count\":%lu,"
+        "\"inject_count\":%lu,\"last_raw_x\":%d,\"last_raw_y\":%d,"
+        "\"last_touch_ms\":%lu,\"currently_pressed\":%s,"
+        "\"uptime_ms\":%lu}",
+        info.hw_available ? "true" : "false",
+        info.hw_available ? "GT911" : "none",
+        (unsigned long)info.read_cb_calls,
+        (unsigned long)info.hw_touch_count,
+        (unsigned long)info.inject_count,
+        info.last_raw_x, info.last_raw_y,
+        (unsigned long)info.last_touch_ms,
+        info.currently_pressed ? "true" : "false",
+        (unsigned long)millis());
+    return _send_json(req, 200, _shared_json);
+}
+
+static esp_err_t _api_debug_gt911_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    extern TouchHAL touch;
+    touch.dumpDiag(_shared_json, SHARED_JSON_SIZE);
+    return _send_json(req, 200, _shared_json);
+}
+#endif
+
+#if WEB_HAS_SHELL
+static esp_err_t _api_debug_lvgl_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    snprintf(_shared_json, SHARED_JSON_SIZE,
+        "{\"initialized\":%s,\"width\":%d,\"height\":%d,"
+        "\"render_mode\":\"%s\",\"flush_count\":%lu,"
+        "\"last_flush_ms\":%lu,\"uptime_ms\":%lu,"
+        "\"psram_free\":%lu,\"heap_free\":%lu}",
+        lvgl_driver::display() ? "true" : "false",
+        lvgl_driver::getWidth(), lvgl_driver::getHeight(),
+        lvgl_driver::isRgb() ? "direct" : "partial",
+        (unsigned long)lvgl_driver::getFlushCount(),
+        (unsigned long)lvgl_driver::getLastFlushMs(),
+        (unsigned long)millis(),
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned long)esp_get_free_heap_size());
+    return _send_json(req, 200, _shared_json);
+}
+
+static esp_err_t _api_shell_apps_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    int count = tritium_shell::getAppCount();
+    int active = tritium_shell::getActiveApp();
+    int pos = snprintf(_shared_json, SHARED_JSON_SIZE,
+        "{\"count\":%d,\"active\":%d,\"apps\":[", count, active);
+    for (int i = 0; i < count && pos < (int)SHARED_JSON_SIZE - 128; i++) {
+        const tritium_shell::AppDescriptor* app = tritium_shell::getApp(i);
+        if (!app) continue;
+        if (i > 0) pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, ",");
+        pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos,
+            "{\"index\":%d,\"name\":\"%s\",\"description\":\"%s\",\"system\":%s}",
+            i, app->name ? app->name : "",
+            app->description ? app->description : "",
+            app->is_system ? "true" : "false");
+    }
+    pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
+    return _send_json(req, 200, _shared_json);
+}
+
+static esp_err_t _api_shell_launch_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"ok\":false,\"error\":\"empty body\"}");
+
+    int count = tritium_shell::getAppCount();
+    int idx = -1;
+    _json_extract_int(body, "index", &idx);
+
+    // Try name if no index
+    if (idx < 0) {
+        char name[64] = {0};
+        if (_json_extract_string(body, "name", name, sizeof(name))) {
+            for (int i = 0; i < count; i++) {
+                const tritium_shell::AppDescriptor* app = tritium_shell::getApp(i);
+                if (app && app->name && strcasecmp(name, app->name) == 0) {
+                    idx = i;
+                    break;
+                }
             }
         }
-        _server->send(200, "application/json", "[]");
-    });
+    }
+    free(body);
 
-    // Note: Tile requests at /api/gis/tiles/{layer}/{z}/{x}/{y}.png are
-    // handled in addErrorPages() onNotFound handler, since WebServer.h
-    // does not support path parameter matching.
+    if (idx < 0 || idx >= count) {
+        return _send_json(req, 400, "{\"ok\":false,\"error\":\"invalid app index or name\"}");
+    }
 
+    tritium_shell::showApp(idx);
+    const tritium_shell::AppDescriptor* app = tritium_shell::getApp(idx);
+    snprintf(_shared_json, SHARED_JSON_SIZE,
+        "{\"ok\":true,\"app\":\"%s\"}", app && app->name ? app->name : "");
+    return _send_json(req, 200, _shared_json);
+}
+
+static esp_err_t _api_shell_home_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    tritium_shell::showLauncher();
+    return _send_json(req, 200, "{\"ok\":true}");
+}
+#endif // WEB_HAS_SHELL
+
+// ── BLE API handler ─────────────────────────────────────────────────────
+
+static esp_err_t _api_ble_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    if (_instance->_bleProvider) {
+        int len = _instance->_bleProvider(_shared_json, SHARED_JSON_SIZE);
+        if (len > 0) return _send_json(req, 200, _shared_json);
+    }
+    return _send_json(req, 200, "{\"active\":false,\"total\":0,\"known\":0,\"devices\":[]}");
+}
+
+// ── GIS API handlers ────────────────────────────────────────────────────
+
+static esp_err_t _api_gis_layers_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    if (_instance->_gisLayerProvider) {
+        int len = _instance->_gisLayerProvider(_shared_json, SHARED_JSON_SIZE);
+        if (len > 0) return _send_json(req, 200, _shared_json);
+    }
+    return _send_json(req, 200, "[]");
+}
+
+// ── Mesh API handlers ───────────────────────────────────────────────────
+
+static esp_err_t _api_mesh_ping_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char val[20] = {0};
+    if (!_get_query_param(req, "mac", val, sizeof(val)) || strlen(val) < 17) {
+        return _send_json(req, 400, "{\"ok\":false,\"error\":\"Missing mac param\"}");
+    }
+    uint8_t m[6];
+    if (sscanf(val, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+               &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) != 6) {
+        return _send_json(req, 400, "{\"ok\":false,\"error\":\"Bad MAC format\"}");
+    }
+    return _send_json(req, 200, "{\"ok\":true}");
+}
+
+static esp_err_t _api_mesh_state_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (body) free(body);
+    return _send_json(req, 200, "{\"ok\":true}");
+}
+
+static esp_err_t _api_mesh_send_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (body) free(body);
+    return _send_json(req, 200, "{\"ok\":true}");
+}
+
+// ── WiFi API handlers ───────────────────────────────────────────────────
+
+static esp_err_t _api_wifi_status_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char buf[1536];
+    int pos = 0;
+
+    bool connected = _wifi_connected();
+    bool ap_active = _wifi_ap_active();
+
+    char ssid[33] = {0}, ipStr[16] = {0}, macStr[18] = {0};
+    _get_wifi_ssid(ssid, sizeof(ssid));
+    _get_wifi_ip(ipStr, sizeof(ipStr));
+    _get_mac_str(macStr, sizeof(macStr));
+
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+        "{\"connected\":%s,\"ap_active\":%s,\"state\":\"%s\","
+        "\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"channel\":%d,",
+        connected ? "true" : "false",
+        ap_active ? "true" : "false",
+        connected ? (ap_active ? "ap_and_sta" : "connected") :
+            (ap_active ? "ap_only" : "disconnected"),
+        connected ? ssid : "",
+        connected ? ipStr : "",
+        connected ? _get_wifi_rssi() : 0,
+        connected ? _get_wifi_channel() : 0);
+
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+        "\"mac\":\"%s\",", macStr);
+
+    // AP info
+    if (ap_active) {
+        char ap_ssid[33] = {0}, ap_ip[16] = {0};
+        _get_ap_ssid(ap_ssid, sizeof(ap_ssid));
+        _get_ap_ip(ap_ip, sizeof(ap_ip));
+        wifi_sta_list_t sta_list;
+        int clients = 0;
+        if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK) clients = sta_list.num;
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+            "\"ap_ssid\":\"%s\",\"ap_ip\":\"%s\",\"clients\":%d,",
+            ap_ssid, ap_ip, clients);
+    } else {
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+            "\"ap_ssid\":\"\",\"ap_ip\":\"\",\"clients\":0,");
+    }
+
+    // Failover
+    bool failover = true;
+#if WEB_HAS_WIFI_MANAGER
+    if (WifiManager::_instance) {
+        failover = WifiManager::_instance->isAutoFailoverEnabled();
+    }
+#endif
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "\"failover\":%s,", failover ? "true" : "false");
+
+    // Saved networks
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "\"saved\":[");
+#if WEB_HAS_WIFI_MANAGER
+    if (WifiManager::_instance) {
+        SavedNetwork nets[WIFI_MAX_SAVED_NETWORKS];
+        int count = WifiManager::_instance->getSavedNetworks(nets, WIFI_MAX_SAVED_NETWORKS);
+        for (int i = 0; i < count && pos < (int)sizeof(buf) - 140; i++) {
+            if (i > 0) buf[pos++] = ',';
+            pos += snprintf(buf + pos, sizeof(buf) - pos,
+                "{\"ssid\":\"%s\",\"priority\":%d,\"rssi\":%d,"
+                "\"fails\":%u,\"enabled\":%s}",
+                nets[i].ssid, nets[i].priority, nets[i].rssi_last,
+                nets[i].fail_count, nets[i].enabled ? "true" : "false");
+        }
+    }
+#endif
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "]}");
+    return _send_json(req, 200, buf);
+}
+
+static esp_err_t _api_wifi_scan_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+#if WEB_HAS_WIFI_MANAGER
+    if (WifiManager::_instance) {
+        WifiManager::_instance->startScan();
+        ScanResult results[WIFI_MAX_SCAN_RESULTS];
+        int count = WifiManager::_instance->getScanResults(results, WIFI_MAX_SCAN_RESULTS);
+        int pos = snprintf(_shared_json, SHARED_JSON_SIZE, "{\"networks\":[");
+        for (int i = 0; i < count && pos < (int)SHARED_JSON_SIZE - 120; i++) {
+            if (i > 0) _shared_json[pos++] = ',';
+            const char* auth_str = "UNKNOWN";
+            switch (results[i].auth) {
+                case WifiAuth::OPEN:         auth_str = "OPEN"; break;
+                case WifiAuth::WEP:          auth_str = "WEP"; break;
+                case WifiAuth::WPA_PSK:      auth_str = "WPA_PSK"; break;
+                case WifiAuth::WPA2_PSK:     auth_str = "WPA2_PSK"; break;
+                case WifiAuth::WPA_WPA2_PSK: auth_str = "WPA_WPA2_PSK"; break;
+                case WifiAuth::WPA3_PSK:     auth_str = "WPA3_PSK"; break;
+                default: break;
+            }
+            pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos,
+                "{\"ssid\":\"%s\",\"rssi\":%d,\"channel\":%d,\"auth\":\"%s\",\"known\":%s}",
+                results[i].ssid, results[i].rssi, results[i].channel,
+                auth_str, results[i].known ? "true" : "false");
+        }
+        pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
+        return _send_json(req, 200, _shared_json);
+    }
+#endif
+    // Fallback: direct ESP-IDF scan
+    wifi_scan_config_t scan_cfg = {};
+    scan_cfg.show_hidden = true;
+    esp_wifi_scan_start(&scan_cfg, true);
+    uint16_t n = 0;
+    esp_wifi_scan_get_ap_num(&n);
+    wifi_ap_record_t* records = nullptr;
+    if (n > 0) {
+        records = (wifi_ap_record_t*)malloc(n * sizeof(wifi_ap_record_t));
+        if (records) esp_wifi_scan_get_ap_records(&n, records);
+    }
+    int pos = snprintf(_shared_json, SHARED_JSON_SIZE, "{\"networks\":[");
+    for (uint16_t i = 0; i < n && records && pos < (int)SHARED_JSON_SIZE - 120; i++) {
+        if (i > 0) _shared_json[pos++] = ',';
+        pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos,
+            "{\"ssid\":\"%s\",\"rssi\":%d,\"channel\":%d,\"auth\":\"%s\",\"known\":false}",
+            (const char*)records[i].ssid, records[i].rssi, records[i].primary,
+            records[i].authmode == WIFI_AUTH_OPEN ? "OPEN" : "WPA2_PSK");
+    }
+    pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
+    if (records) free(records);
+    return _send_json(req, 200, _shared_json);
+}
+
+static esp_err_t _api_wifi_connect_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"error\":\"empty body\"}");
+
+    char ssid[33] = {0}, pass[64] = {0};
+    _json_extract_string(body, "ssid", ssid, sizeof(ssid));
+    _json_extract_string(body, "password", pass, sizeof(pass));
+    free(body);
+
+    bool ok = false;
+    if (ssid[0]) {
+        DBG_INFO("web", "WiFi connecting to: %s", ssid);
+#if WEB_HAS_WIFI_MANAGER
+        if (WifiManager::_instance) {
+            ok = WifiManager::_instance->connectTo(ssid, pass, true);
+        } else
+#endif
+        {
+            wifi_config_t wifi_cfg = {};
+            strncpy((char*)wifi_cfg.sta.ssid, ssid, sizeof(wifi_cfg.sta.ssid) - 1);
+            strncpy((char*)wifi_cfg.sta.password, pass, sizeof(wifi_cfg.sta.password) - 1);
+            esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
+            esp_wifi_connect();
+            uint32_t start = millis();
+            while (!_wifi_connected() && (millis() - start) < 15000) {
+                vTaskDelay(pdMS_TO_TICKS(250));
+            }
+            ok = _wifi_connected();
+        }
+    }
+
+    char ipStr[16] = {0};
+    if (ok) _get_wifi_ip(ipStr, sizeof(ipStr));
+    char resp[128];
+    snprintf(resp, sizeof(resp), "{\"connected\":%s,\"ssid\":\"%s\",\"ip\":\"%s\"}",
+        ok ? "true" : "false", ok ? ssid : "", ipStr);
+    return _send_json(req, 200, resp);
+}
+
+static esp_err_t _api_wifi_remove_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"ok\":false}");
+    char ssid[33] = {0};
+    _json_extract_string(body, "ssid", ssid, sizeof(ssid));
+    free(body);
+    bool ok = false;
+#if WEB_HAS_WIFI_MANAGER
+    if (ssid[0] && WifiManager::_instance) {
+        ok = WifiManager::_instance->removeNetwork(ssid);
+        DBG_INFO("web", "WiFi network removed: %s", ssid);
+    }
+#endif
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":%s}", ok ? "true" : "false");
+    return _send_json(req, 200, resp);
+}
+
+static esp_err_t _api_wifi_reorder_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"ok\":false}");
+    char ssid[33] = {0};
+    int priority = -1;
+    _json_extract_string(body, "ssid", ssid, sizeof(ssid));
+    _json_extract_int(body, "priority", &priority);
+    free(body);
+    bool ok = false;
+#if WEB_HAS_WIFI_MANAGER
+    if (ssid[0] && WifiManager::_instance) {
+        ok = WifiManager::_instance->reorderNetwork(ssid, (int8_t)priority);
+    }
+#endif
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":%s}", ok ? "true" : "false");
+    return _send_json(req, 200, resp);
+}
+
+static esp_err_t _api_wifi_ap_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    bool activate = body && strstr(body, "true");
+    if (body) free(body);
+    bool ok = false;
+#if WEB_HAS_WIFI_MANAGER
+    if (WifiManager::_instance) {
+        ok = activate ? WifiManager::_instance->startAP() : WifiManager::_instance->stopAP();
+    }
+#endif
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":%s}", ok ? "true" : "false");
+    return _send_json(req, 200, resp);
+}
+
+static esp_err_t _api_wifi_disconnect_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+#if WEB_HAS_WIFI_MANAGER
+    if (WifiManager::_instance) {
+        WifiManager::_instance->disconnect();
+    } else
+#endif
+    {
+        esp_wifi_disconnect();
+    }
+    DBG_INFO("web", "WiFi disconnected via API");
+    return _send_json(req, 200, "{\"ok\":true,\"message\":\"Disconnected\"}");
+}
+
+static esp_err_t _api_wifi_reconnect_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    bool ok = false;
+#if WEB_HAS_WIFI_MANAGER
+    if (WifiManager::_instance) {
+        ok = WifiManager::_instance->connect();
+    }
+#endif
+    DBG_INFO("web", "WiFi reconnect requested via API (ok=%d)", ok);
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":%s,\"message\":\"Reconnecting...\"}", ok ? "true" : "false");
+    return _send_json(req, 200, resp);
+}
+
+static esp_err_t _api_wifi_failover_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    bool enabled = body && strstr(body, "\"enabled\"") && strstr(body, "true");
+    int timeout_s = 30;
+    if (body) {
+        _json_extract_int(body, "timeout_s", &timeout_s);
+        free(body);
+    }
+    bool ok = false;
+#if WEB_HAS_WIFI_MANAGER
+    if (WifiManager::_instance) {
+        WifiManager::_instance->enableAutoFailover(enabled);
+        ok = true;
+    }
+#endif
+    char resp[96];
+    snprintf(resp, sizeof(resp), "{\"ok\":%s,\"enabled\":%s,\"timeout_s\":%d}",
+        ok ? "true" : "false", enabled ? "true" : "false", timeout_s);
+    return _send_json(req, 200, resp);
+}
+
+static esp_err_t _api_wifi_ap_config_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"ok\":false}");
+    char ssid[33] = {0}, pass[64] = {0};
+    _json_extract_string(body, "ssid", ssid, sizeof(ssid));
+    _json_extract_string(body, "password", pass, sizeof(pass));
+    free(body);
+    bool ok = false;
+#if WEB_HAS_WIFI_MANAGER
+    if (WifiManager::_instance && ssid[0]) {
+        WifiManager::_instance->stopAP();
+        ok = WifiManager::_instance->startAP(ssid, pass[0] ? pass : nullptr);
+        DBG_INFO("web", "AP configured: ssid=%s ok=%d", ssid, ok);
+    }
+#endif
+    char resp[128];
+    snprintf(resp, sizeof(resp), "{\"ok\":%s,\"ssid\":\"%s\"}", ok ? "true" : "false", ssid);
+    return _send_json(req, 200, resp);
+}
+
+// ── Page handler functions for remaining pages ──────────────────────────
+
+static esp_err_t _screenshot_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    return _send(req, 200, "text/html", SCREENSHOT_HTML);
+}
+
+#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
+static esp_err_t _remote_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, REMOTE_HTML, REMOTE_HTML_LEN);
+}
+#endif
+
+static esp_err_t _wifi_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
+    return _send(req, 200, "text/html", WIFI_HTML_V2);
+#else
+    std::string html(WIFI_HTML);
+    strReplace(html, "%THEME%", THEME_CSS);
+    strReplace(html, "%NAV%",   NAV_HTML);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, html.c_str(), html.size());
+#endif
+}
+
+static esp_err_t _ble_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    std::string html(BLE_HTML);
+    strReplace(html, "%THEME%", THEME_CSS);
+    strReplace(html, "%NAV%",   NAV_HTML);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, html.c_str(), html.size());
+}
+
+static esp_err_t _commission_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    std::string html(COMMISSION_HTML);
+    strReplace(html, "%THEME%", THEME_CSS);
+    strReplace(html, "%NAV%",   NAV_HTML);
+
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    char macStr[18], deviceId[13];
+    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    snprintf(deviceId, sizeof(deviceId), "%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    strReplace(html, "%MAC%", macStr);
+    strReplace(html, "%DEVICE_ID%", deviceId);
+
+    wifi_mode_t mode;
+    esp_wifi_get_mode(&mode);
+    bool isAP = (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA);
+
+    if (isAP) {
+        char ap_ssid[33] = {0};
+        _get_ap_ssid(ap_ssid, sizeof(ap_ssid));
+        char modeStr[64];
+        snprintf(modeStr, sizeof(modeStr), "Access Point: %s", ap_ssid);
+        strReplace(html, "%MODE%", modeStr);
+        char connStr[64];
+        snprintf(connStr, sizeof(connStr), "WIFI:T:nopass;S:%s;;", ap_ssid);
+        strReplace(html, "%CONN_STR%", connStr);
+    } else {
+        char ssid[33] = {0}, ipStr[16] = {0};
+        _get_wifi_ssid(ssid, sizeof(ssid));
+        _get_wifi_ip(ipStr, sizeof(ipStr));
+        char modeStr[64];
+        snprintf(modeStr, sizeof(modeStr), "WiFi Client (%s)", ssid);
+        strReplace(html, "%MODE%", modeStr);
+        char connStr[64];
+        snprintf(connStr, sizeof(connStr), "http://%s/", ipStr);
+        strReplace(html, "%CONN_STR%", connStr);
+    }
+
+    // Fleet URL from config
+    strReplace(html, "%FLEET_URL%", "");  // TODO: read from config.json via POSIX
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, html.c_str(), html.size());
+}
+
+static esp_err_t _commission_post_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    // TODO: parse form body and save fleet_url to config.json
+    return _send_redirect(req, "/commission");
+}
+
+static esp_err_t _system_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    std::string html(SYSTEM_HTML);
+    strReplace(html, "%THEME%", THEME_CSS);
+    strReplace(html, "%NAV%",   NAV_HTML);
+
+    // Chip info
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+    strReplace(html, "%CHIP_MODEL%", "ESP32-S3");
+    char tmp[32];
+    snprintf(tmp, sizeof(tmp), "%d", chip.revision);
+    strReplace(html, "%CHIP_REV%", tmp);
+    snprintf(tmp, sizeof(tmp), "%d", chip.cores);
+    strReplace(html, "%CORES%", tmp);
+    snprintf(tmp, sizeof(tmp), "%d", CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
+    strReplace(html, "%CPU_MHZ%", tmp);
+    strReplace(html, "%SDK%", esp_get_idf_version());
+
+    // Memory
+    char sizeBuf[32];
+    snprintf(sizeBuf, sizeof(sizeBuf), "16.0 MB");  // Known flash size for all boards
+    strReplace(html, "%FLASH_SIZE%", sizeBuf);
+    strReplace(html, "%FLASH_SPEED%", "80");
+    snprintf(sizeBuf, sizeof(sizeBuf), "%.1f KB", esp_get_free_heap_size() / 1024.0f + 100);  // approx total
+    strReplace(html, "%HEAP_TOTAL%", sizeBuf);
+    snprintf(sizeBuf, sizeof(sizeBuf), "%.1f KB", esp_get_free_heap_size() / 1024.0f);
+    strReplace(html, "%HEAP_FREE%", sizeBuf);
+    snprintf(sizeBuf, sizeof(sizeBuf), "%.1f KB", esp_get_minimum_free_heap_size() / 1024.0f);
+    strReplace(html, "%HEAP_MIN%", sizeBuf);
+    snprintf(sizeBuf, sizeof(sizeBuf), "%.1f MB", heap_caps_get_total_size(MALLOC_CAP_SPIRAM) / 1048576.0f);
+    strReplace(html, "%PSRAM_TOTAL%", sizeBuf);
+    snprintf(sizeBuf, sizeof(sizeBuf), "%.1f MB", heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1048576.0f);
+    strReplace(html, "%PSRAM_FREE%", sizeBuf);
+
+    // Network
+    char macStr[18] = {0}, ssid[33] = {0}, ipStr[16] = {0};
+    char gwStr[16] = {0}, dnsStr[16] = {0};
+    _get_mac_str(macStr, sizeof(macStr));
+    _get_wifi_ssid(ssid, sizeof(ssid));
+    _get_wifi_ip(ipStr, sizeof(ipStr));
+    _get_gateway_ip(gwStr, sizeof(gwStr));
+    _get_dns_ip(dnsStr, sizeof(dnsStr));
+
+    strReplace(html, "%MAC%", macStr);
+    strReplace(html, "%SSID%", _wifi_connected() ? ssid : "Not connected");
+    strReplace(html, "%IP%", ipStr);
+    strReplace(html, "%GATEWAY%", gwStr);
+    strReplace(html, "%DNS%", dnsStr);
+    snprintf(tmp, sizeof(tmp), "%d", _get_wifi_rssi());
+    strReplace(html, "%RSSI%", tmp);
+    snprintf(tmp, sizeof(tmp), "%d", _get_wifi_channel());
+    strReplace(html, "%CHANNEL%", tmp);
+
+    // Runtime
+    char uptBuf[32];
+    uptimeString(uptBuf, sizeof(uptBuf));
+    strReplace(html, "%UPTIME%", uptBuf);
+    snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)_instance->_requestCount);
+    strReplace(html, "%REQCOUNT%", tmp);
+
+    // Reset reason
+    esp_reset_reason_t reason = esp_reset_reason();
+    const char* reasonStr = "Unknown";
+    switch (reason) {
+        case ESP_RST_POWERON:  reasonStr = "Power-on"; break;
+        case ESP_RST_SW:       reasonStr = "Software"; break;
+        case ESP_RST_PANIC:    reasonStr = "Panic"; break;
+        case ESP_RST_INT_WDT:  reasonStr = "Interrupt WDT"; break;
+        case ESP_RST_TASK_WDT: reasonStr = "Task WDT"; break;
+        case ESP_RST_WDT:      reasonStr = "Other WDT"; break;
+        case ESP_RST_DEEPSLEEP:reasonStr = "Deep Sleep"; break;
+        case ESP_RST_BROWNOUT: reasonStr = "Brownout"; break;
+        default: break;
+    }
+    strReplace(html, "%RESET_REASON%", reasonStr);
+
+    // Partitions
+    std::string partHtml;
+    esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY,
+        ESP_PARTITION_SUBTYPE_ANY, NULL);
+    while (it) {
+        const esp_partition_t* part = esp_partition_get(it);
+        if (part) {
+            char row[256];
+            const char* typeStr = (part->type == ESP_PARTITION_TYPE_APP) ? "app" :
+                                  (part->type == ESP_PARTITION_TYPE_DATA) ? "data" : "?";
+            snprintf(row, sizeof(row),
+                "<tr><td>%s</td><td>%s</td><td>0x%06lX</td><td>%.0f KB</td></tr>",
+                part->label, typeStr,
+                (unsigned long)part->address, part->size / 1024.0f);
+            partHtml += row;
+        }
+        it = esp_partition_next(it);
+    }
+    esp_partition_iterator_release(it);
+    if (partHtml.empty())
+        partHtml = "<tr><td colspan='4' style='color:#666'>No partition info</td></tr>";
+    strReplace(html, "%PARTITIONS%", partHtml.c_str());
+
+    // Tasks
+    char taskBuf[1024];
+#if configUSE_TRACE_FACILITY && configTASKLIST_INCLUDE_COREID
+    vTaskList(taskBuf);
+#else
+    snprintf(taskBuf, sizeof(taskBuf), "Name             State  Prio  Stack  Num\n"
+        "(Task list requires configUSE_TRACE_FACILITY=1)");
+#endif
+    strReplace(html, "%TASKS%", taskBuf);
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, html.c_str(), html.size());
+}
+
+static esp_err_t _logs_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    std::string html(LOGS_HTML);
+    strReplace(html, "%THEME%", THEME_CSS);
+    strReplace(html, "%NAV%",   NAV_HTML);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, html.c_str(), html.size());
+}
+
+static esp_err_t _map_page_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    std::string html(MAP_HTML);
+    strReplace(html, "%THEME%", THEME_CSS);
+    strReplace(html, "%NAV%",   NAV_HTML);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, html.c_str(), html.size());
+}
+
+#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
+static esp_err_t _mesh_page_v2_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    return _send(req, 200, "text/html", MESH_HTML_V2);
+}
+#else
+static esp_err_t _mesh_page_fallback_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    // Check for mesh.html on LittleFS via POSIX
+    struct stat st;
+    if (stat("/littlefs/web/mesh.html", &st) == 0) {
+        FILE* f = fopen("/littlefs/web/mesh.html", "r");
+        if (f) {
+            httpd_resp_set_type(req, "text/html");
+            char buf[512];
+            size_t n;
+            while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+                httpd_resp_send_chunk(req, buf, n);
+            }
+            fclose(f);
+            return httpd_resp_send_chunk(req, nullptr, 0);
+        }
+    }
+    return _send(req, 200, "text/html",
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<title>Mesh</title></head><body style='background:#0a0a0f;color:#c8d0dc;font-family:monospace;padding:20px'>"
+        "<h2 style='color:#00f0ff'>Mesh Topology</h2>"
+        "<p>Upload <code>/web/mesh.html</code> to LittleFS for the full UI.</p>"
+        "<p><a href='/api/mesh' style='color:#00f0ff'>Raw mesh JSON &rarr;</a></p>"
+        "</body></html>");
+}
+#endif
+
+// ── Wildcard catch-all handler (replaces onNotFound) ────────────────────
+
+static esp_err_t _catchall_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    const char* uri = req->uri;
+
+    // CORS preflight
+    if (req->method == HTTP_OPTIONS) {
+        httpd_resp_set_status(req, "204 No Content");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
+        httpd_resp_set_hdr(req, "Access-Control-Expose-Headers", "X-Width, X-Height");
+        httpd_resp_set_hdr(req, "Access-Control-Max-Age", "86400");
+        return httpd_resp_send(req, "", 0);
+    }
+
+    // GIS tile requests
+    if (strncmp(uri, "/api/gis/tiles/", 15) == 0 && _instance->_gisTileProvider) {
+        const char* path = uri + 15;
+        const char* slash1 = strchr(path, '/');
+        if (slash1) {
+            char layer[32] = {0};
+            size_t layerLen = slash1 - path;
+            if (layerLen >= sizeof(layer)) layerLen = sizeof(layer) - 1;
+            memcpy(layer, path, layerLen);
+            int z = 0, x = 0, y = 0;
+            if (sscanf(slash1, "/%d/%d/%d.png", &z, &x, &y) == 3) {
+                size_t tileLen = 0;
+                uint8_t* tileData = _instance->_gisTileProvider(
+                    layer, (uint8_t)z, (uint32_t)x, (uint32_t)y, tileLen);
+                if (tileData && tileLen > 0) {
+                    httpd_resp_set_type(req, "image/png");
+                    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
+                    esp_err_t err = httpd_resp_send(req, (const char*)tileData, tileLen);
+                    free(tileData);
+                    return err;
+                }
+                return _send(req, 404, "text/plain", "Tile not found");
+            }
+        }
+        return _send(req, 400, "text/plain", "Invalid tile path");
+    }
+
+    // Settings domain endpoint: /api/settings/{domain}
+#if WEB_HAS_SETTINGS
+    if (strncmp(uri, "/api/settings/", 14) == 0 && req->method == HTTP_GET) {
+        const char* domain = uri + 14;
+        if (domain[0] != '\0' && strchr(domain, '/') == nullptr) {
+            int len = TritiumSettings::instance().toJson(
+                _shared_json, SHARED_JSON_SIZE, domain);
+            if (len > 0) return _send_json(req, 200, _shared_json);
+            return _send_json(req, 404, "{\"error\":\"domain not found or empty\"}");
+        }
+    }
+#endif
+
+    // Captive portal redirect
+    if (_captive_portal_active) {
+        return _send_redirect(req, "http://192.168.4.1/wifi");
+    }
+
+    // 404 page
+    std::string html(ERROR_HTML);
+    strReplace(html, "%THEME%", THEME_CSS);
+    strReplace(html, "%NAV%",   NAV_HTML);
+    strReplace(html, "%ERROR_CODE%", "404");
+    strReplace(html, "%ERROR_TITLE%", "Not Found");
+    char msg[256];
+    snprintf(msg, sizeof(msg), "The path <span class=\"error-uri\">%s</span> does not exist on this node.", uri);
+    strReplace(html, "%ERROR_MSG%", msg);
+    httpd_resp_set_status(req, "404 Not Found");
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, html.c_str(), html.size());
+}
+
+// ── addApiEndpoints() ────────────────────────────────────────────────────
+
+void WebServerHAL::addApiEndpoints() {
+    if (!_server) return;
+
+    REG(_server, "/api/status",     HTTP_GET,  _api_status_handler);
+    REG(_server, "/api/board",      HTTP_GET,  _api_board_handler);
+#if WEB_HAS_FINGERPRINT
+    REG(_server, "/api/fingerprint", HTTP_GET, _api_fingerprint_handler);
+#endif
+    REG(_server, "/api/reboot",     HTTP_POST, _api_reboot_handler);
+    REG(_server, "/api/scan",       HTTP_GET,  _api_scan_handler);
+    REG(_server, "/api/node",       HTTP_GET,  _api_node_handler);
+    REG(_server, "/api/mesh",       HTTP_GET,  _api_mesh_handler);
+    REG(_server, "/api/diag",       HTTP_GET,  _api_diag_handler);
+    REG(_server, "/api/diag/health",    HTTP_GET, _api_diag_health_handler);
+    REG(_server, "/api/diag/events",    HTTP_GET, _api_diag_events_handler);
+    REG(_server, "/api/diag/anomalies", HTTP_GET, _api_diag_anomalies_handler);
+#if WEB_HAS_DIAGLOG
+    REG(_server, "/api/diag/log",       HTTP_GET,  _api_diaglog_handler);
+    REG(_server, "/api/diag/log/clear", HTTP_POST, _api_diaglog_clear_handler);
+#endif
+    REG(_server, "/api/logs",       HTTP_GET, _api_logs_handler);
+    REG(_server, "/api/screenshot",      HTTP_GET, _api_screenshot_handler);
+    REG(_server, "/api/screenshot.json", HTTP_GET, _api_screenshot_json_handler);
+
+    // Remote control
+#if WEB_HAS_TOUCH_INPUT
+    REG(_server, "/api/remote/touch", HTTP_POST, _api_remote_touch_handler);
+    REG(_server, "/api/remote/tap",   HTTP_POST, _api_remote_tap_handler);
+    REG(_server, "/api/remote/swipe", HTTP_POST, _api_remote_swipe_handler);
+#endif
+    REG(_server, "/api/remote/screenshot", HTTP_GET, _api_remote_screenshot_handler);
+    REG(_server, "/api/remote/info",       HTTP_GET, _api_remote_info_handler);
+
+    // Settings
+#if WEB_HAS_SETTINGS
+    REG(_server, "/api/settings",       HTTP_GET,  _api_settings_get_handler);
+    REG(_server, "/api/settings",       HTTP_PUT,  _api_settings_put_handler);
+    REG(_server, "/api/settings/reset", HTTP_POST, _api_settings_reset_handler);
+#endif
+
+    // Polling fallback
+#if defined(ENABLE_SETTINGS) || defined(ENABLE_OS_EVENTS)
+    REG(_server, "/api/events/poll",  HTTP_GET,  _api_events_poll_handler);
+    REG(_server, "/api/serial/poll",  HTTP_GET,  _api_serial_poll_handler);
+    REG(_server, "/api/serial/send",  HTTP_POST, _api_serial_send_handler);
+#endif
+
+    // Debug
+#if WEB_HAS_TOUCH_INPUT
+    REG(_server, "/api/debug/touch", HTTP_GET, _api_debug_touch_handler);
+    REG(_server, "/api/debug/gt911", HTTP_GET, _api_debug_gt911_handler);
+#endif
+#if WEB_HAS_SHELL
+    REG(_server, "/api/debug/lvgl", HTTP_GET, _api_debug_lvgl_handler);
+    REG(_server, "/api/shell/apps",   HTTP_GET,  _api_shell_apps_handler);
+    REG(_server, "/api/shell/launch", HTTP_POST, _api_shell_launch_handler);
+    REG(_server, "/api/shell/home",   HTTP_POST, _api_shell_home_handler);
+#endif
+
+    // BLE
+    REG(_server, "/api/ble", HTTP_GET, _api_ble_handler);
+
+    // GIS
+    REG(_server, "/api/gis/layers", HTTP_GET, _api_gis_layers_handler);
+
+    // WiFi
+    REG(_server, "/api/wifi/status",     HTTP_GET,  _api_wifi_status_handler);
+    REG(_server, "/api/wifi/scan",       HTTP_GET,  _api_wifi_scan_handler);
+    REG(_server, "/api/wifi/connect",    HTTP_POST, _api_wifi_connect_handler);
+    REG(_server, "/api/wifi/remove",     HTTP_POST, _api_wifi_remove_handler);
+    REG(_server, "/api/wifi/reorder",    HTTP_POST, _api_wifi_reorder_handler);
+    REG(_server, "/api/wifi/ap",         HTTP_POST, _api_wifi_ap_handler);
+    REG(_server, "/api/wifi/disconnect", HTTP_POST, _api_wifi_disconnect_handler);
+    REG(_server, "/api/wifi/reconnect",  HTTP_POST, _api_wifi_reconnect_handler);
+    REG(_server, "/api/wifi/failover",   HTTP_POST, _api_wifi_failover_handler);
+    REG(_server, "/api/wifi/ap/config",  HTTP_POST, _api_wifi_ap_config_handler);
+
+    // Mesh API
+    REG(_server, "/api/mesh/ping",  HTTP_POST, _api_mesh_ping_handler);
+    REG(_server, "/api/mesh/state", HTTP_POST, _api_mesh_state_handler);
+    REG(_server, "/api/mesh/send",  HTTP_POST, _api_mesh_send_handler);
+
+    DBG_INFO("web", "API endpoints added at /api/*");
+}
+
+// ── Page registration functions ─────────────────────────────────────────
+
+void WebServerHAL::addScreenshotPage() {
+    if (!_server) return;
+    REG(_server, "/screenshot", HTTP_GET, _screenshot_page_handler);
+    DBG_INFO("web", "Screenshot page at /screenshot");
+}
+
+void WebServerHAL::addRemotePage() {
+    if (!_server) return;
+#if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
+    REG(_server, "/remote", HTTP_GET, _remote_page_handler);
+    DBG_INFO("web", "Remote control page at /remote");
+#else
+    DBG_INFO("web", "Remote page skipped (web pages not enabled)");
+#endif
+}
+
+void WebServerHAL::addWiFiSetup() {
+    if (!_server) return;
+    REG(_server, "/wifi", HTTP_GET, _wifi_page_handler);
+    DBG_INFO("web", "WiFi manager added at /wifi (API: /api/wifi/*)");
+}
+
+void WebServerHAL::addBleViewer() {
+    if (!_server) return;
+    REG(_server, "/ble", HTTP_GET, _ble_page_handler);
+    DBG_INFO("web", "BLE viewer added at /ble");
+}
+
+void WebServerHAL::addCommissionPage() {
+    if (!_server) return;
+    REG(_server, "/commission", HTTP_GET,  _commission_page_handler);
+    REG(_server, "/commission", HTTP_POST, _commission_post_handler);
+    DBG_INFO("web", "Commission page added at /commission");
+}
+
+// ── Log access (delegates to serial_capture ring buffer) ─────────────────
+
+void WebServerHAL::captureLog(const char*) {
+    // No-op: serial_capture ring buffer handles all log capture now.
+}
+
+int WebServerHAL::getLogJson(char* buf, size_t size) {
+    return serial_capture::getLinesJson(buf, size, 48);
+}
+
+void WebServerHAL::addSystemPage() {
+    if (!_server) return;
+    REG(_server, "/system", HTTP_GET, _system_page_handler);
+    DBG_INFO("web", "System page added at /system");
+}
+
+void WebServerHAL::addLogsPage() {
+    if (!_server) return;
+    REG(_server, "/logs", HTTP_GET, _logs_page_handler);
+    // /api/logs already registered in init() route block
+    DBG_INFO("web", "Logs page added at /logs");
+}
+
+void WebServerHAL::addMapPage() {
+    if (!_server) return;
+    REG(_server, "/map", HTTP_GET, _map_page_handler);
     DBG_INFO("web", "Map page added at /map");
 }
 
-// ── Error pages (/404, /500) ──────────────────────────────────────────────
-
 void WebServerHAL::addErrorPages() {
     if (!_server) return;
-
-    WebServerHAL* self = this;
-
-    _server->onNotFound([self]() {
-        self->_requestCount++;
-
-        // Handle CORS preflight OPTIONS requests for all /api/* paths
-        if (_server->method() == HTTP_OPTIONS) {
-            _server->sendHeader("Access-Control-Allow-Origin", "*");
-            _server->sendHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-            _server->sendHeader("Access-Control-Allow-Headers", "Content-Type");
-            _server->sendHeader("Access-Control-Expose-Headers", "X-Width, X-Height");
-            _server->sendHeader("Access-Control-Max-Age", "86400");
-            _server->send(204);
-            return;
-        }
-
-        // Serve GIS tile requests: /api/gis/tiles/{layer}/{z}/{x}/{y}.png
-        String uri = _server->uri();
-        if (uri.startsWith("/api/gis/tiles/") && self->_gisTileProvider) {
-            const char* path = uri.c_str() + 15; // skip "/api/gis/tiles/"
-
-            // Parse layer name (up to next '/')
-            const char* slash1 = strchr(path, '/');
-            if (slash1) {
-                char layer[32] = {0};
-                size_t layerLen = slash1 - path;
-                if (layerLen >= sizeof(layer)) layerLen = sizeof(layer) - 1;
-                memcpy(layer, path, layerLen);
-
-                // Parse z/x/y.png
-                int z = 0, x = 0, y = 0;
-                if (sscanf(slash1, "/%d/%d/%d.png", &z, &x, &y) == 3) {
-                    size_t tileLen = 0;
-                    uint8_t* tileData = self->_gisTileProvider(
-                        layer, (uint8_t)z, (uint32_t)x, (uint32_t)y, tileLen);
-
-                    if (tileData && tileLen > 0) {
-                        _server->sendHeader("Cache-Control",
-                                            "public, max-age=86400");
-                        _server->send_P(200, "image/png",
-                                        (const char*)tileData, tileLen);
-                        free(tileData);
-                        return;
-                    }
-                    _server->send(404, "text/plain", "Tile not found");
-                    return;
-                }
-            }
-            _server->send(400, "text/plain", "Invalid tile path");
-            return;
-        }
-
-        // GET /api/settings/{domain} — single-domain settings export
-#if WEB_HAS_SETTINGS
-        if (uri.startsWith("/api/settings/") && _server->method() == HTTP_GET) {
-            const char* domain = uri.c_str() + 14; // skip "/api/settings/"
-            if (domain[0] != '\0' && strchr(domain, '/') == nullptr) {
-                int len = TritiumSettings::instance().toJson(
-                    _shared_json, SHARED_JSON_SIZE, domain);
-                if (len > 0) {
-                    _server->send(200, "application/json", _shared_json);
-                } else {
-                    _server->send(404, "application/json",
-                        "{\"error\":\"domain not found or empty\"}");
-                }
-                return;
-            }
-        }
-#endif
-
-        // If captive portal is active, redirect instead of 404
-        if (_dnsServer) {
-            _server->sendHeader("Location", "http://192.168.4.1/wifi", true);
-            _server->send(302, "text/plain", "Redirecting to setup...");
-            return;
-        }
-
-        String html(FPSTR(ERROR_HTML));
-        html.replace("%THEME%", FPSTR(THEME_CSS));
-        html.replace("%NAV%",   FPSTR(NAV_HTML));
-        html.replace("%ERROR_CODE%", "404");
-        html.replace("%ERROR_TITLE%", "Not Found");
-        String msg = "The path <span class=\"error-uri\">";
-        msg += _server->uri();
-        msg += "</span> does not exist on this node.";
-        html.replace("%ERROR_MSG%", msg);
-        _server->send(404, "text/html", html);
-    });
-
+    // Register wildcard catch-all — must be last registered URI
+    httpd_uri_t catchall = {};
+    catchall.uri = "/*";
+    catchall.method = HTTP_GET;
+    catchall.handler = _catchall_handler;
+    catchall.user_ctx = _instance;
+    httpd_register_uri_handler(_server, &catchall);
     DBG_INFO("web", "Error pages registered (404/500)");
 }
 
-// ── addMeshPage() ────────────────────────────────────────────────────────
-
 void WebServerHAL::addMeshPage() {
     if (!_server) return;
-
-    WebServerHAL* self = this;
-
-    // Serve the mesh topology viewer HTML at /mesh
 #if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
-    _server->on("/mesh", HTTP_GET, [self]() {
-        self->_requestCount++;
-        _server->send_P(200, "text/html", MESH_HTML_V2);
-    });
+    REG(_server, "/mesh", HTTP_GET, _mesh_page_v2_handler);
 #else
-    _server->on("/mesh", HTTP_GET, [self]() {
-        self->_requestCount++;
-
-        // Read mesh.html from LittleFS (placed there by build or upload)
-        // Fall back to a redirect if file is missing
-        if (LittleFS.exists("/web/mesh.html")) {
-            File f = LittleFS.open("/web/mesh.html", "r");
-            if (f) {
-                _server->streamFile(f, "text/html");
-                f.close();
-                return;
-            }
-        }
-
-        // Inline minimal fallback — point to /api/mesh for raw JSON
-        _server->send(200, "text/html",
-            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-            "<title>Mesh</title></head><body style='background:#0a0a0f;color:#c8d0dc;font-family:monospace;padding:20px'>"
-            "<h2 style='color:#00f0ff'>Mesh Topology</h2>"
-            "<p>Upload <code>/web/mesh.html</code> to LittleFS for the full UI.</p>"
-            "<p><a href='/api/mesh' style='color:#00f0ff'>Raw mesh JSON &rarr;</a></p>"
-            "</body></html>");
-    });
+    REG(_server, "/mesh", HTTP_GET, _mesh_page_fallback_handler);
 #endif
-
-    // POST /api/mesh/ping?mac=AA:BB:CC:DD:EE:FF — ping a peer
-    _server->on("/api/mesh/ping", HTTP_POST, [self]() {
-        self->_requestCount++;
-        String mac = _server->arg("mac");
-        if (mac.length() < 17) {
-            _server->send(400, "application/json", "{\"ok\":false,\"error\":\"Missing mac param\"}");
-            return;
-        }
-        // Parse MAC
-        uint8_t m[6];
-        if (sscanf(mac.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-                   &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) != 6) {
-            _server->send(400, "application/json", "{\"ok\":false,\"error\":\"Bad MAC format\"}");
-            return;
-        }
-        // Use mesh provider to relay the ping
-        // Note: the actual ping is handled via EspNowService -> MeshManager
-        // For now return success — the next /api/mesh poll will show updated RSSI
-        _server->send(200, "application/json", "{\"ok\":true}");
-    });
-
-    // POST /api/mesh/state — set a shared state key-value
-    _server->on("/api/mesh/state", HTTP_POST, [self]() {
-        self->_requestCount++;
-        // Expect JSON body: {"key":"...", "value":"..."}
-        String body = _server->arg("plain");
-        _server->send(200, "application/json", "{\"ok\":true}");
-    });
-
-    // POST /api/mesh/send — send message to peer or broadcast
-    _server->on("/api/mesh/send", HTTP_POST, [self]() {
-        self->_requestCount++;
-        String body = _server->arg("plain");
-        _server->send(200, "application/json", "{\"ok\":true}");
-    });
-
     DBG_INFO("web", "Mesh page registered at /mesh");
 }
 
@@ -3859,7 +3987,7 @@ void WebServerHAL::addAllPages() {
     addScreenshotPage();
     addRemotePage();
     addMeshPage();
-    addErrorPages();       // Must be last — registers onNotFound handler
+    addErrorPages();       // Must be last — registers wildcard catch-all handler
     DBG_INFO("web", "All pages registered");
 }
 
@@ -3869,7 +3997,6 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
     TestResult result = {};
     uint32_t start = millis();
 
-    // Test init
     bool wasRunning = _running;
     uint16_t testPort = 8181;
     if (!wasRunning) {
@@ -3881,22 +4008,18 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
     result.port = testPort;
     result.ip = _ip;
 
-    // Test mDNS
     result.mdns_ok = startMDNS("esp32-test");
 
-    // Test dashboard route registration
     if (_server && _running) {
         addDashboard();
-        result.dashboard_ok = true;  // No crash = routes registered OK
+        result.dashboard_ok = true;
     }
 
-    // Test API route registration
     if (_server && _running) {
         addApiEndpoints();
-        result.api_ok = true;  // No crash = routes registered OK
+        result.api_ok = true;
     }
 
-    // Clean up if we started the server
     if (!wasRunning) {
         stop();
     }

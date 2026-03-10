@@ -12,11 +12,17 @@
 #include <cstdio>
 
 #ifndef SIMULATOR
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <esp_heap_caps.h>
 #include <esp_mac.h>
 #include <esp_system.h>
 #include <esp_chip_info.h>
+#include <esp_partition.h>
+#include <esp_app_desc.h>
+#include <esp_flash.h>
+#include <esp_ota_ops.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #else
 #include <SDL2/SDL.h>
 static uint32_t millis() { return SDL_GetTicks(); }
@@ -25,6 +31,10 @@ static uint32_t millis() { return SDL_GetTicks(); }
 // HAL includes must be outside namespace to avoid resolving std:: as shell_apps::std::
 #if defined(ENABLE_WIFI) && __has_include("wifi_manager.h")
 #include "wifi_manager.h"
+#ifndef SIMULATOR
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#endif
 #define WIFI_APP_AVAILABLE 1
 #else
 #define WIFI_APP_AVAILABLE 0
@@ -63,6 +73,24 @@ static uint32_t millis() { return SDL_GetTicks(); }
 #define FILES_SD_AVAILABLE 1
 #else
 #define FILES_SD_AVAILABLE 0
+#endif
+
+#if __has_include("service_registry.h")
+#include "service_registry.h"
+#endif
+
+#if defined(ENABLE_STORAGE) && __has_include("storage_service.h")
+#include "storage_service.h"
+#define STORAGE_SVC_AVAILABLE 1
+#else
+#define STORAGE_SVC_AVAILABLE 0
+#endif
+
+#if defined(ENABLE_BLE_SCANNER) && __has_include("hal_ble_scanner.h")
+#include "hal_ble_scanner.h"
+#define BLE_APP_AVAILABLE 1
+#else
+#define BLE_APP_AVAILABLE 0
 #endif
 
 namespace shell_apps {
@@ -109,14 +137,16 @@ static lv_timer_t* s_wifi_timer      = nullptr;
 
 #if WIFI_APP_AVAILABLE
 
+static lv_obj_t* s_wifi_detail_lbl = nullptr;
+
 static void wifi_refresh_status() {
     auto* wm = WifiManager::_instance;
     if (!wm) return;
     WifiStatus st = wm->getStatus();
-    char buf[64];
+    char buf[96];
 
     if (st.connected) {
-        snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " %s", st.ssid);
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " %s  (%ddBm)", st.ssid, (int)st.rssi);
         lv_label_set_text(s_wifi_status_ssid, buf);
         snprintf(buf, sizeof(buf), "IP: %s  CH: %d", st.ip, st.channel);
         lv_label_set_text(s_wifi_status_ip, buf);
@@ -126,10 +156,64 @@ static void wifi_refresh_status() {
         lv_bar_set_value(s_wifi_rssi_bar, pct, LV_ANIM_ON);
         lv_color_t c = (st.rssi > -50) ? T_GREEN : (st.rssi > -70) ? T_YELLOW : T_MAGENTA;
         lv_obj_set_style_bg_color(s_wifi_rssi_bar, c, LV_PART_INDICATOR);
+
+        // Detailed info
+        if (s_wifi_detail_lbl) {
+            char detail[256];
+            int pos = 0;
+
+            // BSSID, Gateway, Subnet, DNS via ESP-IDF
+            {
+                wifi_ap_record_t ap_info;
+                if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+                    pos += snprintf(detail + pos, sizeof(detail) - pos,
+                        "BSSID: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                        ap_info.bssid[0], ap_info.bssid[1], ap_info.bssid[2],
+                        ap_info.bssid[3], ap_info.bssid[4], ap_info.bssid[5]);
+                }
+                esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                if (netif) {
+                    esp_netif_ip_info_t ip_info;
+                    if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+                        char gw_str[16], sn_str[16];
+                        esp_ip4addr_ntoa(&ip_info.gw, gw_str, sizeof(gw_str));
+                        esp_ip4addr_ntoa(&ip_info.netmask, sn_str, sizeof(sn_str));
+                        pos += snprintf(detail + pos, sizeof(detail) - pos,
+                            "Gateway: %s\n", gw_str);
+                        pos += snprintf(detail + pos, sizeof(detail) - pos,
+                            "Subnet: %s\n", sn_str);
+                    }
+                    esp_netif_dns_info_t dns_info;
+                    if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns_info) == ESP_OK) {
+                        char dns_str[16];
+                        esp_ip4addr_ntoa((const esp_ip4_addr_t*)&dns_info.ip.u_addr.ip4, dns_str, sizeof(dns_str));
+                        pos += snprintf(detail + pos, sizeof(detail) - pos,
+                            "DNS: %s\n", dns_str);
+                    }
+                }
+            }
+
+            pos += snprintf(detail + pos, sizeof(detail) - pos,
+                "MAC: %02X:%02X:%02X:%02X:%02X:%02X",
+                st.mac[0], st.mac[1], st.mac[2],
+                st.mac[3], st.mac[4], st.mac[5]);
+            if (st.connected_since > 0) {
+                uint32_t conn_s = (millis() - st.connected_since) / 1000;
+                uint32_t conn_m = conn_s / 60;
+                uint32_t conn_h = conn_m / 60;
+                pos += snprintf(detail + pos, sizeof(detail) - pos,
+                    "\nConnected: %uh %um %us",
+                    (unsigned)conn_h, (unsigned)(conn_m % 60), (unsigned)(conn_s % 60));
+            }
+            lv_label_set_text(s_wifi_detail_lbl, detail);
+        }
     } else {
         lv_label_set_text(s_wifi_status_ssid, LV_SYMBOL_WIFI " Disconnected");
         lv_label_set_text(s_wifi_status_ip, "IP: --");
         lv_bar_set_value(s_wifi_rssi_bar, 0, LV_ANIM_OFF);
+        if (s_wifi_detail_lbl) {
+            lv_label_set_text(s_wifi_detail_lbl, "Not connected");
+        }
     }
 }
 
@@ -395,7 +479,8 @@ void settings_create(lv_obj_t* viewport) {
     for (int i = 0; i < 5; i++) {
         lv_obj_t* btn = lv_btn_create(tab_bar);
         lv_obj_set_flex_grow(btn, 1);
-        lv_obj_set_height(btn, 36);
+        int tab_h = (tritium_shell::uiConfig().screen_height > 400) ? 48 : 36;
+        lv_obj_set_height(btn, tab_h);
         lv_obj_set_style_radius(btn, 4, 0);
         lv_obj_set_style_border_width(btn, 1, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
@@ -403,7 +488,7 @@ void settings_create(lv_obj_t* viewport) {
 
         lv_obj_t* lbl = lv_label_create(btn);
         lv_label_set_text(lbl, tab_icons[i]);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(lbl, tritium_shell::uiIconFont(), 0);
         lv_obj_center(lbl);
 
         lv_obj_add_event_cb(btn, settings_tab_cb, LV_EVENT_CLICKED,
@@ -512,6 +597,11 @@ static void settings_build_wifi(lv_obj_t* cont) {
     lv_obj_set_style_radius(s_wifi_rssi_bar, 4, 0);
     lv_obj_set_style_radius(s_wifi_rssi_bar, 4, LV_PART_INDICATOR);
 
+    // --- Connection detail (BSSID, gateway, DNS, subnet, MAC, duration) ---
+    s_wifi_detail_lbl = tritium_theme::createLabel(status_panel, "...", true);
+    lv_obj_set_style_text_font(s_wifi_detail_lbl, tritium_shell::uiSmallFont(), 0);
+    lv_obj_set_style_text_color(s_wifi_detail_lbl, T_GHOST, 0);
+
     // --- AP toggle ---
     lv_obj_t* ap_row = lv_obj_create(cont);
     lv_obj_set_size(ap_row, lv_pct(100), LV_SIZE_CONTENT);
@@ -587,12 +677,12 @@ static void settings_build_power(lv_obj_t* cont) {
 
     s_power_icon_lbl = lv_label_create(batt_panel);
     lv_label_set_text(s_power_icon_lbl, LV_SYMBOL_BATTERY_FULL);
-    lv_obj_set_style_text_font(s_power_icon_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(s_power_icon_lbl, tritium_shell::uiHeadingFont(), 0);
     lv_obj_set_style_text_color(s_power_icon_lbl, T_GREEN, 0);
 
     s_power_pct_lbl = lv_label_create(batt_panel);
     lv_label_set_text(s_power_pct_lbl, "--%");
-    lv_obj_set_style_text_font(s_power_pct_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(s_power_pct_lbl, tritium_shell::uiHeadingFont(), 0);
     lv_obj_set_style_text_color(s_power_pct_lbl, T_GREEN, 0);
 
     lv_obj_t* info_row = lv_obj_create(batt_panel);
@@ -843,26 +933,26 @@ static void settings_build_system(lv_obj_t* cont) {
     lv_obj_t* title = lv_label_create(cont);
     lv_label_set_text(title, "TRITIUM-OS");
     lv_obj_set_style_text_color(title, T_CYAN, 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(title, tritium_shell::uiHeadingFont(), 0);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(title, lv_pct(100));
 
     lv_obj_t* tagline = lv_label_create(cont);
     lv_label_set_text(tagline, "Software-Defined Edge Intelligence");
     lv_obj_set_style_text_color(tagline, T_GHOST, 0);
-    lv_obj_set_style_text_font(tagline, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(tagline, tritium_shell::uiSmallFont(), 0);
     lv_obj_set_style_text_align(tagline, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(tagline, lv_pct(100));
 
-    // --- Info panel ---
-    lv_obj_t* info = tritium_theme::createPanel(cont, "SYSTEM INFO");
+    char buf[128];
+
+    // --- Device Info panel ---
+    lv_obj_t* info = tritium_theme::createPanel(cont, "DEVICE INFO");
     lv_obj_set_width(info, lv_pct(100));
     lv_obj_set_height(info, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_top(info, 24, 0);
     lv_obj_set_style_pad_gap(info, 4, 0);
-
-    char buf[80];
 
     snprintf(buf, sizeof(buf), "Version: %s", TRITIUM_VERSION);
     tritium_theme::createLabel(info, buf, true);
@@ -877,29 +967,139 @@ static void settings_build_system(lv_obj_t* cont) {
     tritium_theme::createLabel(info, buf, true);
 
 #ifndef SIMULATOR
+    // --- Chip Info panel ---
+    lv_obj_t* chip_panel = tritium_theme::createPanel(cont, "CHIP INFO");
+    lv_obj_set_width(chip_panel, lv_pct(100));
+    lv_obj_set_height(chip_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(chip_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(chip_panel, 24, 0);
+    lv_obj_set_style_pad_gap(chip_panel, 4, 0);
+
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+    const char* chip_model = "ESP32-S3";
+    snprintf(buf, sizeof(buf), "Model: %s rev %d.%d",
+             chip_model, chip.revision / 100, chip.revision % 100);
+    tritium_theme::createLabel(chip_panel, buf, true);
+
+    snprintf(buf, sizeof(buf), "Cores: %d  Features: %s%s%s",
+             chip.cores,
+             (chip.features & CHIP_FEATURE_WIFI_BGN) ? "WiFi " : "",
+             (chip.features & CHIP_FEATURE_BLE) ? "BLE " : "",
+             (chip.features & CHIP_FEATURE_IEEE802154) ? "802.15.4" : "");
+    tritium_theme::createLabel(chip_panel, buf, true);
+
     uint8_t mac[6];
     esp_efuse_mac_get_default(mac);
     snprintf(buf, sizeof(buf), "MAC: %02X:%02X:%02X:%02X:%02X:%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    tritium_theme::createLabel(info, buf, true);
+    tritium_theme::createLabel(chip_panel, buf, true);
 
-    snprintf(buf, sizeof(buf), "Heap: %uKB free",
-             (unsigned)(esp_get_free_heap_size() / 1024));
-    tritium_theme::createLabel(info, buf, true);
+    uint32_t flash_size = 0;
+    esp_flash_get_size(NULL, &flash_size);
+    snprintf(buf, sizeof(buf), "Flash: %uMB", (unsigned)(flash_size / (1024 * 1024)));
+    tritium_theme::createLabel(chip_panel, buf, true);
+
+    // --- Memory panel ---
+    lv_obj_t* mem_panel = tritium_theme::createPanel(cont, "MEMORY");
+    lv_obj_set_width(mem_panel, lv_pct(100));
+    lv_obj_set_height(mem_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(mem_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(mem_panel, 24, 0);
+    lv_obj_set_style_pad_gap(mem_panel, 4, 0);
+
+    uint32_t free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint32_t total_heap = heap_caps_get_total_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    snprintf(buf, sizeof(buf), "Heap: %uKB / %uKB free",
+             (unsigned)(free_heap / 1024), (unsigned)(total_heap / 1024));
+    tritium_theme::createLabel(mem_panel, buf, true);
+
+    uint32_t min_heap = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    snprintf(buf, sizeof(buf), "Heap min free: %uKB", (unsigned)(min_heap / 1024));
+    tritium_theme::createLabel(mem_panel, buf, true);
 
     size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    if (psram_free > 0) {
-        snprintf(buf, sizeof(buf), "PSRAM: %.1fMB free",
-                 (float)psram_free / (1024.0f * 1024.0f));
-        tritium_theme::createLabel(info, buf, true);
+    size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    if (psram_total > 0) {
+        snprintf(buf, sizeof(buf), "PSRAM: %.1fMB / %.1fMB free",
+                 (float)psram_free / (1024.0f * 1024.0f),
+                 (float)psram_total / (1024.0f * 1024.0f));
+        tritium_theme::createLabel(mem_panel, buf, true);
     }
 
+    // --- Partitions panel ---
+    lv_obj_t* part_panel = tritium_theme::createPanel(cont, "PARTITIONS");
+    lv_obj_set_width(part_panel, lv_pct(100));
+    lv_obj_set_height(part_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(part_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(part_panel, 24, 0);
+    lv_obj_set_style_pad_gap(part_panel, 4, 0);
+
+    esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY,
+                                                     ESP_PARTITION_SUBTYPE_ANY, nullptr);
+    while (it) {
+        const esp_partition_t* p = esp_partition_get(it);
+        if (p) {
+            const char* type_str = (p->type == ESP_PARTITION_TYPE_APP) ? "app" :
+                                   (p->type == ESP_PARTITION_TYPE_DATA) ? "data" : "?";
+            snprintf(buf, sizeof(buf), "%-12s %s  %uKB @ 0x%06x",
+                     p->label, type_str,
+                     (unsigned)(p->size / 1024),
+                     (unsigned)p->address);
+            lv_obj_t* plbl = tritium_theme::createLabel(part_panel, buf, true);
+            lv_obj_set_style_text_font(plbl, tritium_shell::uiSmallFont(), 0);
+        }
+        it = esp_partition_next(it);
+    }
+    esp_partition_iterator_release(it);
+
+    // --- Runtime panel ---
+    lv_obj_t* run_panel = tritium_theme::createPanel(cont, "RUNTIME");
+    lv_obj_set_width(run_panel, lv_pct(100));
+    lv_obj_set_height(run_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(run_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(run_panel, 24, 0);
+    lv_obj_set_style_pad_gap(run_panel, 4, 0);
+
     uint32_t secs = millis() / 1000;
-    uint32_t mins = secs / 60;
-    uint32_t hrs = mins / 60;
+    uint32_t hrs = secs / 3600;
+    uint32_t mins = (secs % 3600) / 60;
     snprintf(buf, sizeof(buf), "Uptime: %uh %um %us",
-             (unsigned)hrs, (unsigned)(mins % 60), (unsigned)(secs % 60));
-    tritium_theme::createLabel(info, buf, true);
+             (unsigned)hrs, (unsigned)mins, (unsigned)(secs % 60));
+    tritium_theme::createLabel(run_panel, buf, true);
+
+    UBaseType_t task_count = uxTaskGetNumberOfTasks();
+    snprintf(buf, sizeof(buf), "FreeRTOS tasks: %u", (unsigned)task_count);
+    tritium_theme::createLabel(run_panel, buf, true);
+
+    const esp_app_desc_t* app_desc = esp_app_get_description();
+    if (app_desc) {
+        snprintf(buf, sizeof(buf), "IDF: %s", app_desc->idf_ver);
+        tritium_theme::createLabel(run_panel, buf, true);
+        snprintf(buf, sizeof(buf), "Built: %s %s", app_desc->date, app_desc->time);
+        tritium_theme::createLabel(run_panel, buf, true);
+    }
+
+    // --- Active services ---
+    lv_obj_t* svc_panel = tritium_theme::createPanel(cont, "ACTIVE SERVICES");
+    lv_obj_set_width(svc_panel, lv_pct(100));
+    lv_obj_set_height(svc_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(svc_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(svc_panel, 24, 0);
+    lv_obj_set_style_pad_gap(svc_panel, 2, 0);
+
+    int svc_count = ServiceRegistry::count();
+    for (int i = 0; i < svc_count; i++) {
+        ServiceInterface* svc = ServiceRegistry::at(i);
+        if (svc) {
+            snprintf(buf, sizeof(buf), "[%d] %s", svc->initPriority(), svc->name());
+            lv_obj_t* slbl = tritium_theme::createLabel(svc_panel, buf, true);
+            lv_obj_set_style_text_color(slbl, T_GREEN, 0);
+        }
+    }
+    if (svc_count == 0) {
+        tritium_theme::createLabel(svc_panel, "No services registered", true);
+    }
 #endif
 
     // --- Reboot ---
@@ -912,7 +1112,7 @@ static void settings_build_system(lv_obj_t* cont) {
     lv_obj_t* copy = lv_label_create(cont);
     lv_label_set_text(copy, "2026 Valpatel Software LLC");
     lv_obj_set_style_text_color(copy, T_GHOST, 0);
-    lv_obj_set_style_text_font(copy, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(copy, tritium_shell::uiSmallFont(), 0);
     lv_obj_set_style_text_align(copy, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(copy, lv_pct(100));
 }
@@ -934,7 +1134,7 @@ void about_create(lv_obj_t* viewport) {
     lv_obj_t* title = lv_label_create(viewport);
     lv_label_set_text(title, "TRITIUM-OS");
     lv_obj_set_style_text_color(title, T_CYAN, 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(title, tritium_shell::uiHeadingFont(), 0);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(title, lv_pct(100));
 
@@ -942,7 +1142,7 @@ void about_create(lv_obj_t* viewport) {
     lv_obj_t* tagline = lv_label_create(viewport);
     lv_label_set_text(tagline, "Software-Defined Edge Intelligence");
     lv_obj_set_style_text_color(tagline, T_GHOST, 0);
-    lv_obj_set_style_text_font(tagline, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(tagline, tritium_shell::uiSmallFont(), 0);
     lv_obj_set_style_text_align(tagline, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(tagline, lv_pct(100));
 
@@ -1011,7 +1211,7 @@ void about_create(lv_obj_t* viewport) {
     lv_obj_t* copy = lv_label_create(viewport);
     lv_label_set_text(copy, "2026 Valpatel Software LLC");
     lv_obj_set_style_text_color(copy, T_GHOST, 0);
-    lv_obj_set_style_text_font(copy, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(copy, tritium_shell::uiSmallFont(), 0);
     lv_obj_set_style_text_align(copy, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(copy, lv_pct(100));
 }
@@ -1033,11 +1233,11 @@ void brightness_create(lv_obj_t* viewport) {
     lv_obj_t* icon = lv_label_create(viewport);
     lv_label_set_text(icon, LV_SYMBOL_EYE_OPEN);
     lv_obj_set_style_text_color(icon, T_CYAN, 0);
-    lv_obj_set_style_text_font(icon, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(icon, tritium_shell::uiHeadingFont(), 0);
 
     // Value label
     lv_obj_t* val_label = tritium_theme::createLabel(viewport, "100%", true);
-    lv_obj_set_style_text_font(val_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(val_label, tritium_shell::uiHeadingFont(), 0);
     lv_obj_set_style_text_color(val_label, T_BRIGHT, 0);
 
     // Slider
@@ -1083,6 +1283,11 @@ void wifi_app_create(lv_obj_t* viewport) {
     lv_obj_set_style_bg_color(s_wifi_rssi_bar, T_GREEN, LV_PART_INDICATOR);
     lv_obj_set_style_radius(s_wifi_rssi_bar, 4, 0);
     lv_obj_set_style_radius(s_wifi_rssi_bar, 4, LV_PART_INDICATOR);
+
+    // --- Connection detail ---
+    s_wifi_detail_lbl = tritium_theme::createLabel(status_panel, "...", true);
+    lv_obj_set_style_text_font(s_wifi_detail_lbl, tritium_shell::uiSmallFont(), 0);
+    lv_obj_set_style_text_color(s_wifi_detail_lbl, T_GHOST, 0);
 
     // --- AP toggle ---
     lv_obj_t* ap_row = lv_obj_create(viewport);
@@ -1149,6 +1354,7 @@ void wifi_app_create(lv_obj_t* viewport) {
 
 static lv_obj_t* s_sysmon_heap_bar   = nullptr;
 static lv_obj_t* s_sysmon_heap_lbl   = nullptr;
+static lv_obj_t* s_sysmon_heap_min   = nullptr;
 static lv_obj_t* s_sysmon_psram_bar  = nullptr;
 static lv_obj_t* s_sysmon_psram_lbl  = nullptr;
 static lv_obj_t* s_sysmon_loop_lbl   = nullptr;
@@ -1156,6 +1362,7 @@ static lv_obj_t* s_sysmon_uptime_lbl = nullptr;
 static lv_obj_t* s_sysmon_temp_lbl   = nullptr;
 static lv_obj_t* s_sysmon_wifi_lbl   = nullptr;
 static lv_obj_t* s_sysmon_tasks_lbl  = nullptr;
+static lv_obj_t* s_sysmon_storage_lbl = nullptr;
 static lv_timer_t* s_sysmon_timer    = nullptr;
 
 static void sysmon_update(lv_timer_t* t) {
@@ -1195,10 +1402,49 @@ static void sysmon_update(lv_timer_t* t) {
              (unsigned)hrs, (unsigned)mins, (unsigned)(secs % 60));
     lv_label_set_text(s_sysmon_uptime_lbl, buf);
 
+    // Heap watermark
+    if (s_sysmon_heap_min) {
+        uint32_t min_heap = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        snprintf(buf, sizeof(buf), "Min free: %uKB", (unsigned)(min_heap / 1024));
+        lv_label_set_text(s_sysmon_heap_min, buf);
+    }
+
     // Task count
     UBaseType_t task_count = uxTaskGetNumberOfTasks();
     snprintf(buf, sizeof(buf), "Tasks: %u", (unsigned)task_count);
     lv_label_set_text(s_sysmon_tasks_lbl, buf);
+
+    // Storage
+    if (s_sysmon_storage_lbl) {
+        char sbuf[128];
+        int spos = 0;
+#if FILES_FS_AVAILABLE
+        FsHAL fs;
+        if (fs.init()) {
+            spos += snprintf(sbuf + spos, sizeof(sbuf) - spos,
+                "LittleFS: %uKB/%uKB  ",
+                (unsigned)(fs.usedBytes() / 1024),
+                (unsigned)(fs.totalBytes() / 1024));
+        }
+#endif
+#if FILES_SD_AVAILABLE || STORAGE_SVC_AVAILABLE
+        SDCardHAL* sd = nullptr;
+#if STORAGE_SVC_AVAILABLE
+        auto* ssvc = ServiceRegistry::getAs<StorageService>("storage");
+        if (ssvc) sd = &ssvc->sd();
+#endif
+        if (sd && sd->isMounted()) {
+            spos += snprintf(sbuf + spos, sizeof(sbuf) - spos,
+                "SD: %uMB/%uMB",
+                (unsigned)(sd->usedBytes() / (1024*1024)),
+                (unsigned)(sd->totalBytes() / (1024*1024)));
+        } else {
+            spos += snprintf(sbuf + spos, sizeof(sbuf) - spos, "SD: --");
+        }
+#endif
+        if (spos == 0) snprintf(sbuf, sizeof(sbuf), "No storage");
+        lv_label_set_text(s_sysmon_storage_lbl, sbuf);
+    }
 
 #if SYSMON_AVAILABLE
     hal_diag::HealthSnapshot snap = hal_diag::take_snapshot();
@@ -1254,6 +1500,10 @@ void sysmon_app_create(lv_obj_t* viewport) {
     lv_obj_set_style_radius(s_sysmon_heap_bar, 4, 0);
     lv_obj_set_style_radius(s_sysmon_heap_bar, 4, LV_PART_INDICATOR);
 
+    s_sysmon_heap_min = tritium_theme::createLabel(mem_panel, "Min free: --", true);
+    lv_obj_set_style_text_font(s_sysmon_heap_min, tritium_shell::uiSmallFont(), 0);
+    lv_obj_set_style_text_color(s_sysmon_heap_min, T_GHOST, 0);
+
     s_sysmon_psram_lbl = tritium_theme::createLabel(mem_panel, "PSRAM: --", true);
     s_sysmon_psram_bar = lv_bar_create(mem_panel);
     lv_obj_set_width(s_sysmon_psram_bar, lv_pct(95));
@@ -1286,6 +1536,16 @@ void sysmon_app_create(lv_obj_t* viewport) {
     lv_obj_set_style_pad_gap(net_panel, 4, 0);
 
     s_sysmon_wifi_lbl = tritium_theme::createLabel(net_panel, "WiFi: --", true);
+
+    // --- Storage panel ---
+    lv_obj_t* stor_panel = tritium_theme::createPanel(viewport, "STORAGE");
+    lv_obj_set_width(stor_panel, lv_pct(100));
+    lv_obj_set_height(stor_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(stor_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(stor_panel, 24, 0);
+    lv_obj_set_style_pad_gap(stor_panel, 4, 0);
+
+    s_sysmon_storage_lbl = tritium_theme::createLabel(stor_panel, "Storage: --", true);
 
     // Initial update + timer
     sysmon_update(nullptr);
@@ -1484,34 +1744,97 @@ void mesh_app_create(lv_obj_t* viewport) {
 #include <sys/stat.h>
 #endif
 
+// storage_service + service_registry included at file top (outside namespace)
+
+// ===========================================================================
+//  File Explorer state
+// ===========================================================================
 static char s_files_cwd[128] = "/";
-static lv_obj_t* s_files_path_lbl   = nullptr;
-static lv_obj_t* s_files_list       = nullptr;
-static lv_obj_t* s_files_info_lbl   = nullptr;
-static bool s_files_use_sd          = false;
+static lv_obj_t* s_files_path_lbl    = nullptr;
+static lv_obj_t* s_files_list        = nullptr;
+static lv_obj_t* s_files_info_lbl    = nullptr;
+static lv_obj_t* s_files_storage_bar = nullptr;
+static lv_obj_t* s_files_viewport    = nullptr;  // for rebuilding
+static bool s_files_use_sd           = true;      // default to SD card
+
+// Get SD card HAL from StorageService (or nullptr)
+#if STORAGE_SVC_AVAILABLE
+static StorageService* storage_svc() {
+    return ServiceRegistry::getAs<StorageService>("storage");
+}
+static SDCardHAL* sd_hal() {
+    auto* svc = storage_svc();
+    return svc ? &svc->sd() : nullptr;
+}
+static FsHAL* fs_hal() {
+    auto* svc = storage_svc();
+    return svc ? &svc->fs() : nullptr;
+}
+#elif FILES_SD_AVAILABLE
+static SDCardHAL s_sd;
+static SDCardHAL* sd_hal() { return &s_sd; }
+#else
+static SDCardHAL* sd_hal() { return nullptr; }
+#endif
 
 static void files_navigate(const char* path);
+static void files_show_viewer(const char* filepath, const char* name);
 
 #ifndef SIMULATOR
 
-static void files_item_cb(lv_event_t* e) {
-    lv_obj_t* btn = (lv_obj_t*)lv_event_get_target(e);
-    const char* path = (const char*)lv_event_get_user_data(e);
-    if (path) {
-        files_navigate(path);
+// ---- Format size for display ----
+static void format_size(char* buf, size_t buflen, size_t bytes) {
+    if (bytes >= 1024ULL * 1024 * 1024) {
+        snprintf(buf, buflen, "%.1fGB", bytes / (1024.0f * 1024.0f * 1024.0f));
+    } else if (bytes >= 1024 * 1024) {
+        snprintf(buf, buflen, "%.1fMB", bytes / (1024.0f * 1024.0f));
+    } else if (bytes >= 1024) {
+        snprintf(buf, buflen, "%.1fKB", bytes / 1024.0f);
+    } else {
+        snprintf(buf, buflen, "%uB", (unsigned)bytes);
     }
 }
 
+// ---- Check if file is text-viewable ----
+static bool is_text_file(const char* name) {
+    const char* ext = strrchr(name, '.');
+    if (!ext) return false;
+    ext++;
+    static const char* text_exts[] = {
+        "txt", "log", "json", "xml", "csv", "ini", "cfg", "conf",
+        "md", "htm", "html", "css", "js", "h", "c", "cpp", "py",
+        nullptr
+    };
+    for (int i = 0; text_exts[i]; i++) {
+        if (strcasecmp(ext, text_exts[i]) == 0) return true;
+    }
+    return false;
+}
+
+// ---- Item click: directory = navigate, file = view ----
+static void files_item_cb(lv_event_t* e) {
+    const char* path = (const char*)lv_event_get_user_data(e);
+    if (!path) return;
+    // Check if it ends with '/' (directory)
+    size_t len = strlen(path);
+    if (len > 0 && path[len - 1] == '/') {
+        files_navigate(path);
+    } else {
+        // Extract filename from path
+        const char* name = strrchr(path, '/');
+        name = name ? name + 1 : path;
+        files_show_viewer(path, name);
+    }
+}
+
+// ---- Back button (used in file viewer close) ----
 static void files_back_cb(lv_event_t* e) {
     (void)e;
-    // Go up one level
     char parent[128];
     strncpy(parent, s_files_cwd, sizeof(parent));
     parent[sizeof(parent) - 1] = '\0';
-    // Trim trailing slash
     size_t len = strlen(parent);
     if (len > 1 && parent[len - 1] == '/') parent[len - 1] = '\0';
-    // Find last slash
     char* last = strrchr(parent, '/');
     if (last && last != parent) {
         *(last + 1) = '\0';
@@ -1521,168 +1844,643 @@ static void files_back_cb(lv_event_t* e) {
     files_navigate(parent);
 }
 
+// ---- Storage toggle callback ----
+static void files_storage_toggle_cb(lv_event_t* e) {
+    lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
+    s_files_use_sd = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    strcpy(s_files_cwd, "/");
+    files_navigate("/");
+}
+
+// ---- Delete file callback ----
+static void files_delete_cb(lv_event_t* e) {
+    const char* path = (const char*)lv_event_get_user_data(e);
+    if (!path) return;
+
+    const char* mount = s_files_use_sd ? "/sdcard" : "/spiffs";
+    char fullpath[200];
+    snprintf(fullpath, sizeof(fullpath), "%s%s", mount, path);
+
+    bool ok = false;
+    struct stat st;
+    if (stat(fullpath, &st) == 0) {
+        if (S_ISDIR(st.st_mode)) {
+            ok = (rmdir(fullpath) == 0);
+        } else {
+            ok = (unlink(fullpath) == 0);
+        }
+    }
+
+    // Refresh current directory
+    files_navigate(s_files_cwd);
+}
+
+// ---- Format SD callback ----
+static void files_format_cb(lv_event_t* e) {
+    (void)e;
+    auto* sd = sd_hal();
+    if (sd && sd->isMounted()) {
+        lv_label_set_text(s_files_info_lbl, "Formatting SD card...");
+        lv_refr_now(nullptr);
+        bool ok = sd->format();
+        if (ok) {
+            lv_label_set_text(s_files_info_lbl, "Format complete");
+        } else {
+            lv_label_set_text(s_files_info_lbl, "Format FAILED");
+        }
+        strcpy(s_files_cwd, "/");
+        files_navigate("/");
+    }
+}
+
+// ---- Mount/remount SD callback ----
+static void files_mount_cb(lv_event_t* e) {
+    (void)e;
+    auto* sd = sd_hal();
+    if (!sd) return;
+    if (sd->isMounted()) {
+        sd->deinit();
+    }
+    bool ok = sd->init();
+    if (ok) {
+        lv_label_set_text(s_files_info_lbl, "SD card mounted");
+    } else {
+        lv_label_set_text(s_files_info_lbl, "SD mount failed — no card?");
+    }
+    files_navigate(s_files_cwd);
+}
+
+// ---- Close file viewer, go back to directory ----
+static void files_viewer_close_cb(lv_event_t* e) {
+    (void)e;
+    files_navigate(s_files_cwd);
+}
+
+// ---- File viewer: shows text content ----
+static void files_show_viewer(const char* filepath, const char* name) {
+    if (!s_files_list) return;
+    lv_obj_clean(s_files_list);
+
+    // Header row with filename and close button
+    lv_obj_t* hdr = lv_obj_create(s_files_list);
+    lv_obj_set_size(hdr, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(hdr, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 2, 0);
+    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+    char title[80];
+    snprintf(title, sizeof(title), LV_SYMBOL_FILE " %s", name);
+    lv_obj_t* title_lbl = tritium_theme::createLabel(hdr, title);
+    lv_obj_set_flex_grow(title_lbl, 1);
+    lv_obj_set_style_text_color(title_lbl, T_CYAN, 0);
+
+    lv_obj_t* close_btn = tritium_theme::createButton(hdr, LV_SYMBOL_CLOSE);
+    lv_obj_add_event_cb(close_btn, files_viewer_close_cb, LV_EVENT_CLICKED, nullptr);
+
+    // Build full filesystem path
+    const char* mount = s_files_use_sd ? "/sdcard" : "/spiffs";
+    char fullpath[200];
+    snprintf(fullpath, sizeof(fullpath), "%s%s", mount, filepath);
+
+    // Get file size
+    struct stat st;
+    size_t fsize = 0;
+    if (stat(fullpath, &st) == 0) fsize = st.st_size;
+
+    char size_str[32];
+    format_size(size_str, sizeof(size_str), fsize);
+
+    // File info
+    char info[80];
+    snprintf(info, sizeof(info), "Size: %s", size_str);
+    lv_obj_t* info_lbl = tritium_theme::createLabel(s_files_list, info, true);
+    lv_obj_set_style_text_color(info_lbl, T_GHOST, 0);
+
+    // Separator
+    lv_obj_t* sep = lv_obj_create(s_files_list);
+    lv_obj_set_size(sep, lv_pct(100), 1);
+    lv_obj_set_style_bg_color(sep, T_CYAN, 0);
+    lv_obj_set_style_bg_opa(sep, LV_OPA_20, 0);
+    lv_obj_set_style_border_width(sep, 0, 0);
+    lv_obj_remove_flag(sep, LV_OBJ_FLAG_SCROLLABLE);
+
+    if (!is_text_file(name)) {
+        tritium_theme::createLabel(s_files_list, "Binary file — preview not available");
+        return;
+    }
+
+    // Read file content (cap at 4KB for display)
+    FILE* f = fopen(fullpath, "r");
+    if (!f) {
+        tritium_theme::createLabel(s_files_list, "Cannot open file");
+        return;
+    }
+
+    static char text_buf[4096];
+    size_t read_len = fread(text_buf, 1, sizeof(text_buf) - 1, f);
+    text_buf[read_len] = '\0';
+    fclose(f);
+
+    // Text content in mono label
+    lv_obj_t* content = lv_label_create(s_files_list);
+    lv_label_set_text(content, text_buf);
+    lv_label_set_long_mode(content, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(content, lv_pct(100));
+    lv_obj_set_style_text_color(content, T_TEXT, 0);
+    lv_obj_set_style_text_font(content, tritium_shell::uiSmallFont(), 0);
+
+    if (fsize > sizeof(text_buf) - 1) {
+        char trunc[48];
+        snprintf(trunc, sizeof(trunc), "[ truncated — showing first 4KB of %s ]", size_str);
+        lv_obj_t* trunc_lbl = tritium_theme::createLabel(s_files_list, trunc, true);
+        lv_obj_set_style_text_color(trunc_lbl, T_GHOST, 0);
+    }
+}
+
+// ---- Update storage info bar and bar widget ----
+static void files_update_info() {
+    if (!s_files_info_lbl) return;
+
+    uint64_t total = 0, used = 0;
+    const char* fs_type = "---";
+
+    if (s_files_use_sd) {
+        auto* sd = sd_hal();
+        if (sd && sd->isMounted()) {
+            total = sd->totalBytes();
+            used = sd->usedBytes();
+            fs_type = sd->getFilesystemType();
+        }
+    } else {
+#if STORAGE_SVC_AVAILABLE
+        auto* fsh = fs_hal();
+        if (fsh && fsh->isReady()) {
+            total = fsh->totalBytes();
+            used = fsh->usedBytes();
+            fs_type = "LittleFS";
+        }
+#elif FILES_FS_AVAILABLE
+        FsHAL fs;
+        if (fs.isReady()) {
+            total = fs.totalBytes();
+            used = fs.usedBytes();
+            fs_type = "LittleFS";
+        }
+#endif
+    }
+
+    if (total > 0) {
+        char used_str[16], total_str[16];
+        format_size(used_str, sizeof(used_str), (size_t)used);
+        format_size(total_str, sizeof(total_str), (size_t)total);
+
+        char info[80];
+        snprintf(info, sizeof(info), "%s: %s / %s (%s)",
+                 s_files_use_sd ? "SD" : "LFS", used_str, total_str, fs_type);
+        lv_label_set_text(s_files_info_lbl, info);
+
+        if (s_files_storage_bar) {
+            int pct = (int)(used * 100 / total);
+            lv_bar_set_value(s_files_storage_bar, pct, LV_ANIM_ON);
+            lv_color_t c = (pct < 70) ? T_CYAN : (pct < 90) ? T_YELLOW : T_MAGENTA;
+            lv_obj_set_style_bg_color(s_files_storage_bar, c, LV_PART_INDICATOR);
+        }
+    } else {
+        lv_label_set_text(s_files_info_lbl,
+                          s_files_use_sd ? "SD: not mounted" : "LittleFS: not available");
+        if (s_files_storage_bar) {
+            lv_bar_set_value(s_files_storage_bar, 0, LV_ANIM_OFF);
+        }
+    }
+}
+
+// ---- Navigate directory ----
 static void files_navigate(const char* path) {
     strncpy(s_files_cwd, path, sizeof(s_files_cwd));
     s_files_cwd[sizeof(s_files_cwd) - 1] = '\0';
-    lv_label_set_text(s_files_path_lbl, s_files_cwd);
+    if (s_files_path_lbl) lv_label_set_text(s_files_path_lbl, s_files_cwd);
+    if (!s_files_list) return;
     lv_obj_clean(s_files_list);
 
-    // Mount point prefix for SD
-    const char* mount = s_files_use_sd ? "/sd" : "/spiffs";
-    char fullpath[160];
+    const char* mount = s_files_use_sd ? "/sdcard" : "/spiffs";
+    char fullpath[200];
     snprintf(fullpath, sizeof(fullpath), "%s%s", mount,
              s_files_cwd[0] == '/' ? s_files_cwd : "/");
 
     DIR* dir = opendir(fullpath);
     if (!dir) {
-        tritium_theme::createLabel(s_files_list, "Cannot open directory");
+        if (s_files_use_sd) {
+            tritium_theme::createLabel(s_files_list,
+                "SD card not available.\nInsert card and tap Mount.");
+        } else {
+            tritium_theme::createLabel(s_files_list, "Cannot open directory");
+        }
+        files_update_info();
         return;
     }
 
     struct dirent* entry;
-    // We store path strings in a static ring buffer to keep them alive for callbacks
-    static char path_buf[16][160];
+    // Static ring buffer for path strings (kept alive for callbacks)
+    static char path_buf[32][160];
     static int path_idx = 0;
 
+    int file_count = 0;
     while ((entry = readdir(dir)) != nullptr) {
-        if (entry->d_name[0] == '.') continue;  // Skip hidden
+        if (entry->d_name[0] == '.') continue;
 
         bool is_dir = (entry->d_type == DT_DIR);
+        file_count++;
 
         lv_obj_t* row = lv_obj_create(s_files_list);
         lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
         lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(row, 0, 0);
         lv_obj_set_style_pad_all(row, 3, 0);
+        lv_obj_set_style_pad_gap(row, 4, 0);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START,
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
                               LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
 
+        // Highlight on press
+        lv_obj_set_style_bg_color(row, T_SURFACE3, LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+
+        // Icon + name
         const char* icon = is_dir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
         char label[80];
+        snprintf(label, sizeof(label), "%s %s", icon, entry->d_name);
+        lv_obj_t* name_lbl = tritium_theme::createLabel(row, label);
+        lv_obj_set_flex_grow(name_lbl, 1);
+        lv_obj_set_style_text_color(name_lbl, is_dir ? T_CYAN : T_TEXT, 0);
+
+        // Build callback path (before size/delete so we can reuse pi)
+        int pi = path_idx % 32;
+        path_idx++;
         if (is_dir) {
-            snprintf(label, sizeof(label), "%s %s", icon, entry->d_name);
+            if (strcmp(s_files_cwd, "/") == 0)
+                snprintf(path_buf[pi], sizeof(path_buf[pi]), "/%s/", entry->d_name);
+            else
+                snprintf(path_buf[pi], sizeof(path_buf[pi]), "%s%s/",
+                         s_files_cwd, entry->d_name);
         } else {
-            // Get file size
+            if (strcmp(s_files_cwd, "/") == 0)
+                snprintf(path_buf[pi], sizeof(path_buf[pi]), "/%s", entry->d_name);
+            else
+                snprintf(path_buf[pi], sizeof(path_buf[pi]), "%s%s",
+                         s_files_cwd, entry->d_name);
+        }
+
+        // File size (right-aligned)
+        if (!is_dir) {
             char fpath[200];
             snprintf(fpath, sizeof(fpath), "%s/%s", fullpath, entry->d_name);
             struct stat st;
             size_t fsize = 0;
             if (stat(fpath, &st) == 0) fsize = st.st_size;
-            if (fsize > 1024 * 1024) {
-                snprintf(label, sizeof(label), "%s %s  %.1fMB",
-                         icon, entry->d_name, fsize / (1024.0f * 1024.0f));
-            } else if (fsize > 1024) {
-                snprintf(label, sizeof(label), "%s %s  %.1fKB",
-                         icon, entry->d_name, fsize / 1024.0f);
-            } else {
-                snprintf(label, sizeof(label), "%s %s  %uB",
-                         icon, entry->d_name, (unsigned)fsize);
-            }
+            char size_str[16];
+            format_size(size_str, sizeof(size_str), fsize);
+            lv_obj_t* sz_lbl = tritium_theme::createLabel(row, size_str, true);
+            lv_obj_set_style_text_color(sz_lbl, T_GHOST, 0);
         }
 
-        lv_obj_t* name_lbl = tritium_theme::createLabel(row, label);
-        lv_obj_set_flex_grow(name_lbl, 1);
-        lv_obj_set_style_text_color(name_lbl, is_dir ? T_CYAN : T_TEXT, 0);
+        // Delete button
+        lv_obj_t* del_btn = lv_btn_create(row);
+        lv_obj_set_size(del_btn, 24, 20);
+        lv_obj_set_style_bg_opa(del_btn, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(del_btn, T_MAGENTA, LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(del_btn, LV_OPA_60, LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(del_btn, 0, 0);
+        lv_obj_set_style_pad_all(del_btn, 0, 0);
+        lv_obj_t* del_icon = lv_label_create(del_btn);
+        lv_label_set_text(del_icon, LV_SYMBOL_CLOSE);
+        lv_obj_set_style_text_color(del_icon, T_GHOST, 0);
+        lv_obj_set_style_text_color(del_icon, T_MAGENTA, LV_STATE_PRESSED);
+        lv_obj_center(del_icon);
+        lv_obj_add_event_cb(del_btn, files_delete_cb, LV_EVENT_CLICKED, path_buf[pi]);
 
-        if (is_dir) {
-            // Build navigation path
-            int pi = path_idx % 16;
-            path_idx++;
-            if (strcmp(s_files_cwd, "/") == 0) {
-                snprintf(path_buf[pi], sizeof(path_buf[pi]), "/%s/", entry->d_name);
-            } else {
-                snprintf(path_buf[pi], sizeof(path_buf[pi]), "%s%s/",
-                         s_files_cwd, entry->d_name);
-            }
-            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(row, files_item_cb, LV_EVENT_CLICKED, path_buf[pi]);
-        }
+        // Row click navigates/views
+        lv_obj_add_event_cb(row, files_item_cb, LV_EVENT_CLICKED, path_buf[pi]);
     }
     closedir(dir);
 
-    // Storage info
-#if FILES_FS_AVAILABLE
-    if (!s_files_use_sd) {
-        FsHAL fs;
-        if (fs.isReady()) {
-            char info[64];
-            snprintf(info, sizeof(info), "LittleFS: %uKB / %uKB",
-                     (unsigned)(fs.usedBytes() / 1024),
-                     (unsigned)(fs.totalBytes() / 1024));
-            lv_label_set_text(s_files_info_lbl, info);
-        }
+    if (file_count == 0) {
+        lv_obj_t* empty = tritium_theme::createLabel(s_files_list, "  (empty directory)");
+        lv_obj_set_style_text_color(empty, T_GHOST, 0);
     }
-#endif
-#if FILES_SD_AVAILABLE
-    // SD info handled similarly if mounted
-#endif
+
+    files_update_info();
 }
 
 #else  // SIMULATOR
 
-static void files_navigate(const char* path) {
-    (void)path;
+static void files_navigate(const char* path) { (void)path; }
+static void files_show_viewer(const char* filepath, const char* name) {
+    (void)filepath; (void)name;
 }
 
 #endif  // SIMULATOR
 
-void files_app_create(lv_obj_t* viewport) {
-    lv_obj_clean(viewport);
-    lv_obj_set_flex_flow(viewport, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(viewport, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(viewport, 8, 0);
-    lv_obj_set_style_pad_gap(viewport, 6, 0);
+// ===========================================================================
+//  Storage App — storage overview + file browser sub-view
+// ===========================================================================
 
-#ifdef SIMULATOR
-    tritium_theme::createLabel(viewport, "File Browser not available in simulator");
-    return;
-#else
-    // --- Path bar with back button ---
-    lv_obj_t* path_row = lv_obj_create(viewport);
-    lv_obj_set_size(path_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(path_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(path_row, 0, 0);
-    lv_obj_set_style_pad_all(path_row, 0, 0);
-    lv_obj_set_flex_flow(path_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(path_row, LV_FLEX_ALIGN_START,
+// State: are we in the overview or browsing a volume?
+static bool s_storage_browsing = false;
+
+// ---- Helper: create a usage bar inline ----
+static lv_obj_t* create_usage_bar(lv_obj_t* parent, int pct) {
+    lv_obj_t* bar = lv_bar_create(parent);
+    lv_obj_set_width(bar, lv_pct(100));
+    lv_obj_set_height(bar, 5);
+    lv_bar_set_range(bar, 0, 100);
+    lv_bar_set_value(bar, pct, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(bar, T_SURFACE3, LV_PART_MAIN);
+    lv_color_t c = (pct < 70) ? T_CYAN : (pct < 90) ? T_YELLOW : T_MAGENTA;
+    lv_obj_set_style_bg_color(bar, c, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(bar, 2, 0);
+    lv_obj_set_style_radius(bar, 2, LV_PART_INDICATOR);
+    return bar;
+}
+
+// ---- Helper: transparent row ----
+static lv_obj_t* create_info_row(lv_obj_t* parent) {
+    lv_obj_t* row = lv_obj_create(parent);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_style_pad_gap(row, 4, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(path_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    return row;
+}
 
-    lv_obj_t* back_btn = tritium_theme::createButton(path_row, LV_SYMBOL_LEFT);
-    lv_obj_add_event_cb(back_btn, files_back_cb, LV_EVENT_CLICKED, nullptr);
+// Forward declarations
+static void storage_show_overview();
+static void storage_confirm_format(bool is_sd);
+static void storage_show_sd_test();
 
-    s_files_path_lbl = tritium_theme::createLabel(path_row, "/", true);
+// ---- Confirmation dialog for format ----
+static void storage_confirm_format(bool is_sd) {
+    lv_obj_t* vp = s_files_viewport;
+    if (!vp) return;
+    lv_obj_clean(vp);
+
+    lv_obj_t* panel = tritium_theme::createPanel(vp, is_sd ? "FORMAT SD CARD" : "FORMAT INTERNAL FLASH");
+    lv_obj_set_width(panel, lv_pct(100));
+    lv_obj_set_height(panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(panel, 28, 0);
+    lv_obj_set_style_pad_gap(panel, 8, 0);
+    lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* warn_icon = lv_label_create(panel);
+    lv_label_set_text(warn_icon, LV_SYMBOL_WARNING);
+    lv_obj_set_style_text_font(warn_icon, tritium_shell::uiHeadingFont(), 0);
+    lv_obj_set_style_text_color(warn_icon, T_MAGENTA, 0);
+
+    tritium_theme::createLabel(panel, "This will ERASE ALL DATA");
+    lv_obj_t* note = tritium_theme::createLabel(panel,
+        is_sd ? "The SD card will be reformatted as FAT32."
+              : "Internal flash will be reformatted as LittleFS.");
+    lv_obj_set_style_text_color(note, T_GHOST, 0);
+
+    lv_obj_t* btn_row = create_info_row(panel);
+
+    lv_obj_t* cancel = tritium_theme::createButton(btn_row, LV_SYMBOL_CLOSE " Cancel", T_CYAN);
+    lv_obj_add_event_cb(cancel, [](lv_event_t* ev) {
+        (void)ev;
+        storage_show_overview();
+    }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* confirm = tritium_theme::createButton(btn_row,
+        LV_SYMBOL_TRASH " Format Now", T_MAGENTA);
+    lv_obj_add_event_cb(confirm, [](lv_event_t* ev) {
+        bool fmt_sd = (bool)(intptr_t)lv_event_get_user_data(ev);
+        // Show progress
+        lv_obj_t* vp = s_files_viewport;
+        lv_obj_clean(vp);
+        lv_obj_t* lbl = tritium_theme::createLabel(vp, "Formatting...");
+        lv_obj_set_style_text_color(lbl, T_YELLOW, 0);
+        lv_refr_now(nullptr);
+
+        bool ok = false;
+        if (fmt_sd) {
+            auto* sd = sd_hal();
+            if (sd) ok = sd->format();
+        } else {
+#if STORAGE_SVC_AVAILABLE
+            auto* fsh = fs_hal();
+            if (fsh) ok = fsh->format();
+#elif FILES_FS_AVAILABLE
+            FsHAL fsh;
+            ok = fsh.format();
+#endif
+        }
+
+        lv_obj_clean(vp);
+        if (ok) {
+            lv_obj_t* ok_lbl = tritium_theme::createLabel(vp, LV_SYMBOL_OK " Format complete");
+            lv_obj_set_style_text_color(ok_lbl, T_GREEN, 0);
+        } else {
+            lv_obj_t* fail_lbl = tritium_theme::createLabel(vp, LV_SYMBOL_CLOSE " Format FAILED");
+            lv_obj_set_style_text_color(fail_lbl, T_MAGENTA, 0);
+        }
+        lv_obj_t* back = tritium_theme::createButton(vp, LV_SYMBOL_LEFT " Back", T_CYAN);
+        lv_obj_add_event_cb(back, [](lv_event_t* e2) {
+            (void)e2;
+            storage_show_overview();
+        }, LV_EVENT_CLICKED, nullptr);
+    }, LV_EVENT_CLICKED, (void*)(intptr_t)is_sd);
+}
+
+// ---- SD card test/diagnostics panel ----
+static void storage_show_sd_test() {
+    lv_obj_t* vp = s_files_viewport;
+    if (!vp) return;
+    lv_obj_clean(vp);
+
+    // Top bar: back to overview
+    lv_obj_t* top = create_info_row(vp);
+    lv_obj_t* back = tritium_theme::createButton(top, LV_SYMBOL_LEFT " Storage");
+    lv_obj_add_event_cb(back, [](lv_event_t* ev) {
+        (void)ev;
+        storage_show_overview();
+    }, LV_EVENT_CLICKED, nullptr);
+    tritium_theme::createLabel(top, "SD CARD DIAGNOSTICS");
+
+    auto* sd = sd_hal();
+    if (!sd || !sd->isMounted()) {
+        tritium_theme::createLabel(vp, "SD card not mounted");
+        return;
+    }
+
+    // Card info panel
+    lv_obj_t* info_panel = tritium_theme::createPanel(vp, "CARD INFO");
+    lv_obj_set_width(info_panel, lv_pct(100));
+    lv_obj_set_height(info_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(info_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(info_panel, 24, 0);
+    lv_obj_set_style_pad_gap(info_panel, 2, 0);
+
+    char buf[80];
+    char used_str[16], total_str[16], free_str[16];
+    format_size(used_str, sizeof(used_str), (size_t)sd->usedBytes());
+    format_size(total_str, sizeof(total_str), (size_t)sd->totalBytes());
+    format_size(free_str, sizeof(free_str), (size_t)(sd->totalBytes() - sd->usedBytes()));
+
+    snprintf(buf, sizeof(buf), "Type: %s", sd->getFilesystemType());
+    tritium_theme::createLabel(info_panel, buf, true);
+    snprintf(buf, sizeof(buf), "Total: %s", total_str);
+    tritium_theme::createLabel(info_panel, buf, true);
+    snprintf(buf, sizeof(buf), "Used:  %s", used_str);
+    tritium_theme::createLabel(info_panel, buf, true);
+    snprintf(buf, sizeof(buf), "Free:  %s", free_str);
+    tritium_theme::createLabel(info_panel, buf, true);
+
+    uint64_t total_b = sd->totalBytes();
+    int pct = total_b ? (int)(sd->usedBytes() * 100 / total_b) : 0;
+    create_usage_bar(info_panel, pct);
+
+    // Run test button + results area
+    lv_obj_t* test_panel = tritium_theme::createPanel(vp, "READ/WRITE TEST");
+    lv_obj_set_width(test_panel, lv_pct(100));
+    lv_obj_set_flex_grow(test_panel, 1);
+    lv_obj_set_flex_flow(test_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(test_panel, 24, 0);
+    lv_obj_set_style_pad_gap(test_panel, 4, 0);
+
+    static lv_obj_t* s_test_results = nullptr;
+    s_test_results = lv_obj_create(test_panel);
+    lv_obj_set_size(s_test_results, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(s_test_results, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_test_results, 0, 0);
+    lv_obj_set_style_pad_all(s_test_results, 0, 0);
+    lv_obj_set_flex_flow(s_test_results, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(s_test_results, 2, 0);
+
+    tritium_theme::createLabel(s_test_results,
+        "Tap Run to test read/write speed\nand data integrity.", false);
+
+    lv_obj_t* run_btn = tritium_theme::createButton(test_panel,
+        LV_SYMBOL_CHARGE " Run Test", T_GREEN);
+    lv_obj_add_event_cb(run_btn, [](lv_event_t* ev) {
+        (void)ev;
+        if (!s_test_results) return;
+        lv_obj_clean(s_test_results);
+
+        lv_obj_t* prog_lbl = tritium_theme::createLabel(s_test_results, "Running test...");
+        lv_obj_set_style_text_color(prog_lbl, T_YELLOW, 0);
+        lv_refr_now(nullptr);
+
+        auto* sd = sd_hal();
+        if (!sd || !sd->isMounted()) {
+            lv_obj_clean(s_test_results);
+            lv_obj_t* err = tritium_theme::createLabel(s_test_results, "SD not mounted");
+            lv_obj_set_style_text_color(err, T_MAGENTA, 0);
+            return;
+        }
+
+        auto r = sd->runTest(5, 4096);
+
+        lv_obj_clean(s_test_results);
+
+        char line[80];
+        bool pass = r.mount_ok && r.write_ok && r.read_ok && r.verify_ok;
+
+        lv_obj_t* status = tritium_theme::createLabel(s_test_results,
+            pass ? LV_SYMBOL_OK " ALL TESTS PASSED" : LV_SYMBOL_CLOSE " TEST FAILED");
+        lv_obj_set_style_text_color(status, pass ? T_GREEN : T_MAGENTA, 0);
+
+        snprintf(line, sizeof(line), "Write: %u KB/s", r.write_speed_kbps);
+        lv_obj_t* w_lbl = tritium_theme::createLabel(s_test_results, line, true);
+        lv_obj_set_style_text_color(w_lbl, T_CYAN, 0);
+
+        snprintf(line, sizeof(line), "Read:  %u KB/s", r.read_speed_kbps);
+        lv_obj_t* r_lbl = tritium_theme::createLabel(s_test_results, line, true);
+        lv_obj_set_style_text_color(r_lbl, T_CYAN, 0);
+
+        snprintf(line, sizeof(line), "Duration: %u ms  Cycles: %d", r.test_duration_ms, r.cycles_completed);
+        tritium_theme::createLabel(s_test_results, line, true);
+
+        snprintf(line, sizeof(line), "Mount:%s  Write:%s  Read:%s  Verify:%s",
+            r.mount_ok ? "OK" : "FAIL", r.write_ok ? "OK" : "FAIL",
+            r.read_ok ? "OK" : "FAIL", r.verify_ok ? "OK" : "FAIL");
+        tritium_theme::createLabel(s_test_results, line, true);
+
+        snprintf(line, sizeof(line), "Mkdir:%s  Delete:%s",
+            r.mkdir_ok ? "OK" : "FAIL", r.delete_ok ? "OK" : "FAIL");
+        tritium_theme::createLabel(s_test_results, line, true);
+    }, LV_EVENT_CLICKED, nullptr);
+}
+
+// ---- Browse volume callback ----
+// Helper: create mkdir callback for current directory
+static void files_mkdir_cb(lv_event_t* e) {
+    (void)e;
+    // Create a "new_dir" folder in the current directory
+    const char* mount = s_files_use_sd ? "/sdcard" : "/spiffs";
+    char fullpath[200];
+    // Find a unique name
+    for (int i = 0; i < 100; i++) {
+        if (i == 0)
+            snprintf(fullpath, sizeof(fullpath), "%s%snew_folder", mount,
+                     strcmp(s_files_cwd, "/") == 0 ? "/" : s_files_cwd);
+        else
+            snprintf(fullpath, sizeof(fullpath), "%s%snew_folder_%d", mount,
+                     strcmp(s_files_cwd, "/") == 0 ? "/" : s_files_cwd, i);
+        struct stat st;
+        if (stat(fullpath, &st) != 0) break;  // Doesn't exist, use this name
+    }
+    // Use POSIX mkdir since we have the full VFS path
+    mkdir(fullpath, 0755);
+    files_navigate(s_files_cwd);
+}
+
+static void storage_browse_sd_cb(lv_event_t* e) {
+    (void)e;
+    s_files_use_sd = true;
+    s_storage_browsing = true;
+    strcpy(s_files_cwd, "/");
+
+    lv_obj_t* vp = s_files_viewport;
+    lv_obj_clean(vp);
+
+    // Top bar: back + up + path + mkdir
+    lv_obj_t* top = create_info_row(vp);
+
+    lv_obj_t* back = tritium_theme::createButton(top, LV_SYMBOL_LEFT " Storage");
+    lv_obj_add_event_cb(back, [](lv_event_t* ev) {
+        (void)ev;
+        s_storage_browsing = false;
+        storage_show_overview();
+    }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* up_btn = tritium_theme::createButton(top, LV_SYMBOL_UP);
+    lv_obj_add_event_cb(up_btn, files_back_cb, LV_EVENT_CLICKED, nullptr);
+
+    s_files_path_lbl = tritium_theme::createLabel(top, "/", true);
     lv_obj_set_flex_grow(s_files_path_lbl, 1);
     lv_obj_set_style_text_color(s_files_path_lbl, T_CYAN, 0);
 
-    // --- Storage toggle ---
-#if FILES_SD_AVAILABLE
-    lv_obj_t* toggle_row = lv_obj_create(viewport);
-    lv_obj_set_size(toggle_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(toggle_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(toggle_row, 0, 0);
-    lv_obj_set_style_pad_all(toggle_row, 0, 0);
-    lv_obj_set_flex_flow(toggle_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(toggle_row, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(toggle_row, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_gap(toggle_row, 8, 0);
+    lv_obj_t* mkdir_btn = tritium_theme::createButton(top, LV_SYMBOL_PLUS);
+    lv_obj_add_event_cb(mkdir_btn, files_mkdir_cb, LV_EVENT_CLICKED, nullptr);
 
-    tritium_theme::createLabel(toggle_row, "LittleFS");
-    lv_obj_t* sd_sw = tritium_theme::createSwitch(toggle_row, false);
-    tritium_theme::createLabel(toggle_row, "SD");
-    // SD toggle callback would set s_files_use_sd and re-navigate
-#endif
-
-    // --- File list ---
-    lv_obj_t* list_panel = tritium_theme::createPanel(viewport, "FILES");
+    // File list panel
+    lv_obj_t* list_panel = tritium_theme::createPanel(vp, "SD CARD");
     lv_obj_set_width(list_panel, lv_pct(100));
     lv_obj_set_flex_grow(list_panel, 1);
     lv_obj_set_flex_flow(list_panel, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_top(list_panel, 24, 0);
+    lv_obj_set_style_pad_gap(list_panel, 2, 0);
 
     s_files_list = lv_obj_create(list_panel);
     lv_obj_set_size(s_files_list, lv_pct(100), LV_SIZE_CONTENT);
@@ -1690,15 +2488,342 @@ void files_app_create(lv_obj_t* viewport) {
     lv_obj_set_style_border_width(s_files_list, 0, 0);
     lv_obj_set_style_pad_all(s_files_list, 0, 0);
     lv_obj_set_flex_flow(s_files_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(s_files_list, 1, 0);
 
-    // --- Storage info bar ---
-    s_files_info_lbl = tritium_theme::createLabel(viewport, "Storage: --", true);
+    // Storage info footer
+    s_files_storage_bar = create_usage_bar(vp, 0);
+    s_files_info_lbl = tritium_theme::createLabel(vp, "SD: --", true);
     lv_obj_set_style_text_color(s_files_info_lbl, T_GHOST, 0);
 
-    // Navigate to root
-    strcpy(s_files_cwd, "/");
     files_navigate("/");
+}
+
+static void storage_browse_lfs_cb(lv_event_t* e) {
+    (void)e;
+    s_files_use_sd = false;
+    s_storage_browsing = true;
+    strcpy(s_files_cwd, "/");
+
+    lv_obj_t* vp = s_files_viewport;
+    lv_obj_clean(vp);
+
+    lv_obj_t* top = create_info_row(vp);
+
+    lv_obj_t* back = tritium_theme::createButton(top, LV_SYMBOL_LEFT " Storage");
+    lv_obj_add_event_cb(back, [](lv_event_t* ev) {
+        (void)ev;
+        s_storage_browsing = false;
+        storage_show_overview();
+    }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* up_btn = tritium_theme::createButton(top, LV_SYMBOL_UP);
+    lv_obj_add_event_cb(up_btn, files_back_cb, LV_EVENT_CLICKED, nullptr);
+
+    s_files_path_lbl = tritium_theme::createLabel(top, "/", true);
+    lv_obj_set_flex_grow(s_files_path_lbl, 1);
+    lv_obj_set_style_text_color(s_files_path_lbl, T_CYAN, 0);
+
+    lv_obj_t* mkdir_btn = tritium_theme::createButton(top, LV_SYMBOL_PLUS);
+    lv_obj_add_event_cb(mkdir_btn, files_mkdir_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* list_panel = tritium_theme::createPanel(vp, "INTERNAL FLASH");
+    lv_obj_set_width(list_panel, lv_pct(100));
+    lv_obj_set_flex_grow(list_panel, 1);
+    lv_obj_set_flex_flow(list_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(list_panel, 24, 0);
+    lv_obj_set_style_pad_gap(list_panel, 2, 0);
+
+    s_files_list = lv_obj_create(list_panel);
+    lv_obj_set_size(s_files_list, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(s_files_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_files_list, 0, 0);
+    lv_obj_set_style_pad_all(s_files_list, 0, 0);
+    lv_obj_set_flex_flow(s_files_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(s_files_list, 1, 0);
+
+    s_files_storage_bar = create_usage_bar(vp, 0);
+    s_files_info_lbl = tritium_theme::createLabel(vp, "LFS: --", true);
+    lv_obj_set_style_text_color(s_files_info_lbl, T_GHOST, 0);
+
+    files_navigate("/");
+}
+
+// ---- Storage overview: shows all memory regions ----
+static void storage_show_overview() {
+    lv_obj_t* vp = s_files_viewport;
+    if (!vp) return;
+    lv_obj_clean(vp);
+
+    s_files_list = nullptr;
+    s_files_path_lbl = nullptr;
+    s_files_info_lbl = nullptr;
+    s_files_storage_bar = nullptr;
+
+#ifndef SIMULATOR
+    // ---- MEMORY section ----
+    lv_obj_t* mem_panel = tritium_theme::createPanel(vp, "MEMORY");
+    lv_obj_set_width(mem_panel, lv_pct(100));
+    lv_obj_set_height(mem_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(mem_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(mem_panel, 24, 0);
+    lv_obj_set_style_pad_gap(mem_panel, 3, 0);
+
+    // Internal SRAM
+    {
+        size_t free_heap = esp_get_free_heap_size();
+        size_t total_heap = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+        size_t used_heap = total_heap - free_heap;
+        char buf[80];
+        char used_str[16], total_str[16];
+        format_size(used_str, sizeof(used_str), used_heap);
+        format_size(total_str, sizeof(total_str), total_heap);
+        snprintf(buf, sizeof(buf), "Internal SRAM   %s / %s", used_str, total_str);
+        lv_obj_t* lbl = tritium_theme::createLabel(mem_panel, buf, true);
+        lv_obj_set_style_text_color(lbl, T_TEXT, 0);
+        int pct = total_heap ? (int)(used_heap * 100 / total_heap) : 0;
+        create_usage_bar(mem_panel, pct);
+    }
+
+    // PSRAM
+    {
+        size_t total_ps = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+        size_t free_ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        size_t used_ps = total_ps - free_ps;
+        char buf[80];
+        char used_str[16], total_str[16];
+        format_size(used_str, sizeof(used_str), used_ps);
+        format_size(total_str, sizeof(total_str), total_ps);
+        snprintf(buf, sizeof(buf), "PSRAM           %s / %s", used_str, total_str);
+        lv_obj_t* lbl = tritium_theme::createLabel(mem_panel, buf, true);
+        lv_obj_set_style_text_color(lbl, T_TEXT, 0);
+        int pct = total_ps ? (int)(used_ps * 100 / total_ps) : 0;
+        create_usage_bar(mem_panel, pct);
+    }
+
+    // Flash chip
+    {
+        uint32_t flash_sz_u32 = 0;
+        esp_flash_get_size(NULL, &flash_sz_u32);
+        size_t flash_sz = flash_sz_u32;
+        const esp_partition_t* running = esp_ota_get_running_partition();
+        size_t sketch_sz = running ? running->size : 0;
+        char buf[80];
+        char used_str[16], total_str[16];
+        format_size(used_str, sizeof(used_str), sketch_sz);
+        format_size(total_str, sizeof(total_str), flash_sz);
+        snprintf(buf, sizeof(buf), "Flash chip      %s / %s", used_str, total_str);
+        lv_obj_t* lbl = tritium_theme::createLabel(mem_panel, buf, true);
+        lv_obj_set_style_text_color(lbl, T_TEXT, 0);
+        int pct = flash_sz ? (int)(sketch_sz * 100 / flash_sz) : 0;
+        create_usage_bar(mem_panel, pct);
+    }
+
+    // NVS (settings store)
+    {
+        // NVS stats via esp_partition
+        const esp_partition_t* nvs_part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, "nvs");
+        if (nvs_part) {
+            char buf[80];
+            char sz_str[16];
+            format_size(sz_str, sizeof(sz_str), nvs_part->size);
+            snprintf(buf, sizeof(buf), "NVS partition   %s", sz_str);
+            lv_obj_t* lbl = tritium_theme::createLabel(mem_panel, buf, true);
+            lv_obj_set_style_text_color(lbl, T_GHOST, 0);
+        }
+    }
+
+    // ---- VOLUMES section ----
+    lv_obj_t* vol_panel = tritium_theme::createPanel(vp, "VOLUMES");
+    lv_obj_set_width(vol_panel, lv_pct(100));
+    lv_obj_set_flex_grow(vol_panel, 1);
+    lv_obj_set_flex_flow(vol_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(vol_panel, 24, 0);
+    lv_obj_set_style_pad_gap(vol_panel, 4, 0);
+
+    // ---- SD Card volume ----
+    {
+        auto* sd = sd_hal();
+        if (!sd) goto skip_sd;
+
+        // Try to mount if not already
+        if (!sd->isMounted()) {
+            sd->init();
+        }
+
+        lv_obj_t* sd_row = lv_obj_create(vol_panel);
+        lv_obj_set_size(sd_row, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(sd_row, T_SURFACE2, 0);
+        lv_obj_set_style_bg_opa(sd_row, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(sd_row, sd->isMounted() ? T_CYAN : T_SURFACE3, 0);
+        lv_obj_set_style_border_width(sd_row, 1, 0);
+        lv_obj_set_style_radius(sd_row, 4, 0);
+        lv_obj_set_style_pad_all(sd_row, 6, 0);
+        lv_obj_set_style_pad_gap(sd_row, 3, 0);
+        lv_obj_set_flex_flow(sd_row, LV_FLEX_FLOW_COLUMN);
+        lv_obj_remove_flag(sd_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        // Title row: icon + name + status
+        lv_obj_t* title_row = create_info_row(sd_row);
+        lv_obj_t* title = tritium_theme::createLabel(title_row, LV_SYMBOL_SD_CARD " SD Card");
+        lv_obj_set_style_text_color(title, T_CYAN, 0);
+
+        if (sd->isMounted()) {
+            char info[64];
+            char used_str[16], total_str[16];
+            format_size(used_str, sizeof(used_str), (size_t)sd->usedBytes());
+            format_size(total_str, sizeof(total_str), (size_t)sd->totalBytes());
+            snprintf(info, sizeof(info), "%s  %s / %s",
+                     sd->getFilesystemType(), used_str, total_str);
+            lv_obj_t* info_lbl = tritium_theme::createLabel(title_row, info, true);
+            lv_obj_set_style_text_color(info_lbl, T_TEXT, 0);
+
+            uint64_t total_b = sd->totalBytes();
+            int pct = total_b ? (int)(sd->usedBytes() * 100 / total_b) : 0;
+            create_usage_bar(sd_row, pct);
+
+            // Action buttons row 1: Browse, Eject
+            lv_obj_t* btn_row = create_info_row(sd_row);
+            lv_obj_t* browse_btn = tritium_theme::createButton(btn_row,
+                LV_SYMBOL_DIRECTORY " Browse", T_CYAN);
+            lv_obj_add_event_cb(browse_btn, storage_browse_sd_cb,
+                                LV_EVENT_CLICKED, nullptr);
+
+            lv_obj_t* test_btn = tritium_theme::createButton(btn_row,
+                LV_SYMBOL_CHARGE " Test", T_GREEN);
+            lv_obj_add_event_cb(test_btn, [](lv_event_t* ev) {
+                (void)ev;
+                storage_show_sd_test();
+            }, LV_EVENT_CLICKED, nullptr);
+
+            lv_obj_t* eject_btn = tritium_theme::createButton(btn_row,
+                LV_SYMBOL_EJECT " Eject", T_YELLOW);
+            lv_obj_add_event_cb(eject_btn, [](lv_event_t* ev) {
+                (void)ev;
+                auto* s = sd_hal();
+                if (s) s->deinit();
+                storage_show_overview();
+            }, LV_EVENT_CLICKED, nullptr);
+
+            // Action buttons row 2: Format (with confirmation)
+            lv_obj_t* btn_row2 = create_info_row(sd_row);
+            lv_obj_t* fmt_btn = tritium_theme::createButton(btn_row2,
+                LV_SYMBOL_TRASH " Format SD", T_MAGENTA);
+            lv_obj_add_event_cb(fmt_btn, [](lv_event_t* ev) {
+                (void)ev;
+                storage_confirm_format(true);
+            }, LV_EVENT_CLICKED, nullptr);
+        } else {
+            lv_obj_t* status = tritium_theme::createLabel(title_row,
+                "Not detected", true);
+            lv_obj_set_style_text_color(status, T_MAGENTA, 0);
+
+            lv_obj_t* btn_row = create_info_row(sd_row);
+            lv_obj_t* mount_btn = tritium_theme::createButton(btn_row,
+                LV_SYMBOL_REFRESH " Mount", T_CYAN);
+            lv_obj_add_event_cb(mount_btn, [](lv_event_t* ev) {
+                (void)ev;
+                auto* s = sd_hal();
+                if (s) s->init();
+                storage_show_overview();
+            }, LV_EVENT_CLICKED, nullptr);
+
+            // Try format if mount fails (card may have corrupted filesystem)
+            lv_obj_t* fmt_btn = tritium_theme::createButton(btn_row,
+                LV_SYMBOL_TRASH " Format", T_MAGENTA);
+            lv_obj_add_event_cb(fmt_btn, [](lv_event_t* ev) {
+                (void)ev;
+                storage_confirm_format(true);
+            }, LV_EVENT_CLICKED, nullptr);
+        }
+    }
+    skip_sd:
+
+    // ---- LittleFS volume ----
+    {
+        bool fs_ready = false;
+#if STORAGE_SVC_AVAILABLE
+        auto* fsh = fs_hal();
+        if (fsh) fs_ready = fsh->isReady();
+#elif FILES_FS_AVAILABLE
+        FsHAL fsh_local;
+        auto* fsh = &fsh_local;
+        fs_ready = fsh->isReady();
+#else
+        void* fsh = nullptr;
 #endif
+
+        lv_obj_t* lfs_row = lv_obj_create(vol_panel);
+        lv_obj_set_size(lfs_row, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(lfs_row, T_SURFACE2, 0);
+        lv_obj_set_style_bg_opa(lfs_row, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(lfs_row, fs_ready ? T_CYAN : T_SURFACE3, 0);
+        lv_obj_set_style_border_width(lfs_row, 1, 0);
+        lv_obj_set_style_radius(lfs_row, 4, 0);
+        lv_obj_set_style_pad_all(lfs_row, 6, 0);
+        lv_obj_set_style_pad_gap(lfs_row, 3, 0);
+        lv_obj_set_flex_flow(lfs_row, LV_FLEX_FLOW_COLUMN);
+        lv_obj_remove_flag(lfs_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t* title_row = create_info_row(lfs_row);
+        lv_obj_t* title = tritium_theme::createLabel(title_row,
+            LV_SYMBOL_DRIVE " Internal Flash");
+        lv_obj_set_style_text_color(title, T_CYAN, 0);
+
+#if STORAGE_SVC_AVAILABLE || FILES_FS_AVAILABLE
+        if (fs_ready && fsh) {
+            char info[64];
+            char used_str[16], total_str[16];
+            format_size(used_str, sizeof(used_str), (size_t)((FsHAL*)fsh)->usedBytes());
+            format_size(total_str, sizeof(total_str), (size_t)((FsHAL*)fsh)->totalBytes());
+            snprintf(info, sizeof(info), "LittleFS  %s / %s", used_str, total_str);
+            lv_obj_t* info_lbl = tritium_theme::createLabel(title_row, info, true);
+            lv_obj_set_style_text_color(info_lbl, T_TEXT, 0);
+
+            uint64_t total_b = ((FsHAL*)fsh)->totalBytes();
+            int pct = total_b ? (int)(((FsHAL*)fsh)->usedBytes() * 100 / total_b) : 0;
+            create_usage_bar(lfs_row, pct);
+
+            lv_obj_t* btn_row = create_info_row(lfs_row);
+            lv_obj_t* browse_btn = tritium_theme::createButton(btn_row,
+                LV_SYMBOL_DIRECTORY " Browse", T_CYAN);
+            lv_obj_add_event_cb(browse_btn, storage_browse_lfs_cb,
+                                LV_EVENT_CLICKED, nullptr);
+
+            lv_obj_t* fmt_btn = tritium_theme::createButton(btn_row,
+                LV_SYMBOL_TRASH " Format", T_MAGENTA);
+            lv_obj_add_event_cb(fmt_btn, [](lv_event_t* ev) {
+                (void)ev;
+                storage_confirm_format(false);
+            }, LV_EVENT_CLICKED, nullptr);
+        } else {
+            lv_obj_t* status = tritium_theme::createLabel(title_row,
+                "Not mounted", true);
+            lv_obj_set_style_text_color(status, T_GHOST, 0);
+        }
+#else
+        lv_obj_t* status = tritium_theme::createLabel(title_row,
+            "Not available", true);
+        lv_obj_set_style_text_color(status, T_GHOST, 0);
+#endif
+    }
+
+#else  // SIMULATOR
+    tritium_theme::createLabel(vp, "Storage not available in simulator");
+#endif
+}
+
+void files_app_create(lv_obj_t* viewport) {
+    lv_obj_clean(viewport);
+    lv_obj_set_flex_flow(viewport, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(viewport, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(viewport, 6, 0);
+    lv_obj_set_style_pad_gap(viewport, 4, 0);
+    s_files_viewport = viewport;
+    s_storage_browsing = false;
+
+    storage_show_overview();
 }
 
 // ===========================================================================
@@ -1726,13 +2851,13 @@ void power_app_create(lv_obj_t* viewport) {
     // Large battery icon
     s_power_icon_lbl = lv_label_create(batt_panel);
     lv_label_set_text(s_power_icon_lbl, LV_SYMBOL_BATTERY_FULL);
-    lv_obj_set_style_text_font(s_power_icon_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(s_power_icon_lbl, tritium_shell::uiHeadingFont(), 0);
     lv_obj_set_style_text_color(s_power_icon_lbl, T_GREEN, 0);
 
     // Large percentage
     s_power_pct_lbl = lv_label_create(batt_panel);
     lv_label_set_text(s_power_pct_lbl, "--%");
-    lv_obj_set_style_text_font(s_power_pct_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(s_power_pct_lbl, tritium_shell::uiHeadingFont(), 0);
     lv_obj_set_style_text_color(s_power_pct_lbl, T_GREEN, 0);
 
     // Source + voltage row
@@ -1828,6 +2953,184 @@ void power_app_create(lv_obj_t* viewport) {
 }
 
 // ===========================================================================
+//  BLE Scanner App
+// ===========================================================================
+
+static lv_obj_t* s_ble_device_list = nullptr;
+static lv_obj_t* s_ble_count_lbl   = nullptr;
+static lv_obj_t* s_ble_status_lbl  = nullptr;
+static lv_timer_t* s_ble_timer     = nullptr;
+
+#if BLE_APP_AVAILABLE
+
+static void ble_refresh(lv_timer_t* t) {
+    (void)t;
+    if (!s_ble_device_list) return;
+
+    BleDevice devs[BLE_SCANNER_MAX_DEVICES];
+    int count = hal_ble_scanner::get_devices(devs, BLE_SCANNER_MAX_DEVICES);
+    int known = 0;
+    for (int i = 0; i < count; i++) if (devs[i].is_known) known++;
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Devices: %d  Known: %d", count, known);
+    lv_label_set_text(s_ble_count_lbl, buf);
+
+    lv_label_set_text(s_ble_status_lbl,
+        hal_ble_scanner::is_active() ? "Scanner: ACTIVE" : "Scanner: INACTIVE");
+    lv_obj_set_style_text_color(s_ble_status_lbl,
+        hal_ble_scanner::is_active() ? T_GREEN : T_MAGENTA, 0);
+
+    lv_obj_clean(s_ble_device_list);
+
+    // Sort by RSSI (strongest first)
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (devs[j].rssi > devs[i].rssi) {
+                BleDevice tmp = devs[i];
+                devs[i] = devs[j];
+                devs[j] = tmp;
+            }
+        }
+    }
+
+    for (int i = 0; i < count; i++) {
+        lv_obj_t* row = lv_obj_create(s_ble_device_list);
+        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(row, T_SURFACE2, 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 4, 0);
+        lv_obj_set_style_radius(row, 4, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        // Top row: name/MAC + RSSI
+        lv_obj_t* top = lv_obj_create(row);
+        lv_obj_set_size(top, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(top, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(top, 0, 0);
+        lv_obj_set_style_pad_all(top, 0, 0);
+        lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(top, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_remove_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+
+        // Device name or MAC
+        char name_buf[48];
+        if (devs[i].name[0]) {
+            snprintf(name_buf, sizeof(name_buf), "%s%s",
+                     devs[i].is_known ? LV_SYMBOL_OK " " : "",
+                     devs[i].name);
+        } else {
+            snprintf(name_buf, sizeof(name_buf), "%s%02X:%02X:%02X:%02X:%02X:%02X",
+                     devs[i].is_known ? LV_SYMBOL_OK " " : "",
+                     devs[i].addr[0], devs[i].addr[1], devs[i].addr[2],
+                     devs[i].addr[3], devs[i].addr[4], devs[i].addr[5]);
+        }
+        lv_obj_t* name_lbl = tritium_theme::createLabel(top, name_buf);
+        lv_obj_set_flex_grow(name_lbl, 1);
+        lv_obj_set_style_text_color(name_lbl, devs[i].is_known ? T_CYAN : T_TEXT, 0);
+
+        char rssi_buf[16];
+        snprintf(rssi_buf, sizeof(rssi_buf), "%ddBm", (int)devs[i].rssi);
+        lv_obj_t* rssi_lbl = tritium_theme::createLabel(top, rssi_buf, true);
+        int rpct = (devs[i].rssi + 100);
+        if (rpct < 0) rpct = 0;
+        if (rpct > 100) rpct = 100;
+        lv_color_t rc = (rpct > 60) ? T_GREEN : (rpct > 30) ? T_YELLOW : T_MAGENTA;
+        lv_obj_set_style_text_color(rssi_lbl, rc, 0);
+
+        // RSSI bar
+        lv_obj_t* bar = lv_bar_create(row);
+        lv_obj_set_width(bar, lv_pct(100));
+        lv_obj_set_height(bar, 4);
+        lv_bar_set_range(bar, 0, 100);
+        lv_bar_set_value(bar, rpct, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(bar, T_SURFACE3, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(bar, rc, LV_PART_INDICATOR);
+        lv_obj_set_style_radius(bar, 2, 0);
+        lv_obj_set_style_radius(bar, 2, LV_PART_INDICATOR);
+
+        // Bottom row: MAC (if name shown) + seen count + age
+        char detail_buf[64];
+        uint32_t age_s = (millis() - devs[i].last_seen) / 1000;
+        if (devs[i].name[0]) {
+            snprintf(detail_buf, sizeof(detail_buf),
+                     "%02X:%02X:%02X:%02X:%02X:%02X  seen:%u  %us ago",
+                     devs[i].addr[0], devs[i].addr[1], devs[i].addr[2],
+                     devs[i].addr[3], devs[i].addr[4], devs[i].addr[5],
+                     (unsigned)devs[i].seen_count, (unsigned)age_s);
+        } else {
+            snprintf(detail_buf, sizeof(detail_buf),
+                     "Type: %s  seen:%u  %us ago",
+                     devs[i].addr_type == 0 ? "public" : "random",
+                     (unsigned)devs[i].seen_count, (unsigned)age_s);
+        }
+        lv_obj_t* det = tritium_theme::createLabel(row, detail_buf, true);
+        lv_obj_set_style_text_font(det, tritium_shell::uiSmallFont(), 0);
+        lv_obj_set_style_text_color(det, T_GHOST, 0);
+    }
+
+    if (count == 0) {
+        tritium_theme::createLabel(s_ble_device_list, "No devices detected", true);
+    }
+}
+
+#endif  // BLE_APP_AVAILABLE
+
+void ble_app_create(lv_obj_t* viewport) {
+    lv_obj_clean(viewport);
+    lv_obj_set_flex_flow(viewport, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(viewport, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(viewport, 8, 0);
+    lv_obj_set_style_pad_gap(viewport, 6, 0);
+
+#if !BLE_APP_AVAILABLE
+    tritium_theme::createLabel(viewport, "BLE Scanner not available in this build");
+    tritium_theme::createLabel(viewport, "Enable with -DENABLE_BLE_SCANNER", true);
+    return;
+#else
+    // Header
+    lv_obj_t* hdr = lv_obj_create(viewport);
+    lv_obj_set_size(hdr, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(hdr, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 0, 0);
+    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_ble_status_lbl = tritium_theme::createLabel(hdr, "Scanner: --");
+    s_ble_count_lbl  = tritium_theme::createLabel(hdr, "Devices: --", true);
+
+    // Device list (scrollable)
+    lv_obj_t* list_panel = tritium_theme::createPanel(viewport, "BLE DEVICES");
+    lv_obj_set_width(list_panel, lv_pct(100));
+    lv_obj_set_flex_grow(list_panel, 1);
+    lv_obj_set_flex_flow(list_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(list_panel, 24, 0);
+    lv_obj_set_style_pad_gap(list_panel, 4, 0);
+
+    s_ble_device_list = lv_obj_create(list_panel);
+    lv_obj_set_size(s_ble_device_list, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(s_ble_device_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_ble_device_list, 0, 0);
+    lv_obj_set_style_pad_all(s_ble_device_list, 0, 0);
+    lv_obj_set_flex_flow(s_ble_device_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(s_ble_device_list, 4, 0);
+
+    tritium_theme::createLabel(s_ble_device_list, "Scanning...", true);
+
+    // Initial update + timer (refresh every 5s)
+    ble_refresh(nullptr);
+    s_ble_timer = lv_timer_create(ble_refresh, 5000, nullptr);
+#endif
+}
+
+// ===========================================================================
 //  Cleanup — delete active LVGL timers before switching apps
 // ===========================================================================
 
@@ -1836,6 +3139,7 @@ void cleanup_timers() {
     if (s_wifi_timer)   { lv_timer_delete(s_wifi_timer);   s_wifi_timer   = nullptr; }
     if (s_mesh_timer)   { lv_timer_delete(s_mesh_timer);   s_mesh_timer   = nullptr; }
     if (s_power_timer)  { lv_timer_delete(s_power_timer);  s_power_timer  = nullptr; }
+    if (s_ble_timer)    { lv_timer_delete(s_ble_timer);    s_ble_timer    = nullptr; }
 }
 
 //  Register all new apps
@@ -1845,7 +3149,8 @@ void register_all_apps() {
     // WiFi, Power, Brightness, About are now sub-panels inside Settings.
     tritium_shell::registerApp({"Monitor", "System health",    LV_SYMBOL_EYE_OPEN,     true, sysmon_app_create});
     tritium_shell::registerApp({"Mesh",    "P2P network",      LV_SYMBOL_SHUFFLE,      true, mesh_app_create});
-    tritium_shell::registerApp({"Files",   "File browser",     LV_SYMBOL_DIRECTORY,     true, files_app_create});
+    tritium_shell::registerApp({"Storage", "Storage manager",  LV_SYMBOL_DRIVE,         true, files_app_create});
+    tritium_shell::registerApp({"BLE",     "BLE scanner",      LV_SYMBOL_BLUETOOTH,    true, ble_app_create});
 }
 
 }  // namespace shell_apps

@@ -144,15 +144,21 @@ int diaglog_get_json(char* buf, size_t buf_size, int offset, int count) {
 }
 
 // =============================================================================
-// ESP32 — LittleFS persistent ring buffer
+// ESP32 — POSIX VFS persistent ring buffer (LittleFS mounted at /littlefs)
 // =============================================================================
 #else
 
-#include <Arduino.h>
-#include <LittleFS.h>
+#include "tritium_compat.h"
+#include <ctime>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+
+// VFS-prefixed paths (LittleFS is mounted at /littlefs)
+static constexpr const char* VFS_DIAGLOG_DIR  = "/littlefs/diag";
+static constexpr const char* VFS_DIAGLOG_PATH = "/littlefs/diag/events.bin";
 
 static SemaphoreHandle_t _mutex = nullptr;
 static DiagLogHeader _header = {};
@@ -176,41 +182,41 @@ static size_t event_offset(uint32_t index) {
 }
 
 static bool read_header() {
-    File f = LittleFS.open(DIAGLOG_PATH, "r");
+    FILE* f = fopen(VFS_DIAGLOG_PATH, "r");
     if (!f) return false;
-    size_t n = f.read((uint8_t*)&_header, sizeof(_header));
-    f.close();
+    size_t n = fread(&_header, 1, sizeof(_header), f);
+    fclose(f);
     return (n == sizeof(_header) && _header.magic == DIAGLOG_MAGIC);
 }
 
 static bool write_header() {
-    File f = LittleFS.open(DIAGLOG_PATH, "r+");
+    FILE* f = fopen(VFS_DIAGLOG_PATH, "r+b");
     if (!f) {
         // File doesn't exist yet — create it
-        f = LittleFS.open(DIAGLOG_PATH, "w");
+        f = fopen(VFS_DIAGLOG_PATH, "wb");
         if (!f) return false;
     }
-    f.seek(0);
-    size_t n = f.write((const uint8_t*)&_header, sizeof(_header));
-    f.close();
+    fseek(f, 0, SEEK_SET);
+    size_t n = fwrite(&_header, 1, sizeof(_header), f);
+    fclose(f);
     return (n == sizeof(_header));
 }
 
 static bool write_event_at(uint32_t index, const DiagEvent& ev) {
-    File f = LittleFS.open(DIAGLOG_PATH, "r+");
+    FILE* f = fopen(VFS_DIAGLOG_PATH, "r+b");
     if (!f) return false;
-    f.seek(event_offset(index));
-    size_t n = f.write((const uint8_t*)&ev, sizeof(ev));
-    f.close();
+    fseek(f, (long)event_offset(index), SEEK_SET);
+    size_t n = fwrite(&ev, 1, sizeof(ev), f);
+    fclose(f);
     return (n == sizeof(ev));
 }
 
 static bool read_event_at(uint32_t index, DiagEvent& ev) {
-    File f = LittleFS.open(DIAGLOG_PATH, "r");
+    FILE* f = fopen(VFS_DIAGLOG_PATH, "rb");
     if (!f) return false;
-    f.seek(event_offset(index));
-    size_t n = f.read((uint8_t*)&ev, sizeof(ev));
-    f.close();
+    fseek(f, (long)event_offset(index), SEEK_SET);
+    size_t n = fread(&ev, 1, sizeof(ev), f);
+    fclose(f);
     return (n == sizeof(ev));
 }
 
@@ -238,17 +244,16 @@ static bool preallocate_file() {
     size_t required = sizeof(DiagLogHeader)
                     + (size_t)DIAGLOG_MAX_EVENTS * sizeof(DiagEvent);
 
-    File f = LittleFS.open(DIAGLOG_PATH, "r");
-    if (f) {
-        size_t current = f.size();
-        f.close();
-        if (current >= required) return true;
+    // Check if file already exists and is large enough
+    struct stat st;
+    if (stat(VFS_DIAGLOG_PATH, &st) == 0) {
+        if ((size_t)st.st_size >= required) return true;
     }
 
     // Write zeros to expand the file
-    f = LittleFS.open(DIAGLOG_PATH, "w");
+    FILE* f = fopen(VFS_DIAGLOG_PATH, "wb");
     if (!f) {
-        DBG_ERROR(TAG, "Cannot create %s", DIAGLOG_PATH);
+        DBG_ERROR(TAG, "Cannot create %s", VFS_DIAGLOG_PATH);
         return false;
     }
 
@@ -258,16 +263,16 @@ static bool preallocate_file() {
     size_t remaining = required;
     while (remaining > 0) {
         size_t chunk = (remaining < sizeof(zeros)) ? remaining : sizeof(zeros);
-        size_t written = f.write(zeros, chunk);
+        size_t written = fwrite(zeros, 1, chunk, f);
         if (written != chunk) {
             DBG_ERROR(TAG, "Preallocate write failed at %u/%u",
                       (unsigned)(required - remaining), (unsigned)required);
-            f.close();
+            fclose(f);
             return false;
         }
         remaining -= chunk;
     }
-    f.close();
+    fclose(f);
 
     DBG_INFO(TAG, "Preallocated %u bytes (%u event slots)",
              (unsigned)required, (unsigned)DIAGLOG_MAX_EVENTS);
@@ -289,9 +294,10 @@ bool diaglog_init() {
 
     xSemaphoreTake(_mutex, portMAX_DELAY);
 
-    // Ensure /diag directory exists
-    if (!LittleFS.exists(DIAGLOG_DIR)) {
-        LittleFS.mkdir(DIAGLOG_DIR);
+    // Ensure /littlefs/diag directory exists
+    struct stat dir_st;
+    if (stat(VFS_DIAGLOG_DIR, &dir_st) != 0) {
+        mkdir(VFS_DIAGLOG_DIR, 0775);
     }
 
     // Try to read existing header

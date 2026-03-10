@@ -35,9 +35,26 @@ namespace tritium_shell {
 struct ShellConfig {
     int screen_width;
     int screen_height;
-    int status_bar_height;  ///< 24px for h>300, 16px for small screens
-    int nav_bar_height;     ///< 48px for h>300, 32px for small screens
+    int status_bar_height;
+    int nav_bar_height;
 };
+
+// --- UI scaling helpers (for use by shell apps) ---------------------------
+
+/// Get the body text font (scaled for current display).
+const lv_font_t* uiFont();
+
+/// Get the heading font (larger, scaled for current display).
+const lv_font_t* uiHeadingFont();
+
+/// Get the small/caption font (scaled for current display).
+const lv_font_t* uiSmallFont();
+
+/// Get the icon font for buttons/icons (scaled for current display).
+const lv_font_t* uiIconFont();
+
+/// Get the current shell config (screen dimensions, bar heights).
+const ShellConfig& uiConfig();
 
 /// Severity level for toast and shade notifications.
 enum NotifyLevel {

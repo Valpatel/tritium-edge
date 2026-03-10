@@ -39,9 +39,11 @@ uint32_t get_interval_ms() { return _interval_ms; }
 // ============================================================================
 #else
 
-#include <Arduino.h>
-#include <WiFi.h>
-#include <HTTPClient.h>
+#include "tritium_compat.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_mac.h"
+#include "esp_http_client.h"
 #include <esp_ota_ops.h>
 #include <esp_app_format.h>
 #include <esp_partition.h>
@@ -275,7 +277,7 @@ bool init(const HeartbeatConfig& config) {
 
 bool tick() {
     if (!_active) return false;
-    if (!WiFi.isConnected()) return false;
+    { wifi_ap_record_t _ap; if (esp_wifi_sta_get_ap_info(&_ap) != ESP_OK) return false; }
 
     uint32_t now = millis();
     if (_last_send_ms != 0 && (now - _last_send_ms) < _interval_ms) {
@@ -286,17 +288,89 @@ bool tick() {
     return send_now();
 }
 
+// ---------------------------------------------------------------------------
+// HTTP helper — performs a POST and returns HTTP status code.
+// Optionally reads the response body into resp_buf (if non-null).
+// Returns -1 on transport error.
+// ---------------------------------------------------------------------------
+static int http_post(const char* url, const char* post_data, int post_len,
+                     char* resp_buf, size_t resp_buf_size, int timeout_ms) {
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.timeout_ms = timeout_ms;
+    cfg.method = HTTP_METHOD_POST;
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return -1;
+
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, post_data, post_len);
+
+    esp_err_t err = esp_http_client_perform(client);
+    int code = -1;
+    if (err == ESP_OK) {
+        code = esp_http_client_get_status_code(client);
+    }
+    esp_http_client_cleanup(client);
+    return code;
+}
+
+// HTTP helper — streaming POST that captures response body.
+// Uses open/write/fetch_headers/read pattern for response capture.
+static int http_post_with_response(const char* url, const char* post_data, int post_len,
+                                   char* resp_buf, size_t resp_buf_size, int timeout_ms) {
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.timeout_ms = timeout_ms;
+    cfg.method = HTTP_METHOD_POST;
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return -1;
+
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+
+    esp_err_t err = esp_http_client_open(client, post_len);
+    if (err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        return -1;
+    }
+
+    int written = esp_http_client_write(client, post_data, post_len);
+    if (written < 0) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return -1;
+    }
+
+    int content_length = esp_http_client_fetch_headers(client);
+    int code = esp_http_client_get_status_code(client);
+
+    if (resp_buf && resp_buf_size > 0) {
+        int total_read = 0;
+        int max_read = (int)resp_buf_size - 1;
+        // Read whatever is available, up to buffer size
+        if (content_length > 0 && content_length < max_read) {
+            max_read = content_length;
+        }
+        while (total_read < max_read) {
+            int rd = esp_http_client_read(client, resp_buf + total_read, max_read - total_read);
+            if (rd <= 0) break;
+            total_read += rd;
+        }
+        resp_buf[total_read] = '\0';
+    }
+
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return code;
+}
+
 bool send_now() {
     if (!_active) return false;
-    if (!WiFi.isConnected()) return false;
+    { wifi_ap_record_t _ap; if (esp_wifi_sta_get_ap_info(&_ap) != ESP_OK) return false; }
 
     char url[320];
     snprintf(url, sizeof(url), "%s/api/devices/%s/status", _server_url, _device_id);
-
-    HTTPClient http;
-    http.begin(url);
-    http.addHeader("Content-Type", "application/json");
-    http.setTimeout(5000);
 
     // Build JSON payload — matches the format used by OtaApp::sendHeartbeat()
     const char* partition = "unknown";
@@ -307,6 +381,32 @@ bool send_now() {
     static constexpr size_t HB_BUF_SIZE = 1536;
     static char _hb_buf[HB_BUF_SIZE];
     char* body = _hb_buf;
+
+    // Gather WiFi info via ESP-IDF
+    char _hb_ip_str[16] = "0.0.0.0";
+    char _hb_mac_str[18] = "00:00:00:00:00:00";
+    char _hb_ssid_str[33] = "";
+    int8_t _hb_rssi = 0;
+    {
+        esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif) {
+            esp_netif_ip_info_t ip_info;
+            if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+                esp_ip4addr_ntoa(&ip_info.ip, _hb_ip_str, sizeof(_hb_ip_str));
+            }
+        }
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        snprintf(_hb_mac_str, sizeof(_hb_mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            _hb_rssi = ap_info.rssi;
+            strncpy(_hb_ssid_str, (const char*)ap_info.ssid, sizeof(_hb_ssid_str) - 1);
+            _hb_ssid_str[sizeof(_hb_ssid_str) - 1] = '\0';
+        }
+    }
+
     int pos = snprintf(body, HB_BUF_SIZE,
              "{\"version\":\"%s\",\"board\":\"%s\",\"partition\":\"%s\","
              "\"ip\":\"%s\",\"mac\":\"%s\",\"uptime_s\":%lu,\"free_heap\":%u,"
@@ -318,15 +418,15 @@ bool send_now() {
              "\"firmware_version\":\"%s\""
              "}",
              _fw_version, _board_name, partition,
-             WiFi.localIP().toString().c_str(),
-             WiFi.macAddress().c_str(),
+             _hb_ip_str,
+             _hb_mac_str,
              (unsigned long)(millis() / 1000),
-             (unsigned)ESP.getFreeHeap(),
-             WiFi.RSSI(),
+             (unsigned)esp_get_free_heap_size(),
+             (int)_hb_rssi,
              _fw_hash,
              (unsigned long)(_interval_ms / 1000),
              _server_url,
-             WiFi.SSID().c_str(),
+             _hb_ssid_str,
              _fw_version);
 
     // Append BLE scanner data if available
@@ -354,7 +454,7 @@ bool send_now() {
     // Append transport status array — lists all available communication channels
     pos += snprintf(body + pos, HB_BUF_SIZE - pos,
                     ",\"transports\":[{\"type\":\"wifi\",\"state\":\"available\",\"rssi\":%d}",
-                    WiFi.RSSI());
+                    (int)_hb_rssi);
 #if HAS_ESPNOW
     pos += snprintf(body + pos, HB_BUF_SIZE - pos,
                     ",{\"type\":\"esp_now\",\"state\":\"available\"}");
@@ -381,18 +481,21 @@ bool send_now() {
         body[pos] = '\0';
     }
 
-    int code = http.POST(body);
+    // Response buffer for heartbeat — reuse second half of scratch space
+    static char _resp_buf[512];
+    int code = http_post_with_response(url, body, pos, _resp_buf, sizeof(_resp_buf), 5000);
+
     if (code == 200) {
         DBG_DEBUG(TAG, "Sent to %s - %d", _server_url, code);
 
         // Parse response for server-directed interval or OTA
-        String response = http.getString();
+        const char* response = _resp_buf;
 
         // Check for heartbeat_interval_s adjustment
-        int idx = response.indexOf("\"heartbeat_interval_s\":");
-        if (idx >= 0) {
-            int valStart = idx + 23;  // length of "heartbeat_interval_s":
-            int newInterval = response.substring(valStart).toInt();
+        const char* interval_key = "\"heartbeat_interval_s\":";
+        const char* p = strstr(response, interval_key);
+        if (p) {
+            int newInterval = (int)strtol(p + strlen(interval_key), nullptr, 10);
             if (newInterval > 0 && newInterval <= 3600) {
                 uint32_t newMs = (uint32_t)newInterval * 1000;
                 if (newMs != _interval_ms) {
@@ -404,42 +507,42 @@ bool send_now() {
         }
 
         // Check for desired_config — apply server-pushed settings
-        if (response.indexOf("\"desired_config\"") >= 0) {
-            // Parse heartbeat_interval_s from desired_config
-            int cfgIdx = response.indexOf("\"desired_config\"");
-            if (cfgIdx >= 0) {
-                int intervalIdx = response.indexOf("\"heartbeat_interval_s\":", cfgIdx);
-                if (intervalIdx >= 0) {
-                    int valStart = intervalIdx + 23;
-                    int newInterval = response.substring(valStart).toInt();
-                    if (newInterval > 0 && newInterval <= 3600) {
-                        uint32_t newMs = (uint32_t)newInterval * 1000;
-                        if (newMs != _interval_ms) {
-                            DBG_INFO(TAG, "Config: heartbeat_interval=%ds", newInterval);
-                            _interval_ms = newMs;
-                        }
+        const char* cfg_p = strstr(response, "\"desired_config\"");
+        if (cfg_p) {
+            const char* cfg_interval = strstr(cfg_p, interval_key);
+            if (cfg_interval) {
+                int newInterval = (int)strtol(cfg_interval + strlen(interval_key), nullptr, 10);
+                if (newInterval > 0 && newInterval <= 3600) {
+                    uint32_t newMs = (uint32_t)newInterval * 1000;
+                    if (newMs != _interval_ms) {
+                        DBG_INFO(TAG, "Config: heartbeat_interval=%ds", newInterval);
+                        _interval_ms = newMs;
                     }
                 }
-                DBG_DEBUG(TAG, "Received desired_config from server");
             }
+            DBG_DEBUG(TAG, "Received desired_config from server");
         }
 
         // Check for OTA directive — store URL in NVS for hal_ota to pick up
-        if (response.indexOf("\"ota\"") >= 0 && response.indexOf("\"url\"") >= 0) {
-            int urlStart = response.indexOf("\"url\":\"") + 7;
-            int urlEnd = response.indexOf("\"", urlStart);
-            if (urlStart > 6 && urlEnd > urlStart) {
-                String otaUrl = String(_server_url) + response.substring(urlStart, urlEnd);
-                DBG_INFO(TAG, "Server scheduled OTA: %s", otaUrl.c_str());
-                // Note: OTA execution is left to apps that include hal_ota.
-                // The heartbeat library only logs the directive.
+        if (strstr(response, "\"ota\"") && strstr(response, "\"url\"")) {
+            const char* url_start = strstr(response, "\"url\":\"");
+            if (url_start) {
+                url_start += 7;  // skip past "url":"
+                const char* url_end = strchr(url_start, '"');
+                if (url_end && url_end > url_start) {
+                    char ota_url[512];
+                    int path_len = (int)(url_end - url_start);
+                    snprintf(ota_url, sizeof(ota_url), "%s%.*s",
+                             _server_url, path_len, url_start);
+                    DBG_INFO(TAG, "Server scheduled OTA: %s", ota_url);
+                    // Note: OTA execution is left to apps that include hal_ota.
+                    // The heartbeat library only logs the directive.
+                }
             }
         }
     } else {
         DBG_DEBUG(TAG, "Sent to %s - HTTP %d", _server_url, code);
     }
-
-    http.end();
 
     // Piggyback CoT position update on heartbeat tick
 #if HAS_COT
@@ -457,17 +560,12 @@ bool send_now() {
             char diag_url[320];
             snprintf(diag_url, sizeof(diag_url), "%s/api/devices/%s/diag",
                      _server_url, _device_id);
-            HTTPClient diag_http;
-            diag_http.begin(diag_url);
-            diag_http.addHeader("Content-Type", "application/json");
-            diag_http.setTimeout(3000);
-            int diag_code = diag_http.POST((uint8_t*)_hb_buf, diag_len);
+            int diag_code = http_post(diag_url, _hb_buf, diag_len, nullptr, 0, 3000);
             if (diag_code == 200) {
                 DBG_DEBUG(TAG, "Diag report sent (%d bytes)", diag_len);
             } else {
                 DBG_DEBUG(TAG, "Diag report failed: HTTP %d", diag_code);
             }
-            diag_http.end();
         }
     }
 #endif
@@ -491,17 +589,12 @@ bool send_now() {
             char dl_url[320];
             snprintf(dl_url, sizeof(dl_url), "%s/api/devices/%s/diag/log",
                      _server_url, _device_id);
-            HTTPClient dl_http;
-            dl_http.begin(dl_url);
-            dl_http.addHeader("Content-Type", "application/json");
-            dl_http.setTimeout(3000);
-            int dl_code = dl_http.POST((uint8_t*)dl_post, plen);
+            int dl_code = http_post(dl_url, dl_post, plen, nullptr, 0, 3000);
             if (dl_code == 200) {
                 DBG_DEBUG(TAG, "Diaglog events uploaded (%d bytes)", plen);
             } else {
                 DBG_DEBUG(TAG, "Diaglog upload failed: HTTP %d", dl_code);
             }
-            dl_http.end();
         }
     }
 #endif

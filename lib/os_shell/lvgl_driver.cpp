@@ -39,7 +39,7 @@
 #include "display.h"
 
 #include <esp_heap_caps.h>
-#include <Arduino.h>
+#include "tritium_compat.h"
 
 static esp_lcd_panel_handle_t s_panel = nullptr;
 static lv_display_t* s_disp = nullptr;
@@ -177,7 +177,7 @@ lv_display_t* init(esp_lcd_panel_handle_t panel, int width, int height) {
                 lv_display_set_buffers(s_disp, fb0, nullptr, buf_size, mode);
                 Serial.printf("[lvgl] RGB panel — DIRECT mode, single FB fallback\n");
             } else {
-                Serial.println("[lvgl] FATAL: Cannot get RGB panel framebuffers");
+                Serial.printf("[lvgl] FATAL: Cannot get RGB panel framebuffers\n");
                 return nullptr;
             }
         }
@@ -226,7 +226,7 @@ lv_display_t* init(esp_lcd_panel_handle_t panel, int width, int height) {
         }
 
         if (!s_buf1) {
-            Serial.println("[lvgl] FATAL: Cannot allocate draw buffers");
+            Serial.printf("[lvgl] FATAL: Cannot allocate draw buffers\n");
             return nullptr;
         }
 

@@ -4,8 +4,8 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 #include "diag_app.h"
-#include <Arduino.h>
-#include <Wire.h>
+#include "tritium_compat.h"
+#include "tritium_i2c.h"
 #include <esp_mac.h>
 #include <cstring>
 #include <cstdio>
@@ -212,7 +212,7 @@ void DiagApp::setup(esp_lcd_panel_handle_t panel, int width, int height) {
     size_t fb_size = _w * _h * sizeof(uint16_t);
     _framebuf = (uint16_t*)heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM);
     if (!_framebuf) {
-        Serial.println("[diag] FATAL: framebuffer alloc failed");
+        Serial.printf("[diag] FATAL: framebuffer alloc failed\n");
         return;
     }
     memset(_framebuf, 0, fb_size);
@@ -221,24 +221,14 @@ void DiagApp::setup(esp_lcd_panel_handle_t panel, int width, int height) {
     size_t dma_size = _w * CHUNK_ROWS * sizeof(uint16_t);
     _dma_buf = (uint16_t*)heap_caps_malloc(dma_size, MALLOC_CAP_DMA);
     if (!_dma_buf) {
-        Serial.println("[diag] FATAL: DMA buffer alloc failed");
+        Serial.printf("[diag] FATAL: DMA buffer alloc failed\n");
         return;
     }
 
-    // I2C bus scan
-#if defined(SENSOR_SDA) && defined(SENSOR_SCL)
-    Wire.begin(SENSOR_SDA, SENSOR_SCL);
-    Wire.setClock(400000);
-#elif defined(IMU_SDA) && defined(IMU_SCL)
-    Wire.begin(IMU_SDA, IMU_SCL);
-    Wire.setClock(400000);
-#endif
-
+    // I2C bus scan (i2c0 should already be initialized by main)
     _i2c_count = 0;
     for (uint8_t addr = 1; addr < 127; addr++) {
-        Wire.beginTransmission(addr);
-        uint8_t err = Wire.endTransmission();
-        if (err == 0) {
+        if (i2c0.probe(addr)) {
             _i2c_devs[_i2c_count].addr = addr;
             _i2c_devs[_i2c_count].present = true;
             _i2c_count++;

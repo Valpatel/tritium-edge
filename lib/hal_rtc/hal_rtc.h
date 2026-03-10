@@ -4,16 +4,12 @@
 // Usage:
 //   #include "hal_rtc.h"
 //   RTCHAL rtc;
-//   rtc.init(Wire);           // ESP32 via Arduino Wire
-//   rtc.initLgfx(0, 0x51);   // ESP32 via lgfx::i2c
+//   rtc.init();               // ESP32 (uses global i2c0)
+//   rtc.initLgfx(0, 0x51);   // Legacy API (now uses i2c0 internally)
 //   rtc.init();               // simulator
 
 #include <cstdint>
 #include <cstddef>
-
-#ifndef SIMULATOR
-class TwoWire;
-#endif
 
 struct RTCTime {
     uint16_t year;
@@ -30,7 +26,7 @@ public:
 #ifdef SIMULATOR
     bool init();
 #else
-    bool init(TwoWire &wire);
+    bool init();
     bool initLgfx(uint8_t i2c_port, uint8_t addr = 0x51);
 #endif
     RTCTime getTime();
@@ -45,9 +41,6 @@ private:
     static uint8_t dec2bcd(uint8_t dec) { return ((dec / 10) << 4) | (dec % 10); }
 
 #ifndef SIMULATOR
-    TwoWire *_wire = nullptr;
-    bool _use_lgfx = false;
-    uint8_t _lgfx_port = 0;
     uint8_t _addr = 0;
 
     bool initDevice();

@@ -101,10 +101,10 @@ NtpHAL::TestResult NtpHAL::runTest() {
 #else // ESP32
 
 // ---------------------------------------------------------------------------
-// ESP32-S3 implementation using Arduino configTime / SNTP
+// ESP32-S3 implementation using ESP-IDF SNTP
 // ---------------------------------------------------------------------------
 
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <time.h>
 #include <esp_sntp.h>
 
@@ -112,7 +112,17 @@ bool NtpHAL::init(const char* tz, const char* server1, const char* server2) {
     DBG_INFO("ntp", "Init tz=%s servers=%s,%s", tz, server1, server2);
 
     setTimezone(tz);
-    configTime(0, 0, server1, server2);
+
+    // Configure SNTP using ESP-IDF API
+    if (esp_sntp_enabled()) {
+        esp_sntp_stop();
+    }
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, server1);
+    if (server2 && server2[0]) {
+        esp_sntp_setservername(1, server2);
+    }
+    esp_sntp_init();
 
     // Attempt initial sync
     return sync();
@@ -138,7 +148,7 @@ bool NtpHAL::sync() {
 
     // Check if time is valid anyway (may have synced before timeout check)
     struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 0)) {
+    if (({ time_t _now = time(nullptr); localtime_r(&_now, &timeinfo); timeinfo.tm_year > 100; })) {
         if (timeinfo.tm_year > (2024 - 1900)) {
             _synced = true;
             _lastSync = getEpoch();
@@ -160,7 +170,7 @@ uint32_t NtpHAL::getEpoch() const {
 
 bool NtpHAL::getTime(int& year, int& month, int& day, int& hour, int& min, int& sec) const {
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo, 0)) return false;
+    if (!({ time_t _now = time(nullptr); localtime_r(&_now, &timeinfo); timeinfo.tm_year > 100; })) return false;
     year  = 1900 + timeinfo.tm_year;
     month = 1 + timeinfo.tm_mon;
     day   = timeinfo.tm_mday;
@@ -172,7 +182,7 @@ bool NtpHAL::getTime(int& year, int& month, int& day, int& hour, int& min, int& 
 
 const char* NtpHAL::getTimeStr() const {
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo, 0)) return "0000-00-00 00:00:00";
+    if (!({ time_t _now = time(nullptr); localtime_r(&_now, &timeinfo); timeinfo.tm_year > 100; })) return "0000-00-00 00:00:00";
     snprintf(const_cast<char*>(_timeStr), sizeof(_timeStr),
              "%04d-%02d-%02d %02d:%02d:%02d",
              1900 + timeinfo.tm_year, 1 + timeinfo.tm_mon, timeinfo.tm_mday,
@@ -182,7 +192,7 @@ const char* NtpHAL::getTimeStr() const {
 
 const char* NtpHAL::getDateStr() const {
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo, 0)) return "0000-00-00";
+    if (!({ time_t _now = time(nullptr); localtime_r(&_now, &timeinfo); timeinfo.tm_year > 100; })) return "0000-00-00";
     snprintf(const_cast<char*>(_dateStr), sizeof(_dateStr),
              "%04d-%02d-%02d",
              1900 + timeinfo.tm_year, 1 + timeinfo.tm_mon, timeinfo.tm_mday);

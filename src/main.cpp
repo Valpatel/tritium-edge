@@ -1,4 +1,13 @@
-#include <Arduino.h>
+/*
+ * SPDX-FileCopyrightText: 2026 Valpatel Software LLC
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Tritium-Edge firmware entry point — pure ESP-IDF (no Arduino framework).
+ * Uses app_main() with a FreeRTOS main loop task.
+ */
+#include "tritium_compat.h"
+#include "tritium_i2c.h"
+#include <ctime>
 #include "display.h"
 #include "board_fingerprint.h"
 #if defined(BOARD_UNIVERSAL)
@@ -23,18 +32,8 @@
 
 // TouchHAL global instance — required by touch_input.cpp (extern TouchHAL touch)
 #if SHELL_AVAILABLE
-#include <Wire.h>
 #include "hal_touch.h"
 TouchHAL touch;
-#endif
-
-// SD card format command (only when networking libs are available)
-#if defined(HAS_SDCARD) && HAS_SDCARD && defined(SD_MMC_D0) && defined(ENABLE_WIFI)
-#include <SD_MMC.h>
-#include <FS.h>
-#define SD_FORMAT_AVAILABLE 1
-#else
-#define SD_FORMAT_AVAILABLE 0
 #endif
 
 // --- Service adapters (each #include pulls in its HAL when enabled) ---
@@ -98,6 +97,11 @@ static AcousticModemService svc_modem;
 static WebServerService svc_webserver;
 #endif
 
+#if defined(ENABLE_STORAGE) && __has_include("storage_service.h")
+#include "storage_service.h"
+static StorageService svc_storage;
+#endif
+
 #if defined(ENABLE_SETTINGS) && __has_include("settings_service.h")
 #include "settings_service.h"
 static SettingsService svc_settings;
@@ -148,8 +152,9 @@ static char _cmd_buf[512];
 static uint8_t _cmd_idx = 0;
 
 static void handleSerialCommands() {
-    while (Serial.available()) {
-        char c = Serial.read();
+    Serial.poll();  // Pull data from USB CDC into ring buffer
+    while (Serial.availableFromBuffer()) {
+        char c = Serial.readFromBuffer();
         if (c == '\n' || c == '\r') {
             _cmd_buf[_cmd_idx] = '\0';
             if (_cmd_idx == 0) { continue; }
@@ -172,33 +177,6 @@ static void handleSerialCommands() {
                               display_get_width(), display_get_height(),
                               app->name(), ServiceRegistry::count());
             }
-#if SD_FORMAT_AVAILABLE
-            else if (strcmp(cmd, "SD_FORMAT") == 0) {
-                Serial.printf("[sd] Formatting SD card...\n");
-                SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
-                if (SD_MMC.begin("/sdcard", true)) {
-                    File root = SD_MMC.open("/");
-                    if (root) {
-                        File f = root.openNextFile();
-                        while (f) {
-                            char path[128];
-                            snprintf(path, sizeof(path), "/%s", f.name());
-                            f.close();
-                            SD_MMC.remove(path);
-                            Serial.printf("[sd] Deleted: %s\n", path);
-                            f = root.openNextFile();
-                        }
-                        root.close();
-                    }
-                    Serial.printf("[sd] Card cleared. Total: %lluMB, Used: %lluMB\n",
-                        (unsigned long long)(SD_MMC.totalBytes() / (1024*1024)),
-                        (unsigned long long)(SD_MMC.usedBytes() / (1024*1024)));
-                    SD_MMC.end();
-                } else {
-                    Serial.printf("[sd] Could not mount SD card\n");
-                }
-            }
-#endif
             else if (strcmp(cmd, "SERVICES") == 0) {
                 Serial.printf("[svc] %d services:\n", ServiceRegistry::count());
                 for (int i = 0; i < ServiceRegistry::count(); i++) {
@@ -254,6 +232,9 @@ static void registerServices() {
 #if defined(HAS_AUDIO_CODEC) && HAS_AUDIO_CODEC && __has_include("acoustic_modem_service.h")
     ServiceRegistry::add(&svc_modem);
 #endif
+#if defined(ENABLE_STORAGE) && __has_include("storage_service.h")
+    ServiceRegistry::add(&svc_storage);
+#endif
 #if defined(ENABLE_WEBSERVER)
     ServiceRegistry::add(&svc_webserver);
 #endif
@@ -275,13 +256,17 @@ static void updateShellStatus() {
     if (millis() - last_update < 1000) return;
     last_update = millis();
 
-    // WiFi status — use WifiService for connection state, Arduino WiFi for RSSI
+    // WiFi status
 #if defined(ENABLE_WIFI)
     {
         auto* ws = ServiceRegistry::getAs<WifiService>("wifi");
         if (ws) {
             bool conn = ws->isConnected();
-            tritium_shell::setWifiStatus(conn, conn ? WiFi.RSSI() : 0);
+            int32_t rssi = 0;
+            if (conn) {
+                rssi = ws->manager().getRSSI();
+            }
+            tritium_shell::setWifiStatus(conn, rssi);
         }
     }
 #endif
@@ -304,15 +289,11 @@ static void updateShellStatus() {
     }
 #endif
 
-    // Battery — no global PowerHAL instance yet; when one is added to
-    // main.cpp (or exposed by a service), wire it in here:
-    //   tritium_shell::setBatteryStatus(power.getBatteryLevel(),
-    //                                   power.isCharging());
-
     // Clock — use NTP/RTC wall-clock if synced, otherwise show uptime
     {
         struct tm timeinfo;
-        if (getLocalTime(&timeinfo, 0)) {
+        time_t now = time(nullptr);
+        if (localtime_r(&now, &timeinfo) && timeinfo.tm_year > 100) {
             tritium_shell::setClock(timeinfo.tm_hour, timeinfo.tm_min);
         } else {
             uint32_t up = millis() / 1000;
@@ -322,7 +303,10 @@ static void updateShellStatus() {
 }
 #endif  // SHELL_AVAILABLE
 
-void setup() {
+// ---------------------------------------------------------------------------
+// Main task — runs the firmware main loop in a FreeRTOS task
+// ---------------------------------------------------------------------------
+static void main_task(void* /*arg*/) {
     Serial.begin(115200);
     delay(500);
 
@@ -343,6 +327,7 @@ void setup() {
     if (!board_cfg) {
         Serial.printf("[tritium] FATAL: No config for detected board %s\n",
                       board_id_to_name(fp->detected));
+        vTaskDelete(nullptr);
         return;
     }
     Serial.printf("[tritium] Universal mode: detected %s\n", board_cfg->name);
@@ -353,6 +338,7 @@ void setup() {
 #endif
     if (ret != ESP_OK) {
         Serial.printf("[tritium] Display init FAILED: 0x%x\n", ret);
+        vTaskDelete(nullptr);
         return;
     }
 
@@ -378,6 +364,15 @@ void setup() {
     boot_sequence::showLogo(TRITIUM_VERSION);
 #else
     tritium_splash(panel, w, h);
+#endif
+
+    // Initialize I2C bus — needed by touch controller, IO expanders, sensors
+#if defined(TOUCH_SDA) && defined(TOUCH_SCL)
+    if (i2c0.begin(TOUCH_SDA, TOUCH_SCL, 400000)) {
+        Serial.printf("[tritium] I2C bus initialized (SDA=%d, SCL=%d)\n", TOUCH_SDA, TOUCH_SCL);
+    } else {
+        Serial.printf("[tritium] I2C bus init FAILED\n");
+    }
 #endif
 
     // Register and init all services (boot sequence shows each one)
@@ -438,10 +433,8 @@ void setup() {
         Serial.printf("[tritium] LVGL display driver FAILED\n");
     }
 
-    // Initialize I2C and touch input
-    Wire.begin(TOUCH_SDA, TOUCH_SCL);
-    Wire.setClock(400000);
-    if (touch.init(Wire)) {
+    // Initialize touch input using native I2C
+    if (touch.init()) {
         Serial.printf("[tritium] Touch: %s detected\n",
                       touch.getDriver() == TouchHAL::GT911 ? "GT911" :
                       touch.getDriver() == TouchHAL::FT6336 ? "FT6336" :
@@ -465,6 +458,9 @@ void setup() {
     shell_apps::register_all_apps();
     Serial.printf("[tritium] Shell: %d apps registered\n", tritium_shell::getAppCount());
 
+    // Show launcher now that all apps are registered
+    tritium_shell::showLauncher();
+
     // Wire display framebuffer into web server screenshot provider
 #if defined(ENABLE_WEBSERVER)
     {
@@ -480,25 +476,44 @@ void setup() {
 #endif
 
     Serial.printf("[tritium] Ready.\n");
-}
 
-void loop() {
+    // Main loop — runs forever as a FreeRTOS task
+    for (;;) {
 #if defined(ENABLE_DIAG)
-    uint32_t loop_start = micros();
+        uint32_t loop_start = micros();
 #endif
 
-    handleSerialCommands();
-    ServiceRegistry::tickAll();
+        handleSerialCommands();
+        ServiceRegistry::tickAll();
 
 #if SHELL_AVAILABLE
-    lvgl_driver::tick();
-    tritium_shell::tick();   // Shell logic (nav bar auto-hide, toast timeouts)
-    updateShellStatus();
+        lvgl_driver::tick();
+        tritium_shell::tick();
+        updateShellStatus();
 #else
-    app->loop();
+        app->loop();
 #endif
 
 #if defined(ENABLE_DIAG)
-    hal_diag::report_loop_time(micros() - loop_start);
+        hal_diag::report_loop_time(micros() - loop_start);
 #endif
+
+        // Yield to other tasks (1 tick = 1ms at 1kHz FreeRTOS)
+        vTaskDelay(1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ESP-IDF entry point
+// ---------------------------------------------------------------------------
+extern "C" void app_main(void) {
+    // Install USB Serial JTAG driver for Serial input
+    usb_serial_jtag_driver_config_t usb_cfg = {
+        .tx_buffer_size = 1024,
+        .rx_buffer_size = 1024,
+    };
+    usb_serial_jtag_driver_install(&usb_cfg);
+
+    // Launch main task with generous stack (display + LVGL + services)
+    xTaskCreatePinnedToCore(main_task, "main", 16384, nullptr, 5, nullptr, 1);
 }

@@ -131,22 +131,23 @@ void store_crash(const char*, const char*) {}
 
 #else  // ESP32
 
-#include <Arduino.h>
+#include "tritium_compat.h"
+#include <ctime>
 #include <esp_system.h>
 #include <esp_heap_caps.h>
 #include <esp_timer.h>
-#include <Wire.h>
+#include "tritium_i2c.h"
 #include <driver/temperature_sensor.h>
 #include <nvs_flash.h>
 #include <nvs.h>
-#include <WiFi.h>
+#include "esp_wifi.h"
+#include "esp_netif.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-// SD card support — optional, only if SD_MMC is available
-#if __has_include(<SD_MMC.h>)
-#include <SD_MMC.h>
-#include <FS.h>
+// SD card support — via VFS (mounted at /sdcard by StorageService)
+#include <sys/stat.h>
+#if defined(HAS_SDCARD) && HAS_SDCARD
 #define DIAG_HAS_SD 1
 #else
 #define DIAG_HAS_SD 0
@@ -310,13 +311,16 @@ static float read_cpu_temp() {
 static bool ensure_sd_mounted() {
     if (_sd_mounted) return true;
 
-#if defined(SD_MMC_D0) && defined(SD_MMC_CLK) && defined(SD_MMC_CMD)
-    SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
-    if (SD_MMC.begin("/sdcard", true)) {
+#if DIAG_HAS_SD
+    // SD card is mounted at /sdcard by StorageService via VFS
+    struct stat st;
+    if (stat("/sdcard", &st) == 0 && S_ISDIR(st.st_mode)) {
         _sd_mounted = true;
         // Create log directory
-        SD_MMC.mkdir(_sd_log_dir);
-        DBG_INFO("diag", "SD card mounted for logging: %s", _sd_log_dir);
+        char fulldir[128];
+        snprintf(fulldir, sizeof(fulldir), "/sdcard%s", _sd_log_dir);
+        ::mkdir(fulldir, 0755);
+        DBG_INFO("diag", "SD card available for logging: %s", _sd_log_dir);
         return true;
     }
 #endif
@@ -366,14 +370,15 @@ static void flush_events_to_sd() {
                  _sd_log_dir, (unsigned long)_reboot_count);
     }
 
-    File f = SD_MMC.open(filename, FILE_APPEND);
+    char fullpath[128];
+    snprintf(fullpath, sizeof(fullpath), "/sdcard%s", filename);
+    FILE* f = fopen(fullpath, "a");
     if (!f) {
-        DBG_WARN("diag", "Cannot open SD log: %s", filename);
+        DBG_WARN("diag", "Cannot open SD log: %s", fullpath);
         return;
     }
 
     // Write all events since last flush — dump entire ring buffer
-    // For simplicity, write the most recent batch
     char line[320];
     uint16_t start = (_event_count >= _cfg.max_events)
                      ? _event_head : 0;
@@ -397,10 +402,10 @@ static void flush_events_to_sd() {
                 ev.value, ev.expected_min, ev.expected_max);
         }
         len += snprintf(line + len, sizeof(line) - len, "}\n");
-        f.write((const uint8_t*)line, len);
+        fwrite(line, 1, len, f);
     }
 
-    f.close();
+    fclose(f);
     DBG_DEBUG("diag", "Flushed %u events to %s", count, filename);
 }
 
@@ -410,8 +415,10 @@ static void flush_snapshot_to_sd(const HealthSnapshot& snap) {
     char filename[80];
     snprintf(filename, sizeof(filename), "%s/health.jsonl", _sd_log_dir);
 
-    File f = SD_MMC.open(filename, FILE_APPEND);
-    if (!f) return;
+    char fullpath2[128];
+    snprintf(fullpath2, sizeof(fullpath2), "/sdcard%s", filename);
+    FILE* f2 = fopen(fullpath2, "a");
+    if (!f2) return;
 
     char line[512];
     int len = snprintf(line, sizeof(line),
@@ -436,8 +443,8 @@ static void flush_snapshot_to_sd(const HealthSnapshot& snap) {
         (unsigned long)snap.uptime_s,
         (unsigned long)snap.reboot_count,
         snap.i2c_devices_found, snap.i2c_errors);
-    f.write((const uint8_t*)line, len);
-    f.close();
+    fwrite(line, 1, len, f2);
+    fclose(f2);
 }
 
 #endif  // DIAG_HAS_SD
@@ -959,9 +966,12 @@ HealthSnapshot take_snapshot() {
     // CPU temperature
     snap.cpu_temp_c = read_cpu_temp();
 
-    // WiFi
-    snap.wifi_connected = WiFi.isConnected();
-    snap.wifi_rssi = snap.wifi_connected ? WiFi.RSSI() : 0;
+    // WiFi — use ESP-IDF API
+    {
+        wifi_ap_record_t ap_info;
+        snap.wifi_connected = (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK);
+        snap.wifi_rssi = snap.wifi_connected ? ap_info.rssi : 0;
+    }
     snap.wifi_disconnects = _wifi_disconnects;
     snap.mqtt_disconnects = _mqtt_disconnects;
 
@@ -1335,14 +1345,11 @@ int full_report_json(char* buf, size_t size) {
 int scan_i2c_bus(uint8_t port, uint8_t* found_addrs, int max_addrs) {
     int count = 0;
 
-    // Use Arduino Wire for I2C scanning (compatible with ESP-IDF 5.x new driver)
-    TwoWire& wire = (port == 1) ? Wire1 : Wire;
+    // Use TritiumI2C for I2C scanning (native ESP-IDF i2c_master driver)
+    (void)port;  // Currently only i2c0 supported
 
     for (uint8_t addr = 0x08; addr < 0x78; addr++) {
-        wire.beginTransmission(addr);
-        uint8_t err = wire.endTransmission();
-
-        if (err == 0) {
+        if (i2c0.probe(addr)) {
             if (count < max_addrs) {
                 found_addrs[count] = addr;
             }

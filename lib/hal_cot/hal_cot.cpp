@@ -81,9 +81,12 @@ uint32_t get_epoch() {
 // ============================================================================
 #else
 
-#include <Arduino.h>
-#include <WiFi.h>
-#include <WiFiUdp.h>
+#include "tritium_compat.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_mac.h"
+#include <lwip/sockets.h>
+#include <arpa/inet.h>
 
 namespace hal_cot {
 
@@ -112,8 +115,8 @@ static double _lon = 0.0;
 static float _hae = 0.0f;
 static bool _has_position = false;
 
-// UDP socket (reused across sends)
-static WiFiUDP _udp;
+// UDP socket fd (reused across sends, -1 = not open)
+static int _udp_fd = -1;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -142,7 +145,7 @@ uint32_t get_epoch() {
 
 static void derive_identity_from_mac() {
     uint8_t mac[6];
-    WiFi.macAddress(mac);
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
     if (_device_id[0] == '\0') {
         snprintf(_device_id, sizeof(_device_id),
@@ -312,8 +315,9 @@ int build_status_event(char* buf, size_t buf_size) {
 
     // Status details: battery percentage placeholder, uptime, free heap, RSSI
     unsigned long uptime_s = millis() / 1000;
-    uint32_t free_heap = ESP.getFreeHeap();
-    int rssi = WiFi.RSSI();
+    uint32_t free_heap = esp_get_free_heap_size();
+    int rssi = 0;
+    { wifi_ap_record_t _ap; if (esp_wifi_sta_get_ap_info(&_ap) == ESP_OK) rssi = _ap.rssi; }
 
     // Status remark
     char remark[128];
@@ -360,37 +364,66 @@ int build_status_event(char* buf, size_t buf_size) {
 // ---------------------------------------------------------------------------
 
 bool send_multicast(const char* xml, size_t len) {
-    if (!WiFi.isConnected()) return false;
+    { wifi_ap_record_t _ap; if (esp_wifi_sta_get_ap_info(&_ap) != ESP_OK) return false; }
     if (!xml || xml[0] == '\0') return false;
     if (len == 0) len = strlen(xml);
 
-    if (!_udp.beginMulticastPacket()) {
-        // Fallback: manual beginPacket to multicast address
-        if (!_udp.beginPacket(TAK_MULTICAST_ADDR, TAK_MULTICAST_PORT)) {
-            DBG_ERROR(TAG, "Failed to begin multicast packet");
+    // Lazily create the UDP socket
+    if (_udp_fd < 0) {
+        _udp_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (_udp_fd < 0) {
+            DBG_ERROR(TAG, "Failed to create UDP socket");
             return false;
         }
+        // Allow multicast TTL to traverse local network
+        int ttl = 32;
+        setsockopt(_udp_fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
     }
 
-    size_t written = _udp.write((const uint8_t*)xml, len);
-    if (!_udp.endPacket()) {
+    struct sockaddr_in dest = {};
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(TAK_MULTICAST_PORT);
+    inet_aton(TAK_MULTICAST_ADDR, &dest.sin_addr);
+
+    ssize_t sent = sendto(_udp_fd, xml, len, 0,
+                          (struct sockaddr*)&dest, sizeof(dest));
+    if (sent < 0) {
         DBG_ERROR(TAG, "Failed to send multicast packet");
         return false;
     }
 
     DBG_DEBUG(TAG, "Multicast sent %u bytes to %s:%u",
-              (unsigned)written, TAK_MULTICAST_ADDR, TAK_MULTICAST_PORT);
-    return (written == len);
+              (unsigned)sent, TAK_MULTICAST_ADDR, TAK_MULTICAST_PORT);
+    return ((size_t)sent == len);
 }
 
 bool send_tcp(const char* host, uint16_t port, const char* xml, size_t len) {
-    if (!WiFi.isConnected()) return false;
+    { wifi_ap_record_t _ap; if (esp_wifi_sta_get_ap_info(&_ap) != ESP_OK) return false; }
     if (!xml || xml[0] == '\0') return false;
     if (len == 0) len = strlen(xml);
 
-    WiFiClient client;
-    if (!client.connect(host, port, 5000)) {
+    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) {
+        DBG_ERROR(TAG, "TCP socket create failed");
+        return false;
+    }
+
+    // Set connect timeout to 5 seconds
+    struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in dest = {};
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(port);
+    if (inet_aton(host, &dest.sin_addr) == 0) {
+        DBG_ERROR(TAG, "Invalid host: %s", host);
+        close(fd);
+        return false;
+    }
+
+    if (connect(fd, (struct sockaddr*)&dest, sizeof(dest)) < 0) {
         DBG_ERROR(TAG, "TCP connect failed: %s:%u", host, port);
+        close(fd);
         return false;
     }
 
@@ -401,13 +434,12 @@ bool send_tcp(const char* host, uint16_t port, const char* xml, size_t len) {
     len_prefix[2] = (uint8_t)((len >> 8) & 0xFF);
     len_prefix[3] = (uint8_t)(len & 0xFF);
 
-    client.write(len_prefix, 4);
-    size_t written = client.write((const uint8_t*)xml, len);
-    client.flush();
-    client.stop();
+    send(fd, len_prefix, 4, 0);
+    ssize_t written = send(fd, xml, len, 0);
+    close(fd);
 
-    DBG_DEBUG(TAG, "TCP sent %u bytes to %s:%u", (unsigned)written, host, port);
-    return (written == len);
+    DBG_DEBUG(TAG, "TCP sent %u bytes to %s:%u", (unsigned)(written > 0 ? written : 0), host, port);
+    return (written > 0 && (size_t)written == len);
 }
 
 // ---------------------------------------------------------------------------
@@ -477,7 +509,7 @@ void set_position(double lat, double lon, float hae) {
 
 bool tick() {
     if (!_active) return false;
-    if (!WiFi.isConnected()) return false;
+    { wifi_ap_record_t _ap; if (esp_wifi_sta_get_ap_info(&_ap) != ESP_OK) return false; }
     if (!_has_position) return false;
 
     uint32_t now = millis();

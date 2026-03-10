@@ -557,29 +557,84 @@ ProvisionHAL::TestResult ProvisionHAL::runTest() {
 // ============================================================================
 #else
 
-#include <Arduino.h>
-#include <LittleFS.h>
-#include <FS.h>
-#include <SD_MMC.h>
+#include "tritium_compat.h"
+// LittleFS via VFS — use POSIX file ops on /littlefs/
+// Filesystem via VFS — use POSIX file ops
+// SD card via VFS — use POSIX file ops on /sdcard/
+
+#include <sys/stat.h>
+#include "esp_littlefs.h"
+#include <cstdio>
 
 #ifndef HAS_SDCARD
 #define HAS_SDCARD 0
 #endif
 
+// Mount prefix for LittleFS VFS (mounted by webserver_service.h)
+static constexpr const char* LFS_PREFIX = "/littlefs";
+
+// Build full VFS path from a relative LittleFS path
+static void lfs_path(const char* path, char* out, size_t outSize) {
+    snprintf(out, outSize, "%s%s", LFS_PREFIX, path);
+}
+
+// Check if a file/dir exists via stat()
+static bool lfs_exists(const char* path) {
+    char fp[512];
+    lfs_path(path, fp, sizeof(fp));
+    struct stat st;
+    return stat(fp, &st) == 0;
+}
+
+// Read a file into a buffer, returns bytes read
+static bool lfs_read_file(const char* path, char* buf, size_t bufSize, size_t* outLen) {
+    char fp[512];
+    lfs_path(path, fp, sizeof(fp));
+    FILE* f = fopen(fp, "r");
+    if (!f) return false;
+    size_t n = fread(buf, 1, bufSize, f);
+    fclose(f);
+    if (outLen) *outLen = n;
+    return true;
+}
+
+// Write data to a file
+static bool lfs_write_file(const char* path, const char* data, size_t len) {
+    char fp[512];
+    lfs_path(path, fp, sizeof(fp));
+    FILE* f = fopen(fp, "w");
+    if (!f) return false;
+    size_t w = fwrite(data, 1, len, f);
+    fclose(f);
+    return w == len;
+}
+
+// Remove a file
+static bool lfs_remove_file(const char* path) {
+    char fp[512];
+    lfs_path(path, fp, sizeof(fp));
+    return remove(fp) == 0;
+}
+
 bool ProvisionHAL::init() {
-    if (!LittleFS.begin(true)) {
-        DBG_ERROR(TAG, "LittleFS mount failed");
-        _state = ProvisionState::ERROR;
-        return false;
-    }
+    // LittleFS is already mounted at /littlefs by esp_vfs_littlefs_register()
+    // in webserver_service.h. Just create the provisioning directory if needed.
 
     // Create provisioning directory
-    if (!LittleFS.exists(PROV_DIR)) {
-        LittleFS.mkdir(PROV_DIR);
+    if (!lfs_exists(PROV_DIR)) {
+        char fp[512];
+        lfs_path(PROV_DIR, fp, sizeof(fp));
+        ::mkdir(fp, 0755);
     }
 
-    DBG_INFO(TAG, "Provision HAL init — LittleFS total: %zu  used: %zu",
-             (size_t)LittleFS.totalBytes(), (size_t)LittleFS.usedBytes());
+    {
+        size_t total = 0, used = 0;
+        if (esp_littlefs_info("littlefs", &total, &used) == ESP_OK) {
+            DBG_INFO(TAG, "Provision HAL init — LittleFS total: %zu  used: %zu", total, used);
+        } else {
+            DBG_INFO(TAG, "Provision HAL init — LittleFS mounted");
+        }
+    }
 
     _loadIdentity();
     _checkProvisioned();
@@ -592,9 +647,9 @@ bool ProvisionHAL::isProvisioned() const { return _state == ProvisionState::PROV
 const DeviceIdentity& ProvisionHAL::getIdentity() const { return _identity; }
 
 bool ProvisionHAL::_checkProvisioned() {
-    bool hasCerts = LittleFS.exists(CA_CERT_PATH) &&
-                    LittleFS.exists(CLIENT_CERT_PATH) &&
-                    LittleFS.exists(CLIENT_KEY_PATH);
+    bool hasCerts = lfs_exists(CA_CERT_PATH) &&
+                    lfs_exists(CLIENT_CERT_PATH) &&
+                    lfs_exists(CLIENT_KEY_PATH);
     if (hasCerts && _identity.provisioned) {
         _state = ProvisionState::PROVISIONED;
     } else {
@@ -604,13 +659,10 @@ bool ProvisionHAL::_checkProvisioned() {
 }
 
 bool ProvisionHAL::_loadIdentity() {
-    File f = LittleFS.open(IDENTITY_PATH, "r");
-    if (!f) return false;
-    size_t sz = f.size();
-    if (sz == 0 || sz > 1024) { f.close(); return false; }
     char buf[1024];
-    size_t n = f.readBytes(buf, sizeof(buf) - 1);
-    f.close();
+    size_t n = 0;
+    if (!lfs_read_file(IDENTITY_PATH, buf, sizeof(buf) - 1, &n)) return false;
+    if (n == 0 || n > 1024) return false;
     buf[n] = '\0';
     return _parseDeviceJson(buf);
 }
@@ -631,14 +683,11 @@ bool ProvisionHAL::_saveIdentity() {
         _identity.mqtt_port,
         _identity.provisioned ? "true" : "false");
 
-    File f = LittleFS.open(IDENTITY_PATH, "w");
-    if (!f) {
+    if (!lfs_write_file(IDENTITY_PATH, json, strlen(json))) {
         DBG_ERROR(TAG, "Cannot write identity file");
         return false;
     }
-    size_t w = f.write((const uint8_t*)json, strlen(json));
-    f.close();
-    return w == strlen(json);
+    return true;
 }
 
 bool ProvisionHAL::_parseDeviceJson(const char* json) {
@@ -664,50 +713,45 @@ bool ProvisionHAL::_parseFactoryWifiJson(const char* json) {
     if (ssid[0] == '\0') return false;
 
     // Save raw JSON to LittleFS
-    File f = LittleFS.open(FACTORY_WIFI_PATH, "w");
-    if (!f) return false;
-    f.write((const uint8_t*)json, strlen(json));
-    f.close();
-    return true;
+    return lfs_write_file(FACTORY_WIFI_PATH, json, strlen(json));
 }
 
 bool ProvisionHAL::_copyFileFromSD(const char* sdPath, const char* fsPath) {
 #if HAS_SDCARD
-    File sf = SD_MMC.open(sdPath, FILE_READ);
+    // SD card is mounted at /sdcard via VFS
+    char sdFullPath[512];
+    snprintf(sdFullPath, sizeof(sdFullPath), "/sdcard%s", sdPath);
+
+    FILE* sf = fopen(sdFullPath, "r");
     if (!sf) {
         DBG_ERROR(TAG, "Cannot open SD file: %s", sdPath);
         return false;
     }
-    size_t sz = sf.size();
-    if (sz == 0 || sz > 16384) {
-        DBG_ERROR(TAG, "Invalid file size %zu for %s", sz, sdPath);
-        sf.close();
+    fseek(sf, 0, SEEK_END);
+    long sz = ftell(sf);
+    fseek(sf, 0, SEEK_SET);
+    if (sz <= 0 || sz > 16384) {
+        DBG_ERROR(TAG, "Invalid file size %ld for %s", sz, sdPath);
+        fclose(sf);
         return false;
     }
 
     char* buf = (char*)malloc(sz);
     if (!buf) {
-        DBG_ERROR(TAG, "malloc failed for %zu bytes", sz);
-        sf.close();
+        DBG_ERROR(TAG, "malloc failed for %ld bytes", sz);
+        fclose(sf);
         return false;
     }
-    size_t rd = sf.readBytes(buf, sz);
-    sf.close();
+    size_t rd = fread(buf, 1, sz, sf);
+    fclose(sf);
 
-    File df = LittleFS.open(fsPath, "w");
-    if (!df) {
+    if (!lfs_write_file(fsPath, buf, rd)) {
         DBG_ERROR(TAG, "Cannot write to %s", fsPath);
         free(buf);
         return false;
     }
-    size_t w = df.write((const uint8_t*)buf, rd);
-    df.close();
     free(buf);
 
-    if (w != rd) {
-        DBG_ERROR(TAG, "Short write %zu/%zu for %s", w, rd, fsPath);
-        return false;
-    }
     DBG_INFO(TAG, "Copied %s -> %s (%zu bytes)", sdPath, fsPath, rd);
     return true;
 #else
@@ -734,31 +778,36 @@ bool ProvisionHAL::provisionFromSD(const char* sdPath) {
     // Parse device.json
     snprintf(path, sizeof(path), "%s/device.json", sdPath);
 #if HAS_SDCARD
-    File jf = SD_MMC.open(path, FILE_READ);
-    if (!jf) {
-        DBG_ERROR(TAG, "Cannot read %s from SD", path);
-        return false;
-    }
-    char jsonBuf[1024];
-    size_t jsonLen = jf.readBytes(jsonBuf, sizeof(jsonBuf) - 1);
-    jf.close();
-    jsonBuf[jsonLen] = '\0';
-    _parseDeviceJson(jsonBuf);
-    _identity.provisioned = true;
-    _saveIdentity();
-    DBG_INFO(TAG, "Device identity loaded: id=%s name=%s", _identity.device_id, _identity.device_name);
-
-    // Parse factory_wifi.json (optional)
-    snprintf(path, sizeof(path), "%s/factory_wifi.json", sdPath);
-    File wf = SD_MMC.open(path, FILE_READ);
-    if (wf) {
-        jsonLen = wf.readBytes(jsonBuf, sizeof(jsonBuf) - 1);
-        wf.close();
+    {
+        char sdFullPath[512];
+        snprintf(sdFullPath, sizeof(sdFullPath), "/sdcard%s", path);
+        FILE* jf = fopen(sdFullPath, "r");
+        if (!jf) {
+            DBG_ERROR(TAG, "Cannot read %s from SD", path);
+            return false;
+        }
+        char jsonBuf[1024];
+        size_t jsonLen = fread(jsonBuf, 1, sizeof(jsonBuf) - 1, jf);
+        fclose(jf);
         jsonBuf[jsonLen] = '\0';
-        _parseFactoryWifiJson(jsonBuf);
-        DBG_INFO(TAG, "Factory WiFi config loaded");
-    } else {
-        DBG_INFO(TAG, "No factory_wifi.json on SD (optional)");
+        _parseDeviceJson(jsonBuf);
+        _identity.provisioned = true;
+        _saveIdentity();
+        DBG_INFO(TAG, "Device identity loaded: id=%s name=%s", _identity.device_id, _identity.device_name);
+
+        // Parse factory_wifi.json (optional)
+        snprintf(path, sizeof(path), "%s/factory_wifi.json", sdPath);
+        snprintf(sdFullPath, sizeof(sdFullPath), "/sdcard%s", path);
+        FILE* wf = fopen(sdFullPath, "r");
+        if (wf) {
+            jsonLen = fread(jsonBuf, 1, sizeof(jsonBuf) - 1, wf);
+            fclose(wf);
+            jsonBuf[jsonLen] = '\0';
+            _parseFactoryWifiJson(jsonBuf);
+            DBG_INFO(TAG, "Factory WiFi config loaded");
+        } else {
+            DBG_INFO(TAG, "No factory_wifi.json on SD (optional)");
+        }
     }
 #else
     DBG_ERROR(TAG, "SD card not available");
@@ -775,7 +824,7 @@ bool ProvisionHAL::startUSBProvision() {
     _usbActive = true;
     _usbBufLen = 0;
     memset(_usbBuf, 0, sizeof(_usbBuf));
-    Serial.println("{\"status\":\"ready\",\"msg\":\"Send provisioning JSON\"}");
+    Serial.printf("{\"status\":\"ready\",\"msg\":\"Send provisioning JSON\"}\n");
     DBG_INFO(TAG, "USB provisioning started — waiting for data on Serial");
     return true;
 }
@@ -791,9 +840,9 @@ bool ProvisionHAL::processUSBProvision() {
                 bool ok = _processUSBCommand(_usbBuf, _usbBufLen);
                 _usbBufLen = 0;
                 if (ok) {
-                    Serial.println("{\"status\":\"ok\",\"msg\":\"Provisioned\"}");
+                    Serial.printf("{\"status\":\"ok\",\"msg\":\"Provisioned\"}\n");
                 } else {
-                    Serial.println("{\"status\":\"error\",\"msg\":\"Provisioning failed\"}");
+                    Serial.printf("{\"status\":\"error\",\"msg\":\"Provisioning failed\"}\n");
                 }
                 return ok;
             }
@@ -850,45 +899,37 @@ bool ProvisionHAL::_processUSBCommand(const char* json, size_t len) {
 }
 
 bool ProvisionHAL::getCACert(char* buf, size_t bufSize, size_t* outLen) {
-    File f = LittleFS.open(CA_CERT_PATH, "r");
-    if (!f) return false;
-    size_t n = f.readBytes(buf, bufSize - 1);
-    f.close();
+    size_t n = 0;
+    if (!lfs_read_file(CA_CERT_PATH, buf, bufSize - 1, &n)) return false;
     buf[n] = '\0';
     if (outLen) *outLen = n;
     return n > 0;
 }
 
 bool ProvisionHAL::getClientCert(char* buf, size_t bufSize, size_t* outLen) {
-    File f = LittleFS.open(CLIENT_CERT_PATH, "r");
-    if (!f) return false;
-    size_t n = f.readBytes(buf, bufSize - 1);
-    f.close();
+    size_t n = 0;
+    if (!lfs_read_file(CLIENT_CERT_PATH, buf, bufSize - 1, &n)) return false;
     buf[n] = '\0';
     if (outLen) *outLen = n;
     return n > 0;
 }
 
 bool ProvisionHAL::getClientKey(char* buf, size_t bufSize, size_t* outLen) {
-    File f = LittleFS.open(CLIENT_KEY_PATH, "r");
-    if (!f) return false;
-    size_t n = f.readBytes(buf, bufSize - 1);
-    f.close();
+    size_t n = 0;
+    if (!lfs_read_file(CLIENT_KEY_PATH, buf, bufSize - 1, &n)) return false;
     buf[n] = '\0';
     if (outLen) *outLen = n;
     return n > 0;
 }
 
 bool ProvisionHAL::hasFactoryWiFi() const {
-    return LittleFS.exists(FACTORY_WIFI_PATH);
+    return lfs_exists(FACTORY_WIFI_PATH);
 }
 
 bool ProvisionHAL::getFactoryWiFi(char* ssid, size_t ssidLen, char* pass, size_t passLen) {
-    File f = LittleFS.open(FACTORY_WIFI_PATH, "r");
-    if (!f) return false;
     char buf[512];
-    size_t n = f.readBytes(buf, sizeof(buf) - 1);
-    f.close();
+    size_t n = 0;
+    if (!lfs_read_file(FACTORY_WIFI_PATH, buf, sizeof(buf) - 1, &n)) return false;
     buf[n] = '\0';
     bool ok = jsonGetString(buf, "ssid", ssid, ssidLen);
     jsonGetString(buf, "password", pass, passLen);
@@ -896,36 +937,27 @@ bool ProvisionHAL::getFactoryWiFi(char* ssid, size_t ssidLen, char* pass, size_t
 }
 
 bool ProvisionHAL::clearFactoryWiFi() {
-    bool ok = LittleFS.remove(FACTORY_WIFI_PATH);
+    bool ok = lfs_remove_file(FACTORY_WIFI_PATH);
     if (ok) DBG_INFO(TAG, "Factory WiFi cleared");
     return ok;
 }
 
 bool ProvisionHAL::importCACert(const char* pem, size_t len) {
-    File f = LittleFS.open(CA_CERT_PATH, "w");
-    if (!f) return false;
-    size_t w = f.write((const uint8_t*)pem, len);
-    f.close();
-    if (w == len) DBG_INFO(TAG, "CA cert imported (%zu bytes)", len);
-    return w == len;
+    bool ok = lfs_write_file(CA_CERT_PATH, pem, len);
+    if (ok) DBG_INFO(TAG, "CA cert imported (%zu bytes)", len);
+    return ok;
 }
 
 bool ProvisionHAL::importClientCert(const char* pem, size_t len) {
-    File f = LittleFS.open(CLIENT_CERT_PATH, "w");
-    if (!f) return false;
-    size_t w = f.write((const uint8_t*)pem, len);
-    f.close();
-    if (w == len) DBG_INFO(TAG, "Client cert imported (%zu bytes)", len);
-    return w == len;
+    bool ok = lfs_write_file(CLIENT_CERT_PATH, pem, len);
+    if (ok) DBG_INFO(TAG, "Client cert imported (%zu bytes)", len);
+    return ok;
 }
 
 bool ProvisionHAL::importClientKey(const char* pem, size_t len) {
-    File f = LittleFS.open(CLIENT_KEY_PATH, "w");
-    if (!f) return false;
-    size_t w = f.write((const uint8_t*)pem, len);
-    f.close();
-    if (w == len) DBG_INFO(TAG, "Client key imported (%zu bytes)", len);
-    return w == len;
+    bool ok = lfs_write_file(CLIENT_KEY_PATH, pem, len);
+    if (ok) DBG_INFO(TAG, "Client key imported (%zu bytes)", len);
+    return ok;
 }
 
 bool ProvisionHAL::setDeviceIdentity(const DeviceIdentity& id) {
@@ -941,11 +973,11 @@ bool ProvisionHAL::setDeviceIdentity(const DeviceIdentity& id) {
 bool ProvisionHAL::factoryReset() {
     DBG_WARN(TAG, "Factory reset — erasing all provisioning data");
 
-    LittleFS.remove(CA_CERT_PATH);
-    LittleFS.remove(CLIENT_CERT_PATH);
-    LittleFS.remove(CLIENT_KEY_PATH);
-    LittleFS.remove(IDENTITY_PATH);
-    LittleFS.remove(FACTORY_WIFI_PATH);
+    lfs_remove_file(CA_CERT_PATH);
+    lfs_remove_file(CLIENT_CERT_PATH);
+    lfs_remove_file(CLIENT_KEY_PATH);
+    lfs_remove_file(IDENTITY_PATH);
+    lfs_remove_file(FACTORY_WIFI_PATH);
 
     memset(&_identity, 0, sizeof(_identity));
     _state = ProvisionState::UNPROVISIONED;
@@ -963,7 +995,7 @@ ProvisionHAL::TestResult ProvisionHAL::runTest() {
     r.init_ok = init();
 
     // fs access test
-    r.fs_ok = LittleFS.exists(PROV_DIR);
+    r.fs_ok = lfs_exists(PROV_DIR);
 
     // cert write test
     const char* testCert = "-----BEGIN CERTIFICATE-----\nTEST_CERT_DATA_1234567890\n-----END CERTIFICATE-----\n";

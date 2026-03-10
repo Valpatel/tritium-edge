@@ -178,7 +178,7 @@ public:
 #include "boards/esp32_s3_touch_lcd_35bc.h"
 #include <Panel_AXS15231B.hpp>
 #include <Touch_AXS15231B.hpp>
-#include <Wire.h>
+#include "tritium_i2c.h"
 
 // TCA9554 I/O expander for display reset (address 0x20 on shared I2C bus)
 static void tca9554_reset_display() {

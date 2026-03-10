@@ -17,7 +17,7 @@ DebugInfo getDebugInfo() { return {}; }
 
 #else  // ESP32
 
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <freertos/FreeRTOS.h>
 
 // ── Shared state ────────────────────────────────────────────────────────────

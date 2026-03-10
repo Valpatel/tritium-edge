@@ -1,5 +1,5 @@
 #include "starfield_app.h"
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <esp_heap_caps.h>
 #include <esp_lcd_panel_ops.h>
 #include "display.h"
@@ -197,7 +197,7 @@ void StarfieldApp::setup(esp_lcd_panel_handle_t panel, int width, int height) {
     size_t fb_size = _w * _h * sizeof(uint16_t);
     _framebuf = (uint16_t*)heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM);
     if (!_framebuf) {
-        Serial.println("[starfield] FATAL: framebuffer alloc failed");
+        Serial.printf("[starfield] FATAL: framebuffer alloc failed\n");
         while (1) delay(1000);
     }
     memset(_framebuf, 0, fb_size);

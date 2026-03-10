@@ -19,7 +19,7 @@ void BleManager::send(const char* data) {
 // ============================================================================
 #ifndef SIMULATOR
 
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLE2902.h>
@@ -36,13 +36,13 @@ class BleServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* server) override {
         if (BleManager::_instance) {
             BleManager::_instance->_connected = true;
-            Serial.println("[BLE] Client connected");
+            Serial.printf("[BLE] Client connected\n");
         }
     }
     void onDisconnect(BLEServer* server) override {
         if (BleManager::_instance) {
             BleManager::_instance->_connected = false;
-            Serial.println("[BLE] Client disconnected");
+            Serial.printf("[BLE] Client disconnected\n");
             server->startAdvertising();
         }
     }

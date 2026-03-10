@@ -5,6 +5,7 @@
  */
 
 #include "shell_theme.h"
+#include "os_shell.h"
 #include <cstdio>
 
 namespace tritium_theme {
@@ -60,7 +61,7 @@ lv_obj_t* createPanel(lv_obj_t* parent, const char* title) {
         lv_obj_t* lbl = lv_label_create(panel);
         lv_label_set_text(lbl, title);
         lv_obj_set_style_text_color(lbl, T_BRIGHT, 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(lbl, tritium_shell::uiFont(), 0);
         lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 0, 0);
     }
 
@@ -84,7 +85,7 @@ lv_obj_t* createButton(lv_obj_t* parent, const char* label, lv_color_t accent) {
     lv_obj_t* lbl = lv_label_create(btn);
     lv_label_set_text(lbl, label);
     lv_obj_set_style_text_color(lbl, accent, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(lbl, tritium_shell::uiFont(), 0);
     lv_obj_center(lbl);
 
     return btn;
@@ -100,7 +101,7 @@ lv_obj_t* createLabel(lv_obj_t* parent, const char* text, bool mono) {
         // LVGL 9.2 built-in Unscii is only available if LV_FONT_UNSCII_8/16
         // are enabled in lv_conf.h. We use the smallest Montserrat as a
         // reasonable substitute that's always available.
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, 0);
+        lv_obj_set_style_text_font(lbl, tritium_shell::uiSmallFont(), 0);
     }
 
     return lbl;

@@ -23,22 +23,20 @@ uint8_t TouchHAL::getPoints(TouchPoint *points, uint8_t maxPoints) {
 
 #else // ESP32
 
-#include <Arduino.h>
-#include <Wire.h>
+#include "tritium_compat.h"
+#include "tritium_i2c.h"
 
 // GT911 on 43C-BOX needs reset via CH422G IO expander before I2C probe
 #if defined(BOARD_TOUCH_LCD_43C_BOX) && HAS_IO_EXPANDER
-static void gt911_reset_via_ch422g(TwoWire* wire) {
+static void gt911_reset_via_ch422g() {
     // CH422G config: set IO mode
-    wire->beginTransmission(0x24);  // CH422G_SET_ADDR
-    wire->write(0x01);
-    wire->endTransmission();
+    uint8_t ch422g_mode[] = { 0x01 };
+    i2c0.write(0x24, ch422g_mode, 1);  // CH422G_SET_ADDR
 
     // Set EXIO1 (touch RST) LOW to hold GT911 in reset
     // Keep EXIO2 (backlight) HIGH
-    wire->beginTransmission(0x38);  // CH422G_WR_IO_ADDR
-    wire->write(0x02);  // bit1=EXIO2(BL)=1, bit0=EXIO1(RST)=0
-    wire->endTransmission();
+    uint8_t rst_low[] = { 0x02 };  // bit1=EXIO2(BL)=1, bit0=EXIO1(RST)=0
+    i2c0.write(0x38, rst_low, 1);  // CH422G_WR_IO_ADDR
     delay(20);
 
     // Drive INT low during reset to select address 0x5D
@@ -47,9 +45,8 @@ static void gt911_reset_via_ch422g(TwoWire* wire) {
     delay(2);
 
     // Release reset: set EXIO1 HIGH
-    wire->beginTransmission(0x38);
-    wire->write(0x03);  // bit1=EXIO2(BL)=1, bit0=EXIO1(RST)=1
-    wire->endTransmission();
+    uint8_t rst_high[] = { 0x03 };  // bit1=EXIO2(BL)=1, bit0=EXIO1(RST)=1
+    i2c0.write(0x38, rst_high, 1);
     delay(10);
 
     // Release INT (let GT911 drive it)
@@ -58,8 +55,7 @@ static void gt911_reset_via_ch422g(TwoWire* wire) {
 }
 #endif
 
-bool TouchHAL::init(TwoWire &wire) {
-    _wire = &wire;
+bool TouchHAL::init() {
 
 #if defined(TOUCH_INT) && TOUCH_INT >= 0
     _int_pin = TOUCH_INT;
@@ -71,17 +67,15 @@ bool TouchHAL::init(TwoWire &wire) {
     // This ensures the GT911 starts in a known state with the correct I2C
     // address (0x5D) regardless of what happened during prior I2C bus scans.
 #if HAS_IO_EXPANDER
-    gt911_reset_via_ch422g(_wire);
+    gt911_reset_via_ch422g();
 #endif
 
     bool found = false;
     _addr = 0x5D;
-    _wire->beginTransmission(_addr);
-    if (_wire->endTransmission() == 0) { found = true; }
+    if (i2c0.probe(_addr)) { found = true; }
     if (!found) {
         _addr = 0x14;
-        _wire->beginTransmission(_addr);
-        if (_wire->endTransmission() == 0) { found = true; }
+        if (i2c0.probe(_addr)) { found = true; }
     }
     if (!found) return false;
 
@@ -105,14 +99,8 @@ bool TouchHAL::init(TwoWire &wire) {
 
     // Read product ID to verify communication
     uint8_t pid[5] = {};
-    _wire->beginTransmission(_addr);
-    _wire->write(0x81);
-    _wire->write(0x40);
-    _wire->endTransmission(false);
-    _wire->requestFrom(_addr, (uint8_t)4);
-    for (int i = 0; i < 4 && _wire->available(); i++) {
-        pid[i] = _wire->read();
-    }
+    uint8_t pid_reg[2] = { 0x81, 0x40 };
+    i2c0.writeRead(_addr, pid_reg, 2, pid, 4);
     pid[4] = 0;
     Serial.printf("[GT911] Product ID: %s\n", pid);
 
@@ -127,7 +115,10 @@ bool TouchHAL::init(TwoWire &wire) {
         delay(58);
         ::digitalWrite(_int_pin, HIGH);
         delay(2);
-        ::pinMode(_int_pin, INPUT_PULLUP);
+        // INPUT with pullup — use GPIO API directly since tritium_compat
+        // doesn't define INPUT_PULLUP
+        gpio_set_direction((gpio_num_t)_int_pin, GPIO_MODE_INPUT);
+        gpio_set_pull_mode((gpio_num_t)_int_pin, GPIO_PULLUP_ONLY);
     }
     delay(50);
 
@@ -153,8 +144,7 @@ bool TouchHAL::init(TwoWire &wire) {
 #else
     _addr = 0x3B;
 #endif
-    _wire->beginTransmission(_addr);
-    if (_wire->endTransmission() != 0) return false;
+    if (!i2c0.probe(_addr)) return false;
     _driver = AXS15231B_TOUCH;
     return true;
 
@@ -164,8 +154,7 @@ bool TouchHAL::init(TwoWire &wire) {
 #else
     _addr = 0x38;
 #endif
-    _wire->beginTransmission(_addr);
-    if (_wire->endTransmission() != 0) return false;
+    if (!i2c0.probe(_addr)) return false;
     _driver = FT6336;
     return true;
 
@@ -175,8 +164,7 @@ bool TouchHAL::init(TwoWire &wire) {
 #else
     _addr = 0x38;
 #endif
-    _wire->beginTransmission(_addr);
-    if (_wire->endTransmission() != 0) return false;
+    if (!i2c0.probe(_addr)) return false;
     _driver = FT3168;
     return true;
 
@@ -262,15 +250,10 @@ bool TouchHAL::gt911_read(uint16_t &x, uint16_t &y) {
         gt911_writeReg(0x814E, 0);
         return false;
     }
+
     uint8_t buf[4];
-    _wire->beginTransmission(_addr);
-    _wire->write(0x81);
-    _wire->write(0x50);
-    _wire->endTransmission(false);
-    _wire->requestFrom(_addr, (uint8_t)4);
-    for (int i = 0; i < 4 && _wire->available(); i++) {
-        buf[i] = _wire->read();
-    }
+    uint8_t reg[2] = { 0x81, 0x50 };
+    i2c0.writeRead(_addr, reg, 2, buf, 4);
     x = buf[0] | (buf[1] << 8);
     y = buf[2] | (buf[3] << 8);
     gt911_writeReg(0x814E, 0);
@@ -280,13 +263,8 @@ bool TouchHAL::gt911_read(uint16_t &x, uint16_t &y) {
 
 bool TouchHAL::axs_read(uint16_t &x, uint16_t &y) {
     uint8_t buf[8];
-    _wire->beginTransmission(_addr);
-    _wire->write(0x00);
-    _wire->endTransmission(false);
-    _wire->requestFrom(_addr, (uint8_t)8);
-    for (int i = 0; i < 8 && _wire->available(); i++) {
-        buf[i] = _wire->read();
-    }
+    uint8_t reg = 0x00;
+    i2c0.writeRead(_addr, &reg, 1, buf, 8);
     if (buf[0] == 0xFF || (buf[1] == 0xFF && buf[2] == 0xFF)) {
         return false;
     }
@@ -296,11 +274,9 @@ bool TouchHAL::axs_read(uint16_t &x, uint16_t &y) {
 }
 
 uint8_t TouchHAL::readReg8(uint8_t reg) {
-    _wire->beginTransmission(_addr);
-    _wire->write(reg);
-    _wire->endTransmission(false);
-    _wire->requestFrom(_addr, (uint8_t)1);
-    return _wire->available() ? _wire->read() : 0;
+    uint8_t val = 0;
+    i2c0.readReg(_addr, reg, &val);
+    return val;
 }
 
 uint16_t TouchHAL::readReg16(uint8_t regH, uint8_t regL) {
@@ -308,31 +284,23 @@ uint16_t TouchHAL::readReg16(uint8_t regH, uint8_t regL) {
 }
 
 void TouchHAL::writeReg8(uint8_t reg, uint8_t val) {
-    _wire->beginTransmission(_addr);
-    _wire->write(reg);
-    _wire->write(val);
-    _wire->endTransmission();
+    i2c0.writeReg(_addr, reg, val);
 }
 
 uint8_t TouchHAL::gt911_readReg(uint16_t reg) {
-    _wire->beginTransmission(_addr);
-    _wire->write((uint8_t)(reg >> 8));
-    _wire->write((uint8_t)(reg & 0xFF));
-    _wire->endTransmission(false);
-    _wire->requestFrom(_addr, (uint8_t)1);
-    return _wire->available() ? _wire->read() : 0;
+    uint8_t reg_buf[2] = { (uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF) };
+    uint8_t val = 0;
+    i2c0.writeRead(_addr, reg_buf, 2, &val, 1);
+    return val;
 }
 
 void TouchHAL::gt911_writeReg(uint16_t reg, uint8_t val) {
-    _wire->beginTransmission(_addr);
-    _wire->write((uint8_t)(reg >> 8));
-    _wire->write((uint8_t)(reg & 0xFF));
-    _wire->write(val);
-    _wire->endTransmission();
+    uint8_t buf[3] = { (uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF), val };
+    i2c0.write(_addr, buf, 3);
 }
 
 int TouchHAL::dumpDiag(char* buf, size_t size) {
-    if (_driver != GT911 || !_wire) {
+    if (_driver != GT911) {
         return snprintf(buf, size, "{\"error\":\"not GT911\"}");
     }
 
@@ -350,14 +318,8 @@ int TouchHAL::dumpDiag(char* buf, size_t size) {
 
     // Product ID (4 ASCII bytes at 0x8140)
     uint8_t pid[5] = {};
-    _wire->beginTransmission(_addr);
-    _wire->write(0x81);
-    _wire->write(0x40);
-    _wire->endTransmission(false);
-    _wire->requestFrom(_addr, (uint8_t)4);
-    for (int i = 0; i < 4 && _wire->available(); i++) {
-        pid[i] = _wire->read();
-    }
+    uint8_t pid_reg[2] = { 0x81, 0x40 };
+    i2c0.writeRead(_addr, pid_reg, 2, pid, 4);
     pid[4] = 0;
 
     // Firmware version (2 bytes at 0x8144)
@@ -369,14 +331,8 @@ int TouchHAL::dumpDiag(char* buf, size_t size) {
 
     // Point data (first 8 bytes at 0x8150)
     uint8_t pt[8] = {};
-    _wire->beginTransmission(_addr);
-    _wire->write(0x81);
-    _wire->write(0x50);
-    _wire->endTransmission(false);
-    _wire->requestFrom(_addr, (uint8_t)8);
-    for (int i = 0; i < 8 && _wire->available(); i++) {
-        pt[i] = _wire->read();
-    }
+    uint8_t pt_reg[2] = { 0x81, 0x50 };
+    i2c0.writeRead(_addr, pt_reg, 2, pt, 8);
 
     return snprintf(buf, size,
         "{\"addr\":\"0x%02X\",\"product_id\":\"%s\",\"fw_ver\":%u,"

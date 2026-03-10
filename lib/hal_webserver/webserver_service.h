@@ -7,8 +7,10 @@
 
 #if defined(ENABLE_WEBSERVER) && __has_include("hal_webserver.h")
 #include "hal_webserver.h"
-#include <WiFi.h>
-#include <LittleFS.h>
+#include "esp_wifi.h"
+#include "esp_mac.h"
+#include "esp_netif.h"
+#include "esp_littlefs.h"
 #endif
 
 // Forward-declare service types for auto-wiring
@@ -74,7 +76,12 @@ public:
         if (!wifi_svc) return false;
         if (!wifi_svc->isConnected() && !wifi_svc->isAPMode()) return false;
 
-        LittleFS.begin(true);  // Format on first mount
+        // Mount LittleFS via ESP-IDF VFS
+        esp_vfs_littlefs_conf_t lfs_conf = {};
+        lfs_conf.base_path = "/littlefs";
+        lfs_conf.partition_label = "littlefs";
+        lfs_conf.format_if_mount_failed = true;
+        esp_vfs_littlefs_register(&lfs_conf);
 
         uint16_t web_port = 80;
         if (_webserver.init(web_port)) {
@@ -134,8 +141,8 @@ public:
                         pos += snprintf(buf + pos, size - pos, "]");
                         return pos;
                     });
-                    Serial.printf("[tritium] GIS: %d layers, %u tiles\n",
-                                  _gis.getLayerCount(), (unsigned)_gis.getTileCount());
+                    printf("[tritium] GIS: %d layers, %u tiles\n",
+                           _gis.getLayerCount(), (unsigned)_gis.getTileCount());
                 }
             }
 #endif
@@ -155,19 +162,19 @@ public:
             // In AP mode, start captive portal for auto-redirect
             if (wifi_svc->isAPMode()) {
                 _webserver.startCaptivePortal();
-                Serial.printf("[tritium] Web server: http://%s:%u/ (captive portal)\n",
-                              wifi_svc->getAPIP(), web_port);
-                Serial.printf("[tritium] Connect phone to WiFi '%s' for setup\n",
-                              wifi_svc->getSSID());
+                printf("[tritium] Web server: http://%s:%u/ (captive portal)\n",
+                       wifi_svc->getAPIP(), web_port);
+                printf("[tritium] Connect phone to WiFi '%s' for setup\n",
+                       wifi_svc->getSSID());
             } else {
                 // Normal mode: start mDNS for easy phone discovery
                 uint8_t mac[6];
-                WiFi.macAddress(mac);
+                esp_wifi_get_mac(WIFI_IF_STA, mac);
                 char hostname[32];
                 snprintf(hostname, sizeof(hostname), "tritium-%02x%02x", mac[4], mac[5]);
                 _webserver.startMDNS(hostname);
-                Serial.printf("[tritium] Web server: http://%s:%u/ (mDNS: %s.local)\n",
-                              wifi_svc->getIP(), web_port, hostname);
+                printf("[tritium] Web server: http://%s:%u/ (mDNS: %s.local)\n",
+                       wifi_svc->getIP(), web_port, hostname);
             }
             _active = true;
             return true;

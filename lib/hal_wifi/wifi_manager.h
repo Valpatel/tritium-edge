@@ -176,6 +176,15 @@ public:
     /// Set state and fire callbacks (public for event handler access).
     void setState(WifiState s);
 
+    /// Notify that STA got an IP (called from event handler).
+    void notifyGotIP();
+
+    /// Notify that STA disconnected (called from event handler).
+    void notifyDisconnected();
+
+    /// Notify that an AP client connected/disconnected.
+    void notifyAPClientEvent(bool connected);
+
     /// Singleton-ish pointer for WiFi event handler.
     static WifiManager* _instance;
 
@@ -207,6 +216,7 @@ private:
     char            _ip[16]   = {};
     char            _ssid[33] = {};
     volatile WifiState _state = WifiState::IDLE;
+    volatile bool   _staConnected = false;  ///< Event-driven STA connection flag
 
     // ── AP mode ──────────────────────────────────────────────────────────
 

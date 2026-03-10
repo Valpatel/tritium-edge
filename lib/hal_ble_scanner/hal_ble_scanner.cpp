@@ -21,7 +21,7 @@ bool is_active() { return false; }
 
 #else
 
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include <NimBLEDevice.h>
 #include <cstring>
 #include <cstdio>

@@ -5,7 +5,7 @@
  */
 
 #include "board_fingerprint.h"
-#include <Arduino.h>
+#include "tritium_compat.h"
 #include "driver/gpio.h"
 
 /* ========================================================================== */
@@ -101,34 +101,34 @@ static inline void bb_scl_low(void)  { gpio_set_direction(_bb_scl, GPIO_MODE_OUT
 static inline int  bb_sda_read(void) { return gpio_get_level(_bb_sda); }
 
 static void bb_start(void) {
-    bb_sda_high(); ets_delay_us(BB_DELAY_US);
-    bb_scl_high(); ets_delay_us(BB_DELAY_US);
-    bb_sda_low();  ets_delay_us(BB_DELAY_US);
-    bb_scl_low();  ets_delay_us(BB_DELAY_US);
+    bb_sda_high(); esp_rom_delay_us(BB_DELAY_US);
+    bb_scl_high(); esp_rom_delay_us(BB_DELAY_US);
+    bb_sda_low();  esp_rom_delay_us(BB_DELAY_US);
+    bb_scl_low();  esp_rom_delay_us(BB_DELAY_US);
 }
 
 static void bb_stop(void) {
-    bb_sda_low();  ets_delay_us(BB_DELAY_US);
-    bb_scl_high(); ets_delay_us(BB_DELAY_US);
-    bb_sda_high(); ets_delay_us(BB_DELAY_US);
+    bb_sda_low();  esp_rom_delay_us(BB_DELAY_US);
+    bb_scl_high(); esp_rom_delay_us(BB_DELAY_US);
+    bb_sda_high(); esp_rom_delay_us(BB_DELAY_US);
 }
 
 /* Send one byte, return ACK (0) or NACK (1) */
 static int bb_write_byte(uint8_t byte) {
     for (int i = 7; i >= 0; i--) {
         if (byte & (1 << i)) bb_sda_high(); else bb_sda_low();
-        ets_delay_us(BB_DELAY_US);
-        bb_scl_high(); ets_delay_us(BB_DELAY_US);
-        bb_scl_low();  ets_delay_us(BB_DELAY_US);
+        esp_rom_delay_us(BB_DELAY_US);
+        bb_scl_high(); esp_rom_delay_us(BB_DELAY_US);
+        bb_scl_low();  esp_rom_delay_us(BB_DELAY_US);
     }
     /* Read ACK */
     bb_sda_high();
-    ets_delay_us(BB_DELAY_US);
+    esp_rom_delay_us(BB_DELAY_US);
     bb_scl_high();
-    ets_delay_us(BB_DELAY_US);
+    esp_rom_delay_us(BB_DELAY_US);
     int ack = bb_sda_read();
     bb_scl_low();
-    ets_delay_us(BB_DELAY_US);
+    esp_rom_delay_us(BB_DELAY_US);
     return ack;  /* 0 = ACK, 1 = NACK */
 }
 

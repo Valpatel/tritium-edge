@@ -4,15 +4,10 @@
 // Usage:
 //   #include "hal_touch.h"
 //   TouchHAL touch;
-//   touch.init(Wire);  // ESP32
-//   touch.init();      // simulator
+//   touch.init();  // uses global i2c0
 
 #include <cstdint>
 #include <cstddef>
-
-#ifndef SIMULATOR
-class TwoWire;
-#endif
 
 struct TouchPoint {
     uint16_t x;
@@ -23,11 +18,7 @@ class TouchHAL {
 public:
     enum TouchDriver { NONE, FT3168, FT6336, GT911, AXS15231B_TOUCH };
 
-#ifdef SIMULATOR
     bool init();
-#else
-    bool init(TwoWire &wire);
-#endif
     bool isTouched();
     bool read(uint16_t &x, uint16_t &y);
     uint8_t getPoints(TouchPoint *points, uint8_t maxPoints);
@@ -43,7 +34,6 @@ private:
     int8_t _int_pin = -1;
 
 #ifndef SIMULATOR
-    TwoWire *_wire = nullptr;
     uint8_t _addr = 0;
 
     uint8_t readReg8(uint8_t reg);

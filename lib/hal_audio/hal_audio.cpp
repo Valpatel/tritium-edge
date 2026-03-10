@@ -24,10 +24,9 @@ bool AudioHAL::getSpectrum(float* bins, size_t numBins, const int16_t* samples, 
 
 #else // ESP32
 
-#include <Arduino.h>
-#include <Wire.h>
+#include "tritium_compat.h"
+#include "tritium_i2c.h"
 #include <driver/i2s.h>
-#include <lgfx/v1/platforms/common.hpp>
 #include <math.h>
 
 #ifndef HAS_AUDIO_CODEC
@@ -70,12 +69,10 @@ bool AudioHAL::getSpectrum(float* bins, size_t numBins, const int16_t* samples, 
 #define I2S_DMA_BUF_COUNT        4
 #define I2S_DMA_BUF_LEN          512
 
-bool AudioHAL::init(TwoWire &wire) {
+bool AudioHAL::init() {
 #if !HAS_AUDIO_CODEC
     return false;
 #else
-    _wire = &wire;
-    _use_lgfx = false;
     _i2s_port = 0;
 
 #if defined(AUDIO_CODEC_ADDR)
@@ -98,10 +95,8 @@ bool AudioHAL::initLgfx(uint8_t i2c_port, uint8_t addr) {
 #if !HAS_AUDIO_CODEC
     return false;
 #else
-    _use_lgfx = true;
-    _lgfx_port = i2c_port;
+    // Legacy API — lgfx I2C no longer used, all I2C goes through i2c0
     _codec_addr = addr;
-    _wire = nullptr;
     _i2s_port = 0;
 
     if (!initES8311()) return false;
@@ -120,7 +115,7 @@ bool AudioHAL::initES8311() {
     uint8_t id2 = readReg(ES8311_REGFE_CHIPID2);
     Serial.printf("[AUDIO] ES8311 chip ID: 0x%02X 0x%02X\n", id1, id2);
     if (id1 != 0x83 || id2 != 0x11) {
-        Serial.println("[AUDIO] ES8311 chip ID mismatch");
+        Serial.printf("[AUDIO] ES8311 chip ID mismatch\n");
     }
 
     // Init sequence based on Espressif ESP-ADF es8311.c reference driver
@@ -195,7 +190,7 @@ bool AudioHAL::initES8311() {
     // DAC volume
     writeReg(ES8311_REG32_DAC_VOL, 0xBF);  // DAC volume ~75%
 
-    Serial.println("[AUDIO] ES8311 init complete (CSM enabled)");
+    Serial.printf("[AUDIO] ES8311 init complete (CSM enabled)\n");
     return true;
 }
 
@@ -215,7 +210,7 @@ bool AudioHAL::initI2S() {
     i2s_config.fixed_mclk = I2S_SAMPLE_RATE * 256;  // MCLK = 256 * fs
 
     if (i2s_driver_install((i2s_port_t)_i2s_port, &i2s_config, 0, NULL) != ESP_OK) {
-        Serial.println("[AUDIO] I2S driver install failed");
+        Serial.printf("[AUDIO] I2S driver install failed\n");
         return false;
     }
 
@@ -239,7 +234,7 @@ bool AudioHAL::initI2S() {
 #endif
 
     if (i2s_set_pin((i2s_port_t)_i2s_port, &pin_config) != ESP_OK) {
-        Serial.println("[AUDIO] I2S pin config failed");
+        Serial.printf("[AUDIO] I2S pin config failed\n");
         i2s_driver_uninstall((i2s_port_t)_i2s_port);
         return false;
     }
@@ -380,29 +375,12 @@ bool AudioHAL::getSpectrum(float* bins, size_t numBins, const int16_t* samples, 
 }
 
 void AudioHAL::writeReg(uint8_t reg, uint8_t val) {
-    if (_use_lgfx) {
-        uint8_t buf[2] = { reg, val };
-        lgfx::i2c::transactionWrite(_lgfx_port, _codec_addr, buf, 2, 400000);
-    } else {
-        _wire->beginTransmission(_codec_addr);
-        _wire->write(reg);
-        _wire->write(val);
-        _wire->endTransmission();
-    }
+    i2c0.writeReg(_codec_addr, reg, val);
 }
 
 uint8_t AudioHAL::readReg(uint8_t reg) {
     uint8_t val = 0;
-    if (_use_lgfx) {
-        lgfx::i2c::transactionWriteRead(_lgfx_port, _codec_addr,
-            &reg, 1, &val, 1, 400000);
-    } else {
-        _wire->beginTransmission(_codec_addr);
-        _wire->write(reg);
-        _wire->endTransmission(false);
-        _wire->requestFrom(_codec_addr, (uint8_t)1);
-        if (_wire->available()) val = _wire->read();
-    }
+    i2c0.readReg(_codec_addr, reg, &val);
     return val;
 }
 

@@ -3,13 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #pragma once
-#if __has_include("ESPAsyncWebServer.h")
-#include <ESPAsyncWebServer.h>
-#define HAS_ASYNC_WEBSERVER 1
-#else
-#define HAS_ASYNC_WEBSERVER 0
-struct AsyncWebServer;  // forward declare stub
-#endif
+#include "esp_http_server.h"
 
 namespace ota_routes {
 
@@ -22,6 +16,6 @@ namespace ota_routes {
 //   GET    /api/ota/history    -> update history array
 //   POST   /api/ota/mesh-push  -> distribute to mesh peers
 //   GET    /ota                -> OTA web UI page
-void registerRoutes(AsyncWebServer* server);
+void registerRoutes(httpd_handle_t server);
 
 }  // namespace ota_routes

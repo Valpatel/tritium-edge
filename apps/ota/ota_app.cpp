@@ -5,11 +5,14 @@
 #include <esp_lcd_panel_ops.h>
 
 #ifndef SIMULATOR
-#include <Update.h>
+#include "esp_ota_ops.h"
 #include <esp_ota_ops.h>
-#include <SD_MMC.h>
-#include <WiFi.h>
-#include <HTTPClient.h>
+// SD card via VFS — use POSIX file ops on /sdcard/
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_mac.h"
+#include "esp_http_client.h"
+#include <sys/stat.h>
 #endif
 
 // ============================================================================
@@ -251,7 +254,7 @@ void OtaApp::setup(esp_lcd_panel_handle_t panel, int width, int height) {
     size_t fb_size = _w * _h * sizeof(uint16_t);
     _framebuf = (uint16_t*)heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM);
     if (!_framebuf) {
-        Serial.println("[ota] FATAL: framebuffer alloc failed");
+        Serial.printf("[ota] FATAL: framebuffer alloc failed\n");
         while (1) delay(1000);
     }
     memset(_framebuf, 0, fb_size);
@@ -260,7 +263,7 @@ void OtaApp::setup(esp_lcd_panel_handle_t panel, int width, int height) {
     size_t dma_size = _w * CHUNK_ROWS * sizeof(uint16_t);
     _dma_buf = (uint16_t*)heap_caps_malloc(dma_size, MALLOC_CAP_DMA);
     if (!_dma_buf) {
-        Serial.println("[ota] FATAL: DMA buffer alloc failed");
+        Serial.printf("[ota] FATAL: DMA buffer alloc failed\n");
         while (1) delay(1000);
     }
 
@@ -382,7 +385,7 @@ void OtaApp::setup(esp_lcd_panel_handle_t panel, int width, int height) {
     Serial.printf("[ota]   Partition: %s (max %u bytes)\n",
                   _ota.getRunningPartition(), _ota.getMaxFirmwareSize());
 
-    Serial.println("OTA_READY");
+    Serial.printf("OTA_READY\n");
 }
 
 // ============================================================================
@@ -452,7 +455,8 @@ void OtaApp::loop() {
     }
 
     // Fleet heartbeat (if WiFi connected and provisioned)
-    if (_provision.isProvisioned() && WiFi.isConnected()) {
+    wifi_ap_record_t _hb_ap;
+    if (_provision.isProvisioned() && esp_wifi_sta_get_ap_info(&_hb_ap) == ESP_OK) {
         uint32_t now2 = millis();
         if (now2 - _heartbeat_timer >= HEARTBEAT_INTERVAL_MS) {
             _heartbeat_timer = now2;
@@ -524,11 +528,22 @@ void OtaApp::drawStatus() {
              (!narrow && _ble_ota.isConnected()) ? " Connected" : "");
     drawStringCentered(_framebuf, _w, _h, y, buf, _ble_ok ? colGreen : colRed); y += lineH;
 
-    bool wifiConn = WiFi.isConnected();
+    wifi_ap_record_t _ds_ap;
+    bool wifiConn = (esp_wifi_sta_get_ap_info(&_ds_ap) == ESP_OK);
     if (wifiConn) {
+        char _ds_ip[16] = "";
+        if (!narrow) {
+            esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+            if (netif) {
+                esp_netif_ip_info_t ip_info;
+                if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+                    esp_ip4addr_ntoa(&ip_info.ip, _ds_ip, sizeof(_ds_ip));
+                }
+            }
+        }
         snprintf(buf, sizeof(buf), narrow ? "WiFi:%s" : "WiFi:%s %s",
-                 WiFi.SSID().c_str(),
-                 narrow ? "" : WiFi.localIP().toString().c_str());
+                 (const char*)_ds_ap.ssid,
+                 narrow ? "" : _ds_ip);
     } else {
         snprintf(buf, sizeof(buf), "WiFi:N/A");
     }
@@ -669,7 +684,7 @@ void OtaApp::handleSerialOTA() {
         static constexpr size_t SERIAL_CHUNK = 4096;  // Match flash page size
         uint8_t* chunkBuf = (uint8_t*)malloc(SERIAL_CHUNK);
         if (!chunkBuf) {
-            Serial.println("OTA_FAIL out of memory");
+            Serial.printf("OTA_FAIL out of memory\n");
             Serial.flush();
             _serial_state = SerialOtaState::ERROR;
             _releaseOta();
@@ -757,7 +772,7 @@ void OtaApp::handleSerialOTA() {
 #ifdef OTA_REQUIRE_SIGNATURE
         if (!_serial_signed) {
             Serial.printf("[ota] Unsigned firmware rejected (signature required)\n");
-            Serial.println("OTA_FAIL unsigned firmware rejected");
+            Serial.printf("OTA_FAIL unsigned firmware rejected\n");
             Serial.flush();
             _serial_state = SerialOtaState::ERROR;
             _releaseOta();
@@ -770,7 +785,7 @@ void OtaApp::handleSerialOTA() {
                                                      _serial_signature.s);
             if (!sigOk) {
                 Serial.printf("[ota] Signature verification FAILED -- rejecting firmware\n");
-                Serial.println("OTA_FAIL signature verification failed");
+                Serial.printf("OTA_FAIL signature verification failed\n");
                 Serial.flush();
                 _serial_state = SerialOtaState::ERROR;
                 Update.abort();
@@ -785,7 +800,7 @@ void OtaApp::handleSerialOTA() {
             _progress = 100;
             _serial_state = SerialOtaState::DONE;
             _releaseOta();
-            Serial.println("OTA_OK");
+            Serial.printf("OTA_OK\n");
             Serial.flush();
             delay(1000);
             _ota.reboot();
@@ -812,7 +827,7 @@ void OtaApp::handleSerialOTA() {
                 uint32_t size = 0, crc = 0;
                 if (sscanf(_serial_buf + 10, "%u %u", &size, &crc) >= 1) {
                     if (!_claimOta(OtaSource::SRC_SERIAL)) {
-                        Serial.println("OTA_FAIL busy (another OTA in progress)");
+                        Serial.printf("OTA_FAIL busy (another OTA in progress)\n");
                         break;
                     }
                     _serial_fw_size = size;
@@ -830,10 +845,10 @@ void OtaApp::handleSerialOTA() {
                     } else {
                         _serial_state = SerialOtaState::RECEIVING;
                         snprintf(_status_line, sizeof(_status_line), "Serial: receiving %u bytes", size);
-                        Serial.println("OTA_READY");
+                        Serial.printf("OTA_READY\n");
                     }
                 } else {
-                    Serial.println("OTA_FAIL bad args (OTA_BEGIN <size> [crc])");
+                    Serial.printf("OTA_FAIL bad args (OTA_BEGIN <size> [crc])\n");
                 }
             } else if (strncmp(_serial_buf, "OTA_SIG ", 8) == 0) {
                 // Receive ECDSA P-256 signature: OTA_SIG <r_hex_64> <s_hex_64>
@@ -854,14 +869,14 @@ void OtaApp::handleSerialOTA() {
                         _serial_signature.s[i] = (uint8_t)sb;
                     }
                     if (!parseOk) {
-                        Serial.println("OTA_SIG_FAIL invalid hex");
+                        Serial.printf("OTA_SIG_FAIL invalid hex\n");
                         break;
                     }
                     _serial_signed = true;
                     Serial.printf("[ota] Received ECDSA signature for verification\n");
-                    Serial.println("OTA_SIG_OK");
+                    Serial.printf("OTA_SIG_OK\n");
                 } else {
-                    Serial.println("OTA_SIG_FAIL bad format (OTA_SIG <r_hex64> <s_hex64>)");
+                    Serial.printf("OTA_SIG_FAIL bad format (OTA_SIG <r_hex64> <s_hex64>)\n");
                 }
             } else if (strcmp(_serial_buf, "OTA_INFO") == 0) {
                 char fwHash[65] = {};
@@ -881,7 +896,7 @@ void OtaApp::handleSerialOTA() {
                               (unsigned)_ota.getMaxFirmwareSize(),
                               _sd_ok ? "true" : "false",
                               _sd.isUSBMSCActive() ? "true" : "false",
-                              WiFi.isConnected() ? "true" : "false",
+                              [](){ wifi_ap_record_t a; return esp_wifi_sta_get_ap_info(&a)==ESP_OK; }() ? "true" : "false",
                               _espnow_ok ? "true" : "false",
                               _ble_ok ? "true" : "false",
                               DISPLAY_DRIVER,
@@ -909,28 +924,28 @@ void OtaApp::handleSerialOTA() {
                     _have_firmware_file = _sd.exists("/firmware.bin") || _sd.exists("/firmware.ota");
                 }
                 if (_sd_ok && _have_firmware_file) {
-                    Serial.println("OTA_SD_START");
+                    Serial.printf("OTA_SD_START\n");
                     if (checkSDUpdate()) {
-                        Serial.println("OTA_SD_OK");
+                        Serial.printf("OTA_SD_OK\n");
                         delay(500);
                         _ota.reboot();
                     } else {
                         Serial.printf("OTA_SD_FAIL %s\n", _ota.getLastError());
                     }
                 } else {
-                    Serial.println("OTA_SD_FAIL no firmware.bin on SD");
+                    Serial.printf("OTA_SD_FAIL no firmware.bin on SD\n");
                 }
             } else if (strcmp(_serial_buf, "USB_MSC") == 0) {
                 // Toggle USB Mass Storage mode — SD card appears as USB drive
                 if (_sd.isUSBMSCActive()) {
                     _sd.stopUSBMSC();
-                    Serial.println("USB_MSC_OFF");
+                    Serial.printf("USB_MSC_OFF\n");
                 } else {
                     if (!_sd_ok) _sd_ok = _sd.init();
                     if (_sd_ok && _sd.startUSBMSC()) {
-                        Serial.println("USB_MSC_ON");
+                        Serial.printf("USB_MSC_ON\n");
                     } else {
-                        Serial.println("USB_MSC_FAIL");
+                        Serial.printf("USB_MSC_FAIL\n");
                     }
                 }
             } else if (strcmp(_serial_buf, "VERIFY_TEST") == 0) {
@@ -955,19 +970,20 @@ void OtaApp::handleSerialOTA() {
             } else if (strncmp(_serial_buf, "OTA_URL ", 8) == 0) {
                 // WiFi pull OTA: OTA_URL http://host:port/path/to/firmware.ota
                 const char* url = _serial_buf + 8;
-                if (!WiFi.isConnected()) {
-                    Serial.println("OTA_URL_FAIL WiFi not connected");
+                wifi_ap_record_t _url_ap;
+                if (esp_wifi_sta_get_ap_info(&_url_ap) != ESP_OK) {
+                    Serial.printf("OTA_URL_FAIL WiFi not connected\n");
                 } else if (strlen(url) < 10) {
-                    Serial.println("OTA_URL_FAIL invalid URL");
+                    Serial.printf("OTA_URL_FAIL invalid URL\n");
                 } else {
                     if (!_otaRateLimitOk()) {
-                        Serial.println("OTA_URL_FAIL rate limited");
+                        Serial.printf("OTA_URL_FAIL rate limited\n");
                     } else {
                         Serial.printf("OTA_URL_START %s\n", url);
                         if (_ota.updateFromUrl(url)) {
                             _ota_fail_count = 0;
                             _audit.logAttempt("wifi_pull", _ota.getCurrentVersion(), DISPLAY_DRIVER, true);
-                            Serial.println("OTA_URL_OK");
+                            Serial.printf("OTA_URL_OK\n");
                             delay(500);
                             _ota.reboot();
                         } else {
@@ -978,11 +994,23 @@ void OtaApp::handleSerialOTA() {
                     }
                 }
             } else if (strcmp(_serial_buf, "WIFI_STATUS") == 0) {
+                wifi_ap_record_t _ws_ap;
+                bool _ws_conn = (esp_wifi_sta_get_ap_info(&_ws_ap) == ESP_OK);
+                char _ws_ip[16] = "";
+                if (_ws_conn) {
+                    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                    if (netif) {
+                        esp_netif_ip_info_t ip_info;
+                        if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+                            esp_ip4addr_ntoa(&ip_info.ip, _ws_ip, sizeof(_ws_ip));
+                        }
+                    }
+                }
                 Serial.printf("{\"connected\":%s,\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi\":%d}\n",
-                              WiFi.isConnected() ? "true" : "false",
-                              WiFi.isConnected() ? WiFi.SSID().c_str() : "",
-                              WiFi.isConnected() ? WiFi.localIP().toString().c_str() : "",
-                              WiFi.isConnected() ? WiFi.RSSI() : 0);
+                              _ws_conn ? "true" : "false",
+                              _ws_conn ? (const char*)_ws_ap.ssid : "",
+                              _ws_conn ? _ws_ip : "",
+                              _ws_conn ? (int)_ws_ap.rssi : 0);
             } else if (strncmp(_serial_buf, "WIFI_ADD ", 9) == 0) {
                 // Add WiFi network: WIFI_ADD <ssid> <password>
                 char ssid[33] = {};
@@ -997,17 +1025,17 @@ void OtaApp::handleSerialOTA() {
                         Serial.printf("WIFI_ADD_OK %s\n", ssid);
                         _wifi.connect();
                     } else {
-                        Serial.println("WIFI_ADD_FAIL");
+                        Serial.printf("WIFI_ADD_FAIL\n");
                     }
                 } else {
-                    Serial.println("WIFI_ADD_FAIL bad format (WIFI_ADD ssid password)");
+                    Serial.printf("WIFI_ADD_FAIL bad format (WIFI_ADD ssid password)\n");
                 }
             } else if (strcmp(_serial_buf, "WIFI_CONNECT") == 0) {
                 _wifi.connect();
-                Serial.println("WIFI_CONNECT_OK");
+                Serial.printf("WIFI_CONNECT_OK\n");
             } else if (strcmp(_serial_buf, "OTA_ROLLBACK") == 0) {
                 if (_ota.rollback()) {
-                    Serial.println("OTA_ROLLBACK_OK");
+                    Serial.printf("OTA_ROLLBACK_OK\n");
                     delay(500);
                     _ota.reboot();
                 } else {
@@ -1020,20 +1048,22 @@ void OtaApp::handleSerialOTA() {
                 sscanf(_serial_buf + 13, "%u %63s", &size, sdPath);
                 // Path traversal protection
                 if (strstr(sdPath, "..") != nullptr) {
-                    Serial.println("OTA_FAIL path traversal rejected");
+                    Serial.printf("OTA_FAIL path traversal rejected\n");
                     break;
                 }
                 if (sdPath[0] != '/') {
-                    Serial.println("OTA_FAIL path must be absolute");
+                    Serial.printf("OTA_FAIL path must be absolute\n");
                     break;
                 }
                 if (size > 0 && !_sd_ok) {
                     _sd_ok = _sd.init();
                 }
                 if (size > 0 && _sd_ok) {
-                    File f = SD_MMC.open(sdPath, FILE_WRITE);
+                    char sdFullPath[128];
+                    snprintf(sdFullPath, sizeof(sdFullPath), "/sdcard%s", sdPath);
+                    FILE* f = fopen(sdFullPath, "wb");
                     if (f) {
-                        Serial.println("OTA_READY");
+                        Serial.printf("OTA_READY\n");
                         Serial.flush();
                         uint8_t* buf = (uint8_t*)malloc(4096);
                         if (buf) {
@@ -1056,30 +1086,30 @@ void OtaApp::handleSerialOTA() {
                                     Serial.flush();
                                     break;
                                 }
-                                f.write(buf, got);
+                                fwrite(buf, 1, got, f);
                                 written += got;
                                 Serial.printf("OTA_NEXT %u\n", written);
                                 Serial.flush();
                             }
                             free(buf);
-                            f.close();
+                            fclose(f);
                             if (written >= size) {
                                 _have_firmware_file = true;
                                 Serial.printf("OTA_SD_WRITE_OK %u\n", written);
                                 Serial.flush();
                             }
                         } else {
-                            f.close();
-                            Serial.println("OTA_FAIL out of memory");
+                            fclose(f);
+                            Serial.printf("OTA_FAIL out of memory\n");
                         }
                     } else {
-                        Serial.println("OTA_FAIL cannot open SD file");
+                        Serial.printf("OTA_FAIL cannot open SD file\n");
                     }
                 } else {
-                    Serial.println("OTA_FAIL bad args or no SD");
+                    Serial.printf("OTA_FAIL bad args or no SD\n");
                 }
             } else if (strcmp(_serial_buf, "OTA_REBOOT") == 0) {
-                Serial.println("OTA_REBOOTING");
+                Serial.printf("OTA_REBOOTING\n");
                 delay(200);
                 _ota.reboot();
             } else if (strcmp(_serial_buf, "IDENTIFY") == 0) {
@@ -1090,7 +1120,7 @@ void OtaApp::handleSerialOTA() {
                               _provision.getIdentity().device_id);
             } else if (strcmp(_serial_buf, "PROVISION_BEGIN") == 0) {
                 _provision.startUSBProvision();
-                Serial.println("PROVISION_READY");
+                Serial.printf("PROVISION_READY\n");
                 // After this, the HAL reads from Serial directly in processUSBProvision()
                 // Set a flag so loop() calls processUSBProvision() instead of handleSerialOTA()
             } else if (strcmp(_serial_buf, "PROVISION_STATUS") == 0) {
@@ -1100,55 +1130,55 @@ void OtaApp::handleSerialOTA() {
                               _provision.getIdentity().server_url);
             } else if (strcmp(_serial_buf, "PROVISION_RESET") == 0) {
                 if (_provision.factoryReset()) {
-                    Serial.println("PROVISION_RESET_OK");
+                    Serial.printf("PROVISION_RESET_OK\n");
                 } else {
-                    Serial.println("PROVISION_RESET_FAIL");
+                    Serial.printf("PROVISION_RESET_FAIL\n");
                 }
             } else if (strcmp(_serial_buf, "OTA_AUDIT") == 0) {
                 char buf[2048];
                 size_t n = _audit.readLog(buf, sizeof(buf));
                 if (n > 0) {
-                    Serial.print(buf);
+                    Serial.printf("%s", buf);
                 } else {
-                    Serial.println("OTA_AUDIT_EMPTY");
+                    Serial.printf("OTA_AUDIT_EMPTY\n");
                 }
             } else if (strcmp(_serial_buf, "OTA_AUDIT_CLEAR") == 0) {
                 _audit.clear();
-                Serial.println("OTA_AUDIT_CLEAR_OK");
+                Serial.printf("OTA_AUDIT_CLEAR_OK\n");
             } else if (strcmp(_serial_buf, "FW_HASH") == 0) {
                 char hash[65];
                 if (_ota.getFirmwareHash(hash, sizeof(hash))) {
                     Serial.printf("FW_HASH %s\n", hash);
                 } else {
-                    Serial.println("FW_HASH_FAIL");
+                    Serial.printf("FW_HASH_FAIL\n");
                 }
             } else if (strcmp(_serial_buf, "MESH_OTA_SEND") == 0) {
                 // Send firmware.ota from SD to mesh peers
                 if (!_espnow_ok) {
-                    Serial.println("MESH_OTA_FAIL espnow not ready");
+                    Serial.printf("MESH_OTA_FAIL espnow not ready\n");
                 } else if (_mesh_ota.isSending()) {
-                    Serial.println("MESH_OTA_FAIL already sending");
+                    Serial.printf("MESH_OTA_FAIL already sending\n");
                 } else {
                     if (!_sd_ok) _sd_ok = _sd.init();
                     const char* path = _sd.exists("/firmware.ota") ? "/firmware.ota" : "/firmware.bin";
                     if (_mesh_ota.startSend(path)) {
-                        Serial.println("MESH_OTA_SEND_OK");
+                        Serial.printf("MESH_OTA_SEND_OK\n");
                     } else {
-                        Serial.println("MESH_OTA_FAIL cannot start send");
+                        Serial.printf("MESH_OTA_FAIL cannot start send\n");
                     }
                 }
             } else if (strcmp(_serial_buf, "MESH_OTA_RECV") == 0) {
                 // Enable receiving firmware from mesh peers
                 if (!_espnow_ok) {
-                    Serial.println("MESH_OTA_FAIL espnow not ready");
+                    Serial.printf("MESH_OTA_FAIL espnow not ready\n");
                 } else {
                     _mesh_ota.enableReceive(true);
-                    Serial.println("MESH_OTA_RECV_OK");
+                    Serial.printf("MESH_OTA_RECV_OK\n");
                 }
             } else if (strcmp(_serial_buf, "MESH_OTA_STOP") == 0) {
                 _mesh_ota.stopSend();
                 _mesh_ota.enableReceive(false);
-                Serial.println("MESH_OTA_STOP_OK");
+                Serial.printf("MESH_OTA_STOP_OK\n");
             } else if (strcmp(_serial_buf, "MESH_OTA_STATUS") == 0) {
                 auto stats = _mesh_ota.getStats();
                 Serial.printf("{\"sending\":%s,\"receiving\":%s,\"transfer\":%s,"
@@ -1227,6 +1257,20 @@ void OtaApp::sendHeartbeat() {
     char fwHash[65] = {};
     _ota.getFirmwareHash(fwHash, sizeof(fwHash));
 
+    // Gather WiFi info via ESP-IDF
+    char _hb_ip[16] = "0.0.0.0";
+    int8_t _hb_rssi = 0;
+    {
+        esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif) {
+            esp_netif_ip_info_t ip_info;
+            if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK)
+                esp_ip4addr_ntoa(&ip_info.ip, _hb_ip, sizeof(_hb_ip));
+        }
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) _hb_rssi = ap.rssi;
+    }
+
     char body[384];
     snprintf(body, sizeof(body),
              "{\"version\":\"%s\",\"board\":\"%s\",\"partition\":\"%s\","
@@ -1234,10 +1278,10 @@ void OtaApp::sendHeartbeat() {
              "\"fw_hash\":\"%s\"}",
              _ota.getCurrentVersion(), DISPLAY_DRIVER,
              _ota.getRunningPartition(),
-             WiFi.localIP().toString().c_str(),
+             _hb_ip,
              (unsigned long)(millis() / 1000),
-             (unsigned)ESP.getFreeHeap(),
-             WiFi.RSSI(),
+             (unsigned)esp_get_free_heap_size(),
+             (int)_hb_rssi,
              fwHash);
 
     int code = http.POST(body);
@@ -1272,44 +1316,50 @@ void OtaApp::offerFirmwareToMesh() {
 
     // Read firmware — prefer .ota over .bin
     const char* fwPath = "/firmware.ota";
-    File f = SD_MMC.open(fwPath, FILE_READ);
+    char sdFwPath[128];
+    snprintf(sdFwPath, sizeof(sdFwPath), "/sdcard%s", fwPath);
+    FILE* f = fopen(sdFwPath, "rb");
     if (!f) {
         fwPath = "/firmware.bin";
-        f = SD_MMC.open(fwPath, FILE_READ);
+        snprintf(sdFwPath, sizeof(sdFwPath), "/sdcard%s", fwPath);
+        f = fopen(sdFwPath, "rb");
     }
     if (!f) return;
+
+    fseek(f, 0, SEEK_END);
+    uint32_t fwSize = ftell(f);
+    fseek(f, 0, SEEK_SET);
 
     bool isOtaPkg = false;
     OtaFirmwareHeader hdr = {};
     OtaSignature sig = {};
-    uint32_t fwSize = f.size();
     uint32_t fwDataSize = fwSize;  // Actual firmware bytes (excluding header)
 
     // Try to parse .ota header
-    if (f.size() >= sizeof(OtaFirmwareHeader)) {
-        f.read((uint8_t*)&hdr, sizeof(hdr));
+    if (fwSize >= sizeof(OtaFirmwareHeader)) {
+        fread((uint8_t*)&hdr, 1, sizeof(hdr), f);
         if (hdr.isValid()) {
             isOtaPkg = true;
             fwDataSize = hdr.firmware_size;
-            if (hdr.isSigned() && f.size() >= sizeof(OtaFirmwareHeader) + sizeof(OtaSignature)) {
-                f.read((uint8_t*)&sig, sizeof(sig));
+            if (hdr.isSigned() && fwSize >= sizeof(OtaFirmwareHeader) + sizeof(OtaSignature)) {
+                fread((uint8_t*)&sig, 1, sizeof(sig), f);
             }
             // Skip to firmware data for CRC computation
-            f.seek(hdr.totalHeaderSize());
+            fseek(f, hdr.totalHeaderSize(), SEEK_SET);
         } else {
-            f.seek(0);  // Not an OTA package, rewind
+            fseek(f, 0, SEEK_SET);  // Not an OTA package, rewind
         }
     }
 
     // Compute CRC32 of firmware data only
     OtaVerify::crc32Begin();
     uint8_t buf[512];
-    while (f.available()) {
-        size_t n = f.read(buf, sizeof(buf));
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
         OtaVerify::crc32Update(buf, n);
     }
     uint32_t crc = OtaVerify::crc32Finalize();
-    f.close();
+    fclose(f);
 
     uint16_t chunkCount = (fwDataSize + OTA_CHUNK_DATA_SIZE - 1) / OTA_CHUNK_DATA_SIZE;
 
@@ -1403,29 +1453,33 @@ void OtaApp::handleEspNowOTA(const uint8_t* src, const uint8_t* data,
                 return;
             }
 
-            File f = SD_MMC.open("/firmware.ota", FILE_READ);
-            if (!f) f = SD_MMC.open("/firmware.bin", FILE_READ);
+            FILE* f = fopen("/sdcard/firmware.ota", "rb");
+            if (!f) f = fopen("/sdcard/firmware.bin", "rb");
             if (!f) return;
 
             // Determine header offset — skip OTA header to get to firmware data
+            fseek(f, 0, SEEK_END);
+            uint32_t fSize = ftell(f);
+            fseek(f, 0, SEEK_SET);
+
             uint32_t headerOffset = 0;
-            if (f.size() >= sizeof(OtaFirmwareHeader)) {
+            if (fSize >= sizeof(OtaFirmwareHeader)) {
                 OtaFirmwareHeader hdr = {};
-                f.read((uint8_t*)&hdr, sizeof(hdr));
+                fread((uint8_t*)&hdr, 1, sizeof(hdr), f);
                 if (hdr.isValid()) {
                     headerOffset = hdr.totalHeaderSize();
                 }
             }
 
             uint32_t offset = headerOffset + (uint32_t)req->chunk_idx * OTA_CHUNK_DATA_SIZE;
-            f.seek(offset);
+            fseek(f, offset, SEEK_SET);
 
             uint8_t pktBuf[sizeof(OtaChunk) + OTA_CHUNK_DATA_SIZE];
             OtaChunk* chunk = (OtaChunk*)pktBuf;
             chunk->type = OtaMsgType::CHUNK;
             chunk->chunk_idx = req->chunk_idx;
-            chunk->data_len = f.read(pktBuf + sizeof(OtaChunk), OTA_CHUNK_DATA_SIZE);
-            f.close();
+            chunk->data_len = fread(pktBuf + sizeof(OtaChunk), 1, OTA_CHUNK_DATA_SIZE, f);
+            fclose(f);
 
             _espnow.meshSend(src, pktBuf, sizeof(OtaChunk) + chunk->data_len);
             _p2p_last_activity = millis();

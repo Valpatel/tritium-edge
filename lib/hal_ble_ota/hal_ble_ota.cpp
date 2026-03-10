@@ -6,7 +6,7 @@ static constexpr const char* TAG = "ble_ota";
 #ifndef SIMULATOR
 
 #include <NimBLEDevice.h>
-#include <Update.h>
+#include "esp_ota_ops.h"
 #include <esp_ota_ops.h>
 #include "ota_header.h"
 #include "ota_verify.h"

@@ -11,17 +11,25 @@ static constexpr const char* TAG = "ota";
 // ============================================================================
 #ifndef SIMULATOR
 
-#include <Arduino.h>
-#include <WiFi.h>
-#include <Update.h>
-#include <WebServer.h>
-#include <HTTPClient.h>
-#include <SD_MMC.h>
-#include <esp_ota_ops.h>
+#include "tritium_compat.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_ota_ops.h"
+#include "esp_http_server.h"
+#include "esp_http_client.h"
 #include <esp_partition.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
-static WebServer* _server = nullptr;
+static httpd_handle_t _httpd = nullptr;
 static OtaHAL* _instance = nullptr;
+
+// OTA session state for chunked upload
+static esp_ota_handle_t _upload_handle = 0;
+static const esp_partition_t* _upload_partition = nullptr;
+static size_t _upload_written = 0;
+static bool _upload_started = false;
+static bool _upload_error = false;
 
 // ---------------------------------------------------------------------------
 // Minimal dark-themed HTML upload page
@@ -117,65 +125,174 @@ void OtaHAL::_reportProgress(size_t current, size_t total) {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP server handlers (friend functions for private member access)
+// HTTP server handlers (ESP-IDF httpd)
 // ---------------------------------------------------------------------------
-static void handleUpdatePage() {
-    _server->sendHeader("Connection", "close");
-    _server->send(200, "text/html", OTA_UPLOAD_PAGE);
+
+static esp_err_t handleUpdatePageGet(httpd_req_t* req) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    httpd_resp_send(req, OTA_UPLOAD_PAGE, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
 }
 
-void _otaHandleResult() {
-    _server->sendHeader("Connection", "close");
-    if (Update.hasError()) {
-        _server->send(500, "text/plain", "Update failed");
-    } else {
-        _server->send(200, "text/plain", "OK");
-        if (_instance) {
-            _instance->_setState(OtaState::READY_REBOOT, "Update complete, ready to reboot");
-            DBG_INFO(TAG, "Push OTA complete, ready to reboot");
+// Multipart boundary parser helper
+static bool findBoundaryEnd(const char* buf, int len, const char* boundary, int blen, int* dataStart) {
+    // Search for \r\n\r\n after the boundary+headers to find where binary data starts
+    for (int i = 0; i <= len - 4; i++) {
+        if (buf[i] == '\r' && buf[i+1] == '\n' && buf[i+2] == '\r' && buf[i+3] == '\n') {
+            *dataStart = i + 4;
+            return true;
         }
     }
+    return false;
 }
 
-void _otaHandleUpload() {
-    HTTPUpload& upload = _server->upload();
+esp_err_t handleUpdatePost(httpd_req_t* req) {
+    esp_err_t err;
+    char buf[1024];
+    int received;
+    int remaining = req->content_len;
+    bool headersParsed = false;
+    int dataStart = 0;
 
-    if (upload.status == UPLOAD_FILE_START) {
-        DBG_INFO(TAG, "Push OTA start: %s", upload.filename.c_str());
-        if (_instance) {
-            _instance->_setState(OtaState::WRITING, "Receiving firmware");
-            _instance->_progress = 0;
-        }
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-            DBG_ERROR(TAG, "Update.begin failed: %s", Update.errorString());
+    // Reset upload state
+    _upload_started = false;
+    _upload_error = false;
+    _upload_written = 0;
+    _upload_handle = 0;
+    _upload_partition = esp_ota_get_next_update_partition(NULL);
+
+    if (!_upload_partition) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No OTA partition");
+        return ESP_FAIL;
+    }
+
+    if (_instance) {
+        _instance->_setState(OtaState::WRITING, "Receiving firmware");
+        _instance->_progress = 0;
+    }
+
+    while (remaining > 0) {
+        int toRead = (remaining < (int)sizeof(buf)) ? remaining : (int)sizeof(buf);
+        received = httpd_req_recv(req, buf, toRead);
+        if (received <= 0) {
+            if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;  // Retry on timeout
+            }
+            DBG_ERROR(TAG, "httpd_req_recv error: %d", received);
+            if (_upload_started) {
+                esp_ota_abort(_upload_handle);
+            }
             if (_instance) {
-                _instance->_setError("Update.begin failed: %s", Update.errorString());
+                _instance->_setError("Connection lost during upload");
+            }
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
+            return ESP_FAIL;
+        }
+        remaining -= received;
+
+        const uint8_t* writePtr = (const uint8_t*)buf;
+        size_t writeLen = (size_t)received;
+
+        // Skip multipart headers on first chunk
+        if (!headersParsed) {
+            if (findBoundaryEnd(buf, received, nullptr, 0, &dataStart)) {
+                headersParsed = true;
+                writePtr = (const uint8_t*)buf + dataStart;
+                writeLen = (size_t)(received - dataStart);
+            } else {
+                // Headers span multiple chunks — unlikely for typical form upload
+                // but handle by skipping until we find \r\n\r\n
+                continue;
             }
         }
-    } else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-            DBG_ERROR(TAG, "Update.write failed: %s", Update.errorString());
-            if (_instance) {
-                _instance->_setError("Update.write failed: %s", Update.errorString());
+
+        // Begin OTA on first data chunk
+        if (!_upload_started && writeLen > 0) {
+            err = esp_ota_begin(_upload_partition, OTA_SIZE_UNKNOWN, &_upload_handle);
+            if (err != ESP_OK) {
+                DBG_ERROR(TAG, "esp_ota_begin failed: 0x%x", err);
+                if (_instance) {
+                    _instance->_setError("esp_ota_begin failed: 0x%x", err);
+                }
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+                return ESP_FAIL;
             }
-        } else if (_instance) {
-            size_t written = Update.progress();
-            size_t total = Update.size();
-            _instance->_reportProgress(written, total > 0 ? total : written);
+            _upload_started = true;
         }
-    } else if (upload.status == UPLOAD_FILE_END) {
-        if (_instance) {
-            _instance->_setState(OtaState::VERIFYING, "Verifying firmware");
+
+        // Strip trailing multipart boundary from last chunk
+        // The boundary ends with \r\n--<boundary>--\r\n
+        // We detect this by checking if remaining == 0 (last read)
+        if (remaining == 0 && writeLen > 2) {
+            // Search backwards for \r\n-- which starts the closing boundary
+            for (int i = (int)writeLen - 1; i >= 3; i--) {
+                if (writePtr[i-3] == '\r' && writePtr[i-2] == '\n' &&
+                    writePtr[i-1] == '-' && writePtr[i] == '-') {
+                    writeLen = (size_t)(i - 3);
+                    break;
+                }
+            }
         }
-        if (Update.end(true)) {
-            DBG_INFO(TAG, "Push OTA success, %u bytes", upload.totalSize);
-        } else {
-            DBG_ERROR(TAG, "Update.end failed: %s", Update.errorString());
+
+        if (writeLen > 0 && _upload_started) {
+            err = esp_ota_write(_upload_handle, writePtr, writeLen);
+            if (err != ESP_OK) {
+                DBG_ERROR(TAG, "esp_ota_write failed: 0x%x", err);
+                esp_ota_abort(_upload_handle);
+                _upload_started = false;
+                if (_instance) {
+                    _instance->_setError("esp_ota_write failed: 0x%x", err);
+                }
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Write failed");
+                return ESP_FAIL;
+            }
+            _upload_written += writeLen;
             if (_instance) {
-                _instance->_setError("Update.end failed: %s", Update.errorString());
+                _instance->_reportProgress(_upload_written, _upload_written);
             }
         }
     }
+
+    if (!_upload_started) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No firmware data received");
+        return ESP_FAIL;
+    }
+
+    // Finalize OTA
+    if (_instance) {
+        _instance->_setState(OtaState::VERIFYING, "Verifying firmware");
+    }
+
+    err = esp_ota_end(_upload_handle);
+    if (err != ESP_OK) {
+        DBG_ERROR(TAG, "esp_ota_end failed: 0x%x", err);
+        if (_instance) {
+            _instance->_setError("esp_ota_end failed: 0x%x", err);
+        }
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Verification failed");
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_set_boot_partition(_upload_partition);
+    if (err != ESP_OK) {
+        DBG_ERROR(TAG, "esp_ota_set_boot_partition failed: 0x%x", err);
+        if (_instance) {
+            _instance->_setError("Set boot partition failed: 0x%x", err);
+        }
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Set boot partition failed");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_hdr(req, "Connection", "close");
+    httpd_resp_sendstr(req, "OK");
+
+    if (_instance) {
+        _instance->_setState(OtaState::READY_REBOOT, "Update complete, ready to reboot");
+        DBG_INFO(TAG, "Push OTA complete, %u bytes, ready to reboot", (unsigned)_upload_written);
+    }
+
+    return ESP_OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -205,26 +322,48 @@ bool OtaHAL::startServer(uint16_t port) {
         return true;
     }
 
-    if (_server) {
-        delete _server;
-        _server = nullptr;
+    if (_httpd) {
+        httpd_stop(_httpd);
+        _httpd = nullptr;
     }
 
-    _server = new WebServer(port);
-    _server->on("/update", HTTP_GET, handleUpdatePage);
-    _server->on("/update", HTTP_POST, _otaHandleResult, _otaHandleUpload);
-    _server->begin();
-    _serverRunning = true;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = port;
+    config.stack_size = 8192;
 
+    esp_err_t err = httpd_start(&_httpd, &config);
+    if (err != ESP_OK) {
+        DBG_ERROR(TAG, "httpd_start failed: 0x%x", err);
+        return false;
+    }
+
+    // Register GET /update — serve upload page
+    httpd_uri_t get_uri = {
+        .uri      = "/update",
+        .method   = HTTP_GET,
+        .handler  = handleUpdatePageGet,
+        .user_ctx = nullptr,
+    };
+    httpd_register_uri_handler(_httpd, &get_uri);
+
+    // Register POST /update — receive firmware
+    httpd_uri_t post_uri = {
+        .uri      = "/update",
+        .method   = HTTP_POST,
+        .handler  = handleUpdatePost,
+        .user_ctx = nullptr,
+    };
+    httpd_register_uri_handler(_httpd, &post_uri);
+
+    _serverRunning = true;
     DBG_INFO(TAG, "OTA HTTP server started on port %u", port);
     return true;
 }
 
 void OtaHAL::stopServer() {
-    if (_server) {
-        _server->stop();
-        delete _server;
-        _server = nullptr;
+    if (_httpd) {
+        httpd_stop(_httpd);
+        _httpd = nullptr;
     }
     _serverRunning = false;
     DBG_INFO(TAG, "OTA HTTP server stopped");
@@ -243,67 +382,116 @@ bool OtaHAL::updateFromUrl(const char* url) {
     DBG_INFO(TAG, "Pull OTA from URL: %s", url);
     _setState(OtaState::DOWNLOADING, "Downloading firmware");
 
-    HTTPClient http;
-    http.begin(url);
-    http.setTimeout(30000);
-    int httpCode = http.GET();
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.timeout_ms = 30000;
 
-    if (httpCode != HTTP_CODE_OK) {
-        _setError("HTTP GET failed, code: %d", httpCode);
-        http.end();
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        _setError("HTTP client init failed");
         return false;
     }
 
-    int contentLength = http.getSize();
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        _setError("HTTP open failed: 0x%x", err);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    int contentLength = esp_http_client_fetch_headers(client);
+    int statusCode = esp_http_client_get_status_code(client);
+
+    if (statusCode != 200) {
+        _setError("HTTP GET failed, code: %d", statusCode);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
     if (contentLength <= 0) {
         _setError("Invalid content length: %d", contentLength);
-        http.end();
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
         return false;
     }
 
     DBG_INFO(TAG, "Firmware size: %d bytes", contentLength);
 
-    if (!Update.begin(contentLength)) {
-        _setError("Not enough space for update: %s", Update.errorString());
-        http.end();
+    const esp_partition_t* update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!update_partition) {
+        _setError("No OTA partition available");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    esp_ota_handle_t update_handle;
+    err = esp_ota_begin(update_partition, (size_t)contentLength, &update_handle);
+    if (err != ESP_OK) {
+        _setError("esp_ota_begin failed: 0x%x", err);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
         return false;
     }
 
     _setState(OtaState::WRITING, "Writing firmware to flash");
 
-    WiFiClient* stream = http.getStreamPtr();
     uint8_t buf[1024];
     size_t written = 0;
 
-    while (http.connected() && written < (size_t)contentLength) {
-        size_t available = stream->available();
-        if (available) {
-            size_t toRead = (available < sizeof(buf)) ? available : sizeof(buf);
-            size_t bytesRead = stream->readBytes(buf, toRead);
-            size_t bytesWritten = Update.write(buf, bytesRead);
-            if (bytesWritten != bytesRead) {
-                _setError("Write failed at %u bytes: %s", written, Update.errorString());
-                Update.abort();
-                http.end();
+    while (written < (size_t)contentLength) {
+        int bytesRead = esp_http_client_read(client, (char*)buf, sizeof(buf));
+        if (bytesRead < 0) {
+            _setError("HTTP read failed at %u bytes", (unsigned)written);
+            esp_ota_abort(update_handle);
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return false;
+        }
+        if (bytesRead == 0) {
+            // Connection closed prematurely
+            if (written < (size_t)contentLength) {
+                _setError("Connection closed at %u/%d bytes", (unsigned)written, contentLength);
+                esp_ota_abort(update_handle);
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
                 return false;
             }
-            written += bytesWritten;
-            _reportProgress(written, contentLength);
+            break;
         }
-        delay(1);
+
+        err = esp_ota_write(update_handle, buf, (size_t)bytesRead);
+        if (err != ESP_OK) {
+            _setError("esp_ota_write failed at %u bytes: 0x%x", (unsigned)written, err);
+            esp_ota_abort(update_handle);
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return false;
+        }
+        written += (size_t)bytesRead;
+        _reportProgress(written, (size_t)contentLength);
     }
 
-    http.end();
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
 
     _setState(OtaState::VERIFYING, "Verifying firmware");
 
-    if (!Update.end(true)) {
-        _setError("Update verification failed: %s", Update.errorString());
+    err = esp_ota_end(update_handle);
+    if (err != ESP_OK) {
+        _setError("esp_ota_end failed: 0x%x", err);
+        return false;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        _setError("Set boot partition failed: 0x%x", err);
         return false;
     }
 
     _setState(OtaState::READY_REBOOT, "Update complete, ready to reboot");
-    DBG_INFO(TAG, "Pull OTA complete, %u bytes written", written);
+    DBG_INFO(TAG, "Pull OTA complete, %u bytes written", (unsigned)written);
     return true;
 }
 
@@ -313,32 +501,50 @@ bool OtaHAL::updateFromSD(const char* path) {
         return false;
     }
 
-    DBG_INFO(TAG, "SD OTA from: %s", path);
+    // Build full VFS path: /sdcard/<path>
+    char fullPath[160];
+    if (path[0] == '/') {
+        snprintf(fullPath, sizeof(fullPath), "/sdcard%s", path);
+    } else {
+        snprintf(fullPath, sizeof(fullPath), "/sdcard/%s", path);
+    }
+
+    DBG_INFO(TAG, "SD OTA from: %s", fullPath);
     _setState(OtaState::CHECKING, "Checking SD card");
 
-    if (!SD_MMC.begin()) {
-        _setError("SD card mount failed");
+    // Check file exists and get size via stat
+    struct stat st;
+    if (stat(fullPath, &st) != 0) {
+        _setError("Cannot stat %s", fullPath);
         return false;
     }
 
-    File firmware = SD_MMC.open(path, FILE_READ);
-    if (!firmware) {
-        _setError("Cannot open %s", path);
-        return false;
-    }
-
-    size_t fileSize = firmware.size();
+    size_t fileSize = (size_t)st.st_size;
     if (fileSize == 0) {
         _setError("Firmware file is empty");
-        firmware.close();
         return false;
     }
 
-    DBG_INFO(TAG, "Firmware file size: %u bytes", fileSize);
+    FILE* firmware = fopen(fullPath, "rb");
+    if (!firmware) {
+        _setError("Cannot open %s", fullPath);
+        return false;
+    }
 
-    if (!Update.begin(fileSize)) {
-        _setError("Not enough space: %s", Update.errorString());
-        firmware.close();
+    DBG_INFO(TAG, "Firmware file size: %u bytes", (unsigned)fileSize);
+
+    const esp_partition_t* update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!update_partition) {
+        _setError("No OTA partition available");
+        fclose(firmware);
+        return false;
+    }
+
+    esp_ota_handle_t update_handle;
+    esp_err_t err = esp_ota_begin(update_partition, fileSize, &update_handle);
+    if (err != ESP_OK) {
+        _setError("esp_ota_begin failed: 0x%x", err);
+        fclose(firmware);
         return false;
     }
 
@@ -347,39 +553,53 @@ bool OtaHAL::updateFromSD(const char* path) {
     uint8_t buf[1024];
     size_t written = 0;
 
-    while (firmware.available()) {
-        size_t toRead = firmware.available();
+    while (written < fileSize) {
+        size_t toRead = fileSize - written;
         if (toRead > sizeof(buf)) toRead = sizeof(buf);
-        size_t bytesRead = firmware.read(buf, toRead);
-        size_t bytesWritten = Update.write(buf, bytesRead);
-        if (bytesWritten != bytesRead) {
-            _setError("Write failed at %u bytes: %s", written, Update.errorString());
-            Update.abort();
-            firmware.close();
+        size_t bytesRead = fread(buf, 1, toRead, firmware);
+        if (bytesRead == 0) {
+            _setError("Read failed at %u bytes", (unsigned)written);
+            esp_ota_abort(update_handle);
+            fclose(firmware);
             return false;
         }
-        written += bytesWritten;
+
+        err = esp_ota_write(update_handle, buf, bytesRead);
+        if (err != ESP_OK) {
+            _setError("esp_ota_write failed at %u bytes: 0x%x", (unsigned)written, err);
+            esp_ota_abort(update_handle);
+            fclose(firmware);
+            return false;
+        }
+        written += bytesRead;
         _reportProgress(written, fileSize);
     }
 
-    firmware.close();
+    fclose(firmware);
 
     _setState(OtaState::VERIFYING, "Verifying firmware");
 
-    if (!Update.end(true)) {
-        _setError("Verification failed: %s", Update.errorString());
+    err = esp_ota_end(update_handle);
+    if (err != ESP_OK) {
+        _setError("esp_ota_end failed: 0x%x", err);
+        return false;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        _setError("Set boot partition failed: 0x%x", err);
         return false;
     }
 
     // Rename firmware.bin to firmware.bin.bak
-    char bakPath[128];
-    snprintf(bakPath, sizeof(bakPath), "%s.bak", path);
-    SD_MMC.remove(bakPath);  // Remove old backup if present
-    SD_MMC.rename(path, bakPath);
-    DBG_INFO(TAG, "Renamed %s -> %s", path, bakPath);
+    char bakPath[176];
+    snprintf(bakPath, sizeof(bakPath), "%s.bak", fullPath);
+    remove(bakPath);  // Remove old backup if present
+    rename(fullPath, bakPath);
+    DBG_INFO(TAG, "Renamed %s -> %s", fullPath, bakPath);
 
     _setState(OtaState::READY_REBOOT, "SD update complete, ready to reboot");
-    DBG_INFO(TAG, "SD OTA complete, %u bytes written", written);
+    DBG_INFO(TAG, "SD OTA complete, %u bytes written", (unsigned)written);
     return true;
 }
 
@@ -408,15 +628,14 @@ void OtaHAL::onStateChange(OtaStateCb cb) {
 }
 
 void OtaHAL::process() {
-    if (_serverRunning && _server) {
-        _server->handleClient();
-    }
+    // ESP-IDF httpd runs in its own task — no polling needed
+    (void)_serverRunning;
 }
 
 void OtaHAL::reboot() {
     DBG_INFO(TAG, "Rebooting...");
     delay(200);
-    ESP.restart();
+    esp_restart();
 }
 
 bool OtaHAL::rollback() {
@@ -473,7 +692,7 @@ OtaHAL::TestResult OtaHAL::runTest() {
 
     DBG_INFO(TAG, "Running partition: %s", result.running_partition);
     DBG_INFO(TAG, "Next OTA partition: %s (%u bytes)",
-             next ? next->label : "none", result.max_firmware_size);
+             next ? next->label : "none", (unsigned)result.max_firmware_size);
     DBG_INFO(TAG, "Dual OTA partitions: %s", result.partition_ok ? "YES" : "NO");
 
     // Test server start/stop
@@ -500,11 +719,11 @@ OtaHAL::TestResult OtaHAL::runTest() {
              result.rollback_check_ok ? "OK" : "FAIL",
              canRollback() ? "yes" : "no");
 
-    // Test SD card access
-    if (SD_MMC.begin()) {
+    // Test SD card access via VFS
+    struct stat sd_stat;
+    if (stat("/sdcard", &sd_stat) == 0) {
         result.sd_detect_ok = true;
-        DBG_INFO(TAG, "SD card: detected (%llu MB total)",
-                 SD_MMC.totalBytes() / (1024 * 1024));
+        DBG_INFO(TAG, "SD card: detected (VFS mounted at /sdcard)");
     } else {
         result.sd_detect_ok = false;
         DBG_INFO(TAG, "SD card: not detected");

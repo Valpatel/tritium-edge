@@ -5,11 +5,9 @@
 
 #include "service.h"
 
-// Only pull in Wire when touch diagnostics are actually needed.
-// Wire (old I2C driver) conflicts with ESP-IDF 5.x i2c_master on builds
-// that don't gate it out via lib_ignore (e.g. fleet builds without touch).
+// Only pull in TritiumI2C when touch diagnostics are actually needed.
 #if defined(ENABLE_DIAG) && __has_include("hal_touch.h") && defined(TOUCH_SDA)
-#include <Wire.h>
+#include "tritium_i2c.h"
 #endif
 
 #if defined(ENABLE_DIAG) && __has_include("hal_diag.h")
@@ -138,17 +136,17 @@ public:
         static char _cmd_json[2048];  // shared across diag serial commands
         if (strcmp(cmd, "DIAG") == 0) {
             int len = hal_diag::full_report_json(_cmd_json, sizeof(_cmd_json));
-            if (len > 0) Serial.println(_cmd_json);
+            if (len > 0) Serial.printf("%s\n", _cmd_json);
             return true;
         }
         if (strcmp(cmd, "HEALTH") == 0) {
             int len = hal_diag::health_to_json(_cmd_json, sizeof(_cmd_json));
-            if (len > 0) Serial.println(_cmd_json);
+            if (len > 0) Serial.printf("%s\n", _cmd_json);
             return true;
         }
         if (strcmp(cmd, "ANOMALIES") == 0) {
             int len = hal_diag::anomalies_to_json(_cmd_json, sizeof(_cmd_json));
-            if (len > 0) Serial.println(_cmd_json);
+            if (len > 0) Serial.printf("%s\n", _cmd_json);
             return true;
         }
 #endif

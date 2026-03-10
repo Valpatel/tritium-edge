@@ -10,7 +10,7 @@
 #include <cstdio>
 
 #ifndef SIMULATOR
-#include <Arduino.h>
+#include "tritium_compat.h"
 #endif
 
 // --- Command buffer for BLE-received data ---

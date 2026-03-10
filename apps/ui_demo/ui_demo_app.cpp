@@ -11,7 +11,7 @@ static uint32_t millis() { return SDL_GetTicks(); }
 #define DISPLAY_DRIVER "Simulator"
 #endif
 #else
-#include <Arduino.h>
+#include "tritium_compat.h"
 #endif
 
 static void on_settings_item_click(lv_event_t* e) {

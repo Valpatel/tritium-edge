@@ -69,11 +69,15 @@ void DebugLog::log(uint8_t level, const char* tag, const char* fmt, ...) {
 
 #else
 // ---- ESP32 implementation ----
-#include <Arduino.h>
-#include <WiFi.h>
+#include "tritium_compat.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include <lwip/sockets.h>
+#include <lwip/netdb.h>
+#include <errno.h>
 
-static WiFiServer* _tcp_server = nullptr;
-static WiFiClient _tcp_clients[3];  // max 3 simultaneous TCP debug clients
+static int _tcp_server_fd = -1;
+static int _tcp_client_fds[3] = {-1, -1, -1};
 static const int MAX_TCP_CLIENTS = 3;
 
 void DebugLog::init(uint32_t backends) {
@@ -87,42 +91,75 @@ void DebugLog::setLevel(uint8_t level) { _level = level; }
 uint8_t DebugLog::getLevel() { return _level; }
 
 void DebugLog::startTcpServer(uint16_t port) {
-    if (_tcp_server) return;
-    _tcp_server = new WiFiServer(port);
-    _tcp_server->begin();
-    _tcp_server->setNoDelay(true);
+    if (_tcp_server_fd >= 0) return;
+    _tcp_server_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (_tcp_server_fd < 0) return;
+
+    int opt = 1;
+    setsockopt(_tcp_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    // Set non-blocking
+    int flags = fcntl(_tcp_server_fd, F_GETFL, 0);
+    fcntl(_tcp_server_fd, F_SETFL, flags | O_NONBLOCK);
+    // Enable TCP_NODELAY
+    setsockopt(_tcp_server_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+    if (bind(_tcp_server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0 ||
+        listen(_tcp_server_fd, 3) < 0) {
+        close(_tcp_server_fd);
+        _tcp_server_fd = -1;
+        return;
+    }
     _backends |= DBG_BACKEND_TCP;
 }
 
 void DebugLog::stopTcpServer() {
-    if (!_tcp_server) return;
+    if (_tcp_server_fd < 0) return;
     for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
-        if (_tcp_clients[i]) _tcp_clients[i].stop();
+        if (_tcp_client_fds[i] >= 0) {
+            close(_tcp_client_fds[i]);
+            _tcp_client_fds[i] = -1;
+        }
     }
-    _tcp_server->stop();
-    delete _tcp_server;
-    _tcp_server = nullptr;
+    close(_tcp_server_fd);
+    _tcp_server_fd = -1;
     _backends &= ~DBG_BACKEND_TCP;
 }
 
 void DebugLog::poll() {
-    if (!_tcp_server) return;
+    if (_tcp_server_fd < 0) return;
 
-    // Accept new clients
-    WiFiClient newClient = _tcp_server->available();
-    if (newClient) {
+    // Accept new clients (non-blocking)
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    int new_fd = accept(_tcp_server_fd, (struct sockaddr*)&client_addr, &addr_len);
+    if (new_fd >= 0) {
+        // Set new client non-blocking
+        int flags = fcntl(new_fd, F_GETFL, 0);
+        fcntl(new_fd, F_SETFL, flags | O_NONBLOCK);
+        bool placed = false;
         for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
-            if (!_tcp_clients[i] || !_tcp_clients[i].connected()) {
-                _tcp_clients[i] = newClient;
+            if (_tcp_client_fds[i] < 0) {
+                _tcp_client_fds[i] = new_fd;
+                placed = true;
                 break;
             }
         }
+        if (!placed) close(new_fd);
     }
 
-    // Clean up disconnected
+    // Clean up disconnected clients
     for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
-        if (_tcp_clients[i] && !_tcp_clients[i].connected()) {
-            _tcp_clients[i].stop();
+        if (_tcp_client_fds[i] >= 0) {
+            char tmp;
+            int r = recv(_tcp_client_fds[i], &tmp, 1, MSG_PEEK | MSG_DONTWAIT);
+            if (r == 0) {  // peer closed
+                close(_tcp_client_fds[i]);
+                _tcp_client_fds[i] = -1;
+            }
         }
     }
 }
@@ -130,14 +167,17 @@ void DebugLog::poll() {
 void DebugLog::output(const char* buf, size_t len) {
     // USB Serial
     if (_backends & DBG_BACKEND_SERIAL) {
-        Serial.write(buf, len);
+        Serial.write((const uint8_t*)buf, len);
     }
 
     // TCP clients
-    if ((_backends & DBG_BACKEND_TCP) && _tcp_server) {
+    if ((_backends & DBG_BACKEND_TCP) && _tcp_server_fd >= 0) {
         for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
-            if (_tcp_clients[i] && _tcp_clients[i].connected()) {
-                _tcp_clients[i].write(buf, len);
+            if (_tcp_client_fds[i] >= 0) {
+                if (send(_tcp_client_fds[i], buf, len, MSG_DONTWAIT) < 0) {
+                    close(_tcp_client_fds[i]);
+                    _tcp_client_fds[i] = -1;
+                }
             }
         }
     }

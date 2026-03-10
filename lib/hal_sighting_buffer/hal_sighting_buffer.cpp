@@ -20,14 +20,16 @@ Stats get_stats() { return {}; }
 
 #else
 
-#include <Arduino.h>
-#include <SD_MMC.h>
-#include <FS.h>
-#include <HTTPClient.h>
-#include <WiFi.h>
+#include "tritium_compat.h"
+// SD card via VFS — use POSIX file ops on /sdcard/
+#include "esp_http_client.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
 #include <cstring>
 #include <cstdio>
 #include <ctime>
+#include <sys/stat.h>
+#include <dirent.h>
 
 #if __has_include("hal_diag.h")
 #include "hal_diag.h"
@@ -106,8 +108,11 @@ static void make_filename(char* out, size_t out_size) {
 
 static bool ensure_dir() {
     if (!_sd_available) return false;
-    if (!SD_MMC.exists(_config.base_dir)) {
-        return SD_MMC.mkdir(_config.base_dir);
+    char fulldir[128];
+    snprintf(fulldir, sizeof(fulldir), "/sdcard%s", _config.base_dir);
+    struct stat st;
+    if (stat(fulldir, &st) != 0) {
+        return (mkdir(fulldir, 0755) == 0);
     }
     return true;
 }
@@ -118,11 +123,11 @@ static bool check_file_rotation() {
         return true;
     }
     // Check if current file exceeds max size
-    File f = SD_MMC.open(_current_file, FILE_READ);
-    if (f) {
-        size_t sz = f.size();
-        f.close();
-        if (sz >= _config.max_file_size) {
+    char fullpath[128];
+    snprintf(fullpath, sizeof(fullpath), "/sdcard%s", _current_file);
+    struct stat st;
+    if (stat(fullpath, &st) == 0) {
+        if ((size_t)st.st_size >= _config.max_file_size) {
             make_filename(_current_file, sizeof(_current_file));
             return true;
         }
@@ -172,8 +177,8 @@ bool init(const BufferConfig& config) {
     _current_file[0] = '\0';
     _last_flush_ms = millis();
 
-    // Check if SD card is available
-    _sd_available = SD_MMC.exists("/");
+    // Check if SD card is available (VFS mounted at /sdcard)
+    { struct stat st; _sd_available = (stat("/sdcard", &st) == 0 && S_ISDIR(st.st_mode)); }
     if (_sd_available) {
         ensure_dir();
         Serial.printf("[sighting] SD card available, dir: %s\n", _config.base_dir);
@@ -268,7 +273,9 @@ int flush_to_sd() {
         return -1;
     }
 
-    File f = SD_MMC.open(_current_file, FILE_APPEND);
+    char fullpath[128];
+    snprintf(fullpath, sizeof(fullpath), "/sdcard%s", _current_file);
+    FILE* f = fopen(fullpath, "a");
     if (!f) {
         Serial.printf("[sighting] Failed to open %s for append\n", _current_file);
         xSemaphoreGive(_mutex);
@@ -288,13 +295,13 @@ int flush_to_sd() {
     for (uint16_t i = 0; i < _ring_count; i++) {
         uint16_t idx = (start + i) % _config.max_memory_entries;
         if (_ring[idx].json[0] != '\0') {
-            f.print(_ring[idx].json);
-            f.print("\n");
+            fputs(_ring[idx].json, f);
+            fputc('\n', f);
             flushed++;
         }
     }
 
-    f.close();
+    fclose(f);
 
     _ring_count = 0;
     _ring_head = 0;
@@ -310,23 +317,28 @@ int get_pending_count() {
     if (!_inited || !_sd_available) return 0;
 
     int count = 0;
-    File dir = SD_MMC.open(_config.base_dir);
-    if (!dir || !dir.isDirectory()) return 0;
+    char fulldir[128];
+    snprintf(fulldir, sizeof(fulldir), "/sdcard%s", _config.base_dir);
+    DIR* dir = opendir(fulldir);
+    if (!dir) return 0;
 
-    File f = dir.openNextFile();
-    while (f) {
-        const char* name = f.name();
-        size_t len = strlen(name);
-        if (len > 6 && strcmp(name + len - 6, ".jsonl") == 0) {
-            // Count lines in the file
-            while (f.available()) {
-                if (f.read() == '\n') count++;
+    struct dirent* ent;
+    while ((ent = readdir(dir)) != nullptr) {
+        size_t len = strlen(ent->d_name);
+        if (len > 6 && strcmp(ent->d_name + len - 6, ".jsonl") == 0) {
+            char filepath[192];
+            snprintf(filepath, sizeof(filepath), "%s/%s", fulldir, ent->d_name);
+            FILE* f = fopen(filepath, "r");
+            if (f) {
+                int c;
+                while ((c = fgetc(f)) != EOF) {
+                    if (c == '\n') count++;
+                }
+                fclose(f);
             }
         }
-        f.close();
-        f = dir.openNextFile();
     }
-    dir.close();
+    closedir(dir);
     return count;
 }
 
@@ -335,13 +347,15 @@ int sync_to_server(const char* server_url, const char* device_id) {
     if (!server_url || !device_id) return -1;
 
     // Check WiFi connectivity
-    if (WiFi.status() != WL_CONNECTED) return -1;
+    { wifi_ap_record_t _ap; if (esp_wifi_sta_get_ap_info(&_ap) != ESP_OK) return -1; }
 
     // First flush any in-memory data
     flush_to_sd();
 
-    File dir = SD_MMC.open(_config.base_dir);
-    if (!dir || !dir.isDirectory()) return -1;
+    char fulldir[128];
+    snprintf(fulldir, sizeof(fulldir), "/sdcard%s", _config.base_dir);
+    DIR* dir = opendir(fulldir);
+    if (!dir) return -1;
 
     char url[256];
     snprintf(url, sizeof(url), "%s/api/devices/%s/sightings", server_url, device_id);
@@ -349,33 +363,32 @@ int sync_to_server(const char* server_url, const char* device_id) {
     int total_uploaded = 0;
 
     // Collect file names first (can't iterate dir while modifying)
-    char files[16][64];
+    char files[16][128];
     int file_count = 0;
-    File entry = dir.openNextFile();
-    while (entry && file_count < 16) {
-        const char* name = entry.name();
-        size_t len = strlen(name);
-        if (len > 6 && strcmp(name + len - 6, ".jsonl") == 0) {
+    struct dirent* ent;
+    while ((ent = readdir(dir)) != nullptr && file_count < 16) {
+        size_t len = strlen(ent->d_name);
+        if (len > 6 && strcmp(ent->d_name + len - 6, ".jsonl") == 0) {
             snprintf(files[file_count], sizeof(files[0]), "%s/%s",
-                _config.base_dir, name);
+                fulldir, ent->d_name);
             file_count++;
         }
-        entry.close();
-        entry = dir.openNextFile();
     }
-    dir.close();
+    closedir(dir);
 
     for (int fi = 0; fi < file_count; fi++) {
         // Read the file
-        File f = SD_MMC.open(files[fi], FILE_READ);
+        FILE* f = fopen(files[fi], "r");
         if (!f) continue;
 
-        // Build POST payload: {"device_id":"...","sightings":[...]}
-        // Read all lines into the sightings array
-        size_t file_size = f.size();
+        // Get file size
+        fseek(f, 0, SEEK_END);
+        size_t file_size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+
         if (file_size == 0) {
-            f.close();
-            SD_MMC.remove(files[fi]);
+            fclose(f);
+            remove(files[fi]);
             continue;
         }
 
@@ -384,7 +397,7 @@ int sync_to_server(const char* server_url, const char* device_id) {
         size_t body_size = file_size + 256;
         char* body = (char*)malloc(body_size);
         if (!body) {
-            f.close();
+            fclose(f);
             continue;
         }
 
@@ -396,12 +409,9 @@ int sync_to_server(const char* server_url, const char* device_id) {
         char line_buf[MAX_ENTRY_LEN];
         int li = 0;
 
-        while (f.available() && pos < (int)body_size - MAX_ENTRY_LEN - 10) {
-            char c = f.read();
-            if (c == '\n' || !f.available()) {
-                if (!f.available() && c != '\n') {
-                    line_buf[li++] = c;
-                }
+        int ch;
+        while ((ch = fgetc(f)) != EOF && pos < (int)body_size - MAX_ENTRY_LEN - 10) {
+            if (ch == '\n') {
                 line_buf[li] = '\0';
                 if (li > 0) {
                     if (!first) body[pos++] = ',';
@@ -412,38 +422,55 @@ int sync_to_server(const char* server_url, const char* device_id) {
                 }
                 li = 0;
             } else if (li < MAX_ENTRY_LEN - 1) {
-                line_buf[li++] = c;
+                line_buf[li++] = (char)ch;
             }
         }
-        f.close();
+        // Handle last line without trailing newline
+        if (li > 0) {
+            line_buf[li] = '\0';
+            if (!first) body[pos++] = ',';
+            first = false;
+            int wrote = snprintf(body + pos, body_size - pos, "%s", line_buf);
+            pos += wrote;
+            line_count++;
+        }
+        fclose(f);
 
         pos += snprintf(body + pos, body_size - pos, "]}");
 
         if (line_count == 0) {
             free(body);
-            SD_MMC.remove(files[fi]);
+            remove(files[fi]);
             continue;
         }
 
-        // POST to server
-        HTTPClient http;
-        http.begin(url);
-        http.addHeader("Content-Type", "application/json");
-        int httpCode = http.POST((uint8_t*)body, pos);
+        // POST to server using ESP-IDF HTTP client
+        esp_http_client_config_t http_config = {};
+        http_config.url = url;
+        http_config.method = HTTP_METHOD_POST;
+        esp_http_client_handle_t client = esp_http_client_init(&http_config);
+        if (!client) {
+            free(body);
+            Serial.printf("[sighting] Failed to create HTTP client\n");
+            break;
+        }
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+        esp_http_client_set_post_field(client, body, pos);
+        esp_err_t err = esp_http_client_perform(client);
+        int httpCode = esp_http_client_get_status_code(client);
+        esp_http_client_cleanup(client);
         free(body);
 
-        if (httpCode == 200) {
-            SD_MMC.remove(files[fi]);
+        if (err == ESP_OK && httpCode == 200) {
+            remove(files[fi]);
             total_uploaded += line_count;
             Serial.printf("[sighting] Synced %d sightings from %s\n",
                 line_count, files[fi]);
         } else {
-            Serial.printf("[sighting] Sync failed for %s: HTTP %d\n",
-                files[fi], httpCode);
-            http.end();
+            Serial.printf("[sighting] Sync failed for %s: HTTP %d (err=%s)\n",
+                files[fi], httpCode, esp_err_to_name(err));
             break;  // Stop on first failure
         }
-        http.end();
     }
 
     if (total_uploaded > 0) {

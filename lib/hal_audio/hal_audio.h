@@ -4,16 +4,12 @@
 // Usage:
 //   #include "hal_audio.h"
 //   AudioHAL audio;
-//   audio.initLgfx(0, 0x18);  // ESP32 via lgfx::i2c (shared bus)
-//   audio.init(Wire);          // ESP32 via Arduino Wire
+//   audio.initLgfx(0, 0x18);  // Legacy API (now uses i2c0 internally)
+//   audio.init();              // ESP32 (uses global i2c0)
 //   audio.init();              // simulator
 
 #include <cstdint>
 #include <cstddef>
-
-#ifndef SIMULATOR
-class TwoWire;
-#endif
 
 // Audio sample format
 struct AudioBuffer {
@@ -28,7 +24,7 @@ public:
 #ifdef SIMULATOR
     bool init();
 #else
-    bool init(TwoWire &wire);
+    bool init();
     bool initLgfx(uint8_t i2c_port, uint8_t addr = 0x18);
 #endif
 
@@ -64,10 +60,6 @@ private:
     uint32_t _sample_rate = 16000;
 
 #ifndef SIMULATOR
-    // I2C mode
-    TwoWire *_wire = nullptr;
-    bool _use_lgfx = false;
-    uint8_t _lgfx_port = 0;
     uint8_t _codec_addr = 0;
     int _i2s_port = 0;
 
