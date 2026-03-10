@@ -44,6 +44,14 @@
 static uint32_t millis() { return SDL_GetTicks(); }
 #endif
 
+// Event bus → toast bridge
+#if __has_include("os_events.h")
+#include "os_events.h"
+#define EVENTS_AVAILABLE 1
+#else
+#define EVENTS_AVAILABLE 0
+#endif
+
 namespace tritium_shell {
 
 // ---------------------------------------------------------------------------
@@ -732,6 +740,29 @@ bool init(esp_lcd_panel_handle_t panel, int width, int height) {
 
     // Initialize lock screen (loads stored PIN from NVS)
     lock_screen::init();
+
+    // Subscribe to key events for toast notifications
+#if EVENTS_AVAILABLE
+    auto& bus = TritiumEventBus::instance();
+    bus.subscribe(EVT_WIFI_CONNECTED, [](const TritiumEvent&, void*) {
+        toast("WiFi connected", NOTIFY_SUCCESS);
+    }, nullptr);
+    bus.subscribe(EVT_WIFI_DISCONNECTED, [](const TritiumEvent&, void*) {
+        toast("WiFi disconnected", NOTIFY_WARNING);
+    }, nullptr);
+    bus.subscribe(EVT_MESH_PEER_JOINED, [](const TritiumEvent&, void*) {
+        toast("Mesh peer joined", NOTIFY_INFO);
+    }, nullptr);
+    bus.subscribe(EVT_MESH_PEER_LEFT, [](const TritiumEvent&, void*) {
+        toast("Mesh peer left", NOTIFY_WARNING);
+    }, nullptr);
+    bus.subscribe(EVT_POWER_LOW_BATTERY, [](const TritiumEvent&, void*) {
+        toast("Low battery!", NOTIFY_ERROR);
+    }, nullptr);
+    bus.subscribe(EVT_POWER_USB_CONNECT, [](const TritiumEvent&, void*) {
+        toast("USB connected", NOTIFY_INFO);
+    }, nullptr);
+#endif
 
     // Don't show launcher yet — caller registers additional apps first,
     // then calls showLauncher() to build the grid with all apps visible.

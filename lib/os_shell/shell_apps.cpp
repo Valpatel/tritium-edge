@@ -4402,6 +4402,10 @@ void register_all_apps() {
     tritium_shell::registerApp({"Chat", "Mesh messaging", LV_SYMBOL_SHUFFLE,
                                 false, mesh_chat_create});
 
+    // Mesh Viewer — peers, topology, broadcast, stats
+    tritium_shell::registerApp({"Mesh", "Network peers", LV_SYMBOL_LOOP,
+                                true, mesh_app_create});
+
     // Terminal — on-device serial console for debugging and commands
     tritium_shell::registerApp({"Terminal", "Serial console", LV_SYMBOL_KEYBOARD,
                                 true, terminal_create});
