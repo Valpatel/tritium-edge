@@ -95,11 +95,11 @@ Run `make new-app NAME=myapp` to scaffold, or manually:
 
 ## Architecture Decisions
 
-- **LovyanGFX** over TFT_eSPI: Better QSPI support, cleaner multi-panel API, built-in sprite double-buffering, active maintenance for ESP32-S3.
+- **LovyanGFX** over TFT_eSPI: Better QSPI support, cleaner multi-panel API, built-in sprite double-buffering, active maintenance for ESP32-S3. Display drivers use esp_lcd underneath.
 - **Compile-time board selection**: Each board gets a PlatformIO environment with `-DBOARD_*` flag. `display_init.h` uses `#if defined()` to select the right LGFX class. No runtime overhead.
 - **App pattern**: Apps inherit from `App` base class with virtual `setup()`/`loop()`. Selected via `-DAPP_*` build flag.
 - **PSRAM sprites**: All boards have 8MB PSRAM. Use `LGFX_Sprite` with `setPsram(true)` for double-buffered rendering.
-- **HAL dual-mode I2C**: Peripherals on shared I2C bus support both Arduino Wire and LovyanGFX lgfx::i2c backends.
+- **HAL I2C**: Peripherals on shared I2C bus use ESP-IDF i2c_master driver (TritiumI2C wrapper).
 
 ## Common Pitfalls
 
@@ -120,7 +120,7 @@ Run `make new-app NAME=myapp` to scaffold, or manually:
 
 ## Coding Conventions
 
-- C++17, Arduino framework
+- C++17, ESP-IDF 5.5.2
 - 4-space indentation, 100-column line width
 - Board pin headers: `SCREAMING_SNAKE_CASE` for pin defines
 - App classes: `PascalCase` + `App` suffix (e.g., `CameraApp`)
