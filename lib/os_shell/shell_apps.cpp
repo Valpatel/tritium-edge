@@ -4410,6 +4410,10 @@ void register_all_apps() {
     tritium_shell::registerApp({"BLE", "Device scanner", LV_SYMBOL_BLUETOOTH,
                                 true, ble_app_create});
 
+    // System Monitor — heap, PSRAM, CPU, uptime, network
+    tritium_shell::registerApp({"Monitor", "System health", LV_SYMBOL_CHARGE,
+                                true, sysmon_app_create});
+
     // Terminal — on-device serial console for debugging and commands
     tritium_shell::registerApp({"Terminal", "Serial console", LV_SYMBOL_KEYBOARD,
                                 true, terminal_create});
