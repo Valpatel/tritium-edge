@@ -62,6 +62,11 @@ static WifiScannerService svc_wifi_scan;
 static SightingBufferService svc_sighting;
 #endif
 
+#if defined(ENABLE_SIGHTING_LOGGER)
+#include "sighting_logger_service.h"
+static SightingLoggerService svc_logger;
+#endif
+
 #if defined(ENABLE_LORA)
 #include "lora_service.h"
 static LoraService svc_lora;
@@ -213,6 +218,9 @@ static void registerServices() {
 #endif
 #if defined(ENABLE_SIGHTING_BUFFER)
     ServiceRegistry::add(&svc_sighting);
+#endif
+#if defined(ENABLE_SIGHTING_LOGGER)
+    ServiceRegistry::add(&svc_logger);
 #endif
 #if defined(ENABLE_LORA)
     ServiceRegistry::add(&svc_lora);

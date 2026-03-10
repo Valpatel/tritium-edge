@@ -8,10 +8,14 @@
 #include "hal_wifi_scanner.h"
 #endif
 
+#if defined(ENABLE_SIGHTING_LOGGER) && __has_include("hal_sighting_logger.h")
+#include "hal_sighting_logger.h"
+#endif
+
 class WifiScannerService : public ServiceInterface {
 public:
     const char* name() const override { return "wifi_scanner"; }
-    uint8_t capabilities() const override { return SVC_SERIAL_CMD; }
+    uint8_t capabilities() const override { return SVC_SERIAL_CMD | SVC_TICK; }
     int initPriority() const override { return 50; }
 
     bool init() override {
@@ -26,6 +30,24 @@ public:
         return false;
 #else
         return false;
+#endif
+    }
+
+    void tick() override {
+#if defined(ENABLE_WIFI_SCANNER) && defined(ENABLE_SIGHTING_LOGGER)
+        // Feed WiFi scan results to the SQLite logger every 30s
+        if (_active && hal_sighting_logger::is_active()) {
+            uint32_t now = millis();
+            if ((now - _last_logger_feed) >= 30000) {
+                _last_logger_feed = now;
+                hal_wifi_scanner::WifiNetwork nets[WIFI_SCANNER_MAX_NETWORKS];
+                int n = hal_wifi_scanner::get_networks(nets, WIFI_SCANNER_MAX_NETWORKS);
+                for (int i = 0; i < n; i++) {
+                    hal_sighting_logger::log_wifi(nets[i].ssid, nets[i].bssid,
+                        nets[i].rssi, nets[i].channel, nets[i].auth_type);
+                }
+            }
+        }
 #endif
     }
 
@@ -58,4 +80,5 @@ public:
 
 private:
     bool _active = false;
+    uint32_t _last_logger_feed = 0;
 };

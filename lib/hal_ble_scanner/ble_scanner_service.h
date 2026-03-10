@@ -12,6 +12,10 @@
 #include "hal_sighting_buffer.h"
 #endif
 
+#if defined(ENABLE_SIGHTING_LOGGER) && __has_include("hal_sighting_logger.h")
+#include "hal_sighting_logger.h"
+#endif
+
 class BleScannerService : public ServiceInterface {
 public:
     const char* name() const override { return "ble_scanner"; }
@@ -96,6 +100,21 @@ public:
                 devs[i].addr[3], devs[i].addr[4], devs[i].addr[5]);
             hal_sighting_buffer::add_ble_sighting(mac_str, devs[i].name,
                 devs[i].rssi, devs[i].is_known, devs[i].seen_count);
+        }
+#endif
+
+        // Log BLE sightings to SQLite (if logger enabled)
+#if defined(ENABLE_SIGHTING_LOGGER)
+        if (hal_sighting_logger::is_active()) {
+            for (int i = 0; i < n; i++) {
+                char mac_str[18];
+                snprintf(mac_str, sizeof(mac_str),
+                    "%02X:%02X:%02X:%02X:%02X:%02X",
+                    devs[i].addr[0], devs[i].addr[1], devs[i].addr[2],
+                    devs[i].addr[3], devs[i].addr[4], devs[i].addr[5]);
+                hal_sighting_logger::log_ble(mac_str, devs[i].name,
+                    devs[i].rssi, devs[i].is_known);
+            }
         }
 #endif
 
