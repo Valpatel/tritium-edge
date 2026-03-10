@@ -10,6 +10,7 @@
 #include "tritium_splash.h"  // TRITIUM_VERSION
 #include "os_settings.h"     // TritiumSettings, SettingsDomain
 #include <cstdio>
+#include <cctype>
 
 #ifndef SIMULATOR
 #include "tritium_compat.h"
@@ -141,6 +142,7 @@ static lv_obj_t* s_wifi_rssi_bar     = nullptr;
 static lv_obj_t* s_wifi_scan_list    = nullptr;
 static lv_obj_t* s_wifi_saved_list   = nullptr;
 static lv_timer_t* s_wifi_timer      = nullptr;
+static lv_timer_t* s_term_timer      = nullptr;  // Terminal app — defined here for cleanup_timers()
 
 #if WIFI_APP_AVAILABLE
 
@@ -3500,14 +3502,205 @@ void cleanup_timers() {
     if (s_power_timer)     { lv_timer_delete(s_power_timer);     s_power_timer     = nullptr; }
     if (s_ble_timer)       { lv_timer_delete(s_ble_timer);       s_ble_timer       = nullptr; }
     if (s_tracking_timer)  { lv_timer_delete(s_tracking_timer);  s_tracking_timer  = nullptr; }
+    if (s_term_timer)      { lv_timer_delete(s_term_timer);      s_term_timer      = nullptr; }
+}
+
+// ===========================================================================
+//  Terminal App — on-device serial console
+// ===========================================================================
+
+static lv_obj_t* s_term_log     = nullptr;
+static lv_obj_t* s_term_input   = nullptr;
+
+// Circular log buffer for terminal output — lazy-allocated in PSRAM
+static constexpr int TERM_LOG_LINES = 64;
+static constexpr int TERM_LINE_LEN  = 120;
+static char (*s_term_lines)[TERM_LINE_LEN] = nullptr;  // [TERM_LOG_LINES][TERM_LINE_LEN]
+static int s_term_head = 0;    // next write position
+static int s_term_count = 0;   // total lines stored
+static bool s_term_dirty = false;
+
+static void term_ensure_buf() {
+    if (s_term_lines) return;
+    s_term_lines = (char(*)[TERM_LINE_LEN])heap_caps_malloc(
+        TERM_LOG_LINES * TERM_LINE_LEN, MALLOC_CAP_SPIRAM);
+    if (!s_term_lines)
+        s_term_lines = (char(*)[TERM_LINE_LEN])malloc(TERM_LOG_LINES * TERM_LINE_LEN);
+    if (s_term_lines)
+        memset(s_term_lines, 0, TERM_LOG_LINES * TERM_LINE_LEN);
+}
+
+// Public: append a line to the terminal log (called from Serial shim or services)
+static void term_append(const char* line) {
+    term_ensure_buf();
+    if (!s_term_lines) return;
+    strncpy(s_term_lines[s_term_head], line, TERM_LINE_LEN - 1);
+    s_term_lines[s_term_head][TERM_LINE_LEN - 1] = '\0';
+    s_term_head = (s_term_head + 1) % TERM_LOG_LINES;
+    if (s_term_count < TERM_LOG_LINES) s_term_count++;
+    s_term_dirty = true;
+}
+
+static void term_refresh(lv_timer_t* /*t*/) {
+    if (!s_term_log || !s_term_dirty || !s_term_lines) return;
+    s_term_dirty = false;
+
+    // Build display text from circular buffer
+    static char display_buf[TERM_LOG_LINES * TERM_LINE_LEN];
+    int pos = 0;
+    int start = (s_term_count < TERM_LOG_LINES) ? 0 :
+                (s_term_head);  // oldest line
+    for (int i = 0; i < s_term_count && pos < (int)sizeof(display_buf) - TERM_LINE_LEN; i++) {
+        int idx = (start + i) % TERM_LOG_LINES;
+        int len = strlen(s_term_lines[idx]);
+        memcpy(display_buf + pos, s_term_lines[idx], len);
+        pos += len;
+        display_buf[pos++] = '\n';
+    }
+    if (pos > 0) pos--;  // remove trailing newline
+    display_buf[pos] = '\0';
+
+    lv_label_set_text(s_term_log, display_buf);
+    // Auto-scroll to bottom
+    lv_obj_scroll_to_y(lv_obj_get_parent(s_term_log), LV_COORD_MAX, LV_ANIM_OFF);
+}
+
+static void term_submit_cb(lv_event_t* e) {
+    lv_obj_t* ta = (lv_obj_t*)lv_event_get_target(e);
+    const char* txt = lv_textarea_get_text(ta);
+    if (!txt || txt[0] == '\0') return;
+
+    // Echo command
+    char echo[TERM_LINE_LEN];
+    snprintf(echo, sizeof(echo), "> %s", txt);
+    term_append(echo);
+
+    // Dispatch to service registry
+#if __has_include("service_registry.h")
+    // Split cmd from args at first space
+    char cmd_buf[128];
+    strncpy(cmd_buf, txt, sizeof(cmd_buf) - 1);
+    cmd_buf[sizeof(cmd_buf) - 1] = '\0';
+    char* space = strchr(cmd_buf, ' ');
+    const char* args = "";
+    if (space) {
+        *space = '\0';
+        args = space + 1;
+    }
+    // Convert to uppercase for command matching
+    for (char* p = cmd_buf; *p; p++) *p = toupper((unsigned char)*p);
+
+    if (!ServiceRegistry::dispatchCommand(cmd_buf, args)) {
+        term_append("[shell] Unknown command");
+    } else {
+        term_append("[shell] OK");
+    }
+#else
+    term_append("[shell] No service registry");
+#endif
+
+    lv_textarea_set_text(ta, "");
+}
+
+void terminal_create(lv_obj_t* viewport) {
+    lv_obj_clean(viewport);
+
+    lv_obj_set_flex_flow(viewport, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(viewport, 4, 0);
+    lv_obj_set_style_pad_gap(viewport, 4, 0);
+
+    // Title
+    lv_obj_t* title = lv_label_create(viewport);
+    lv_label_set_text(title, LV_SYMBOL_KEYBOARD " TERMINAL");
+    lv_obj_set_style_text_color(title, T_CYAN, 0);
+    lv_obj_set_style_text_font(title, tritium_shell::uiFont(), 0);
+
+    // Log area — scrollable container with monospace text
+    lv_obj_t* log_container = lv_obj_create(viewport);
+    lv_obj_set_width(log_container, lv_pct(100));
+    lv_obj_set_flex_grow(log_container, 1);
+    lv_obj_set_style_bg_color(log_container, T_VOID, 0);
+    lv_obj_set_style_bg_opa(log_container, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(log_container, T_CYAN, 0);
+    lv_obj_set_style_border_opa(log_container, LV_OPA_20, 0);
+    lv_obj_set_style_border_width(log_container, 1, 0);
+    lv_obj_set_style_radius(log_container, 4, 0);
+    lv_obj_set_style_pad_all(log_container, 4, 0);
+    lv_obj_set_scrollbar_mode(log_container, LV_SCROLLBAR_MODE_AUTO);
+
+    s_term_log = lv_label_create(log_container);
+    lv_label_set_text(s_term_log, "Tritium-OS Terminal\nType a command below.\n");
+    lv_obj_set_width(s_term_log, lv_pct(100));
+    lv_label_set_long_mode(s_term_log, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(s_term_log, T_GREEN, 0);
+    lv_obj_set_style_text_font(s_term_log, tritium_shell::uiSmallFont(), 0);
+
+    // Input row
+    lv_obj_t* input_row = lv_obj_create(viewport);
+    lv_obj_set_width(input_row, lv_pct(100));
+    lv_obj_set_height(input_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(input_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_all(input_row, 0, 0);
+    lv_obj_set_style_pad_gap(input_row, 4, 0);
+    lv_obj_set_style_bg_opa(input_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(input_row, 0, 0);
+    lv_obj_remove_flag(input_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Prompt label
+    lv_obj_t* prompt = lv_label_create(input_row);
+    lv_label_set_text(prompt, ">");
+    lv_obj_set_style_text_color(prompt, T_CYAN, 0);
+    lv_obj_set_style_text_font(prompt, tritium_shell::uiFont(), 0);
+    lv_obj_set_style_pad_top(prompt, 6, 0);
+
+    // Text input
+    s_term_input = lv_textarea_create(input_row);
+    lv_obj_set_flex_grow(s_term_input, 1);
+    lv_obj_set_height(s_term_input, 32);
+    lv_textarea_set_one_line(s_term_input, true);
+    lv_textarea_set_placeholder_text(s_term_input, "command...");
+    lv_obj_set_style_bg_color(s_term_input, T_SURFACE2, 0);
+    lv_obj_set_style_bg_opa(s_term_input, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_term_input, T_GREEN, 0);
+    lv_obj_set_style_text_font(s_term_input, tritium_shell::uiSmallFont(), 0);
+    lv_obj_set_style_border_color(s_term_input, T_CYAN, 0);
+    lv_obj_set_style_border_opa(s_term_input, LV_OPA_40, 0);
+    lv_obj_set_style_border_width(s_term_input, 1, 0);
+    lv_obj_set_style_radius(s_term_input, 4, 0);
+    lv_obj_add_event_cb(s_term_input, term_submit_cb, LV_EVENT_READY, nullptr);
+
+    // Send button
+    lv_obj_t* send_btn = tritium_theme::createButton(input_row, LV_SYMBOL_RIGHT);
+    lv_obj_set_size(send_btn, 40, 32);
+    lv_obj_add_event_cb(send_btn, [](lv_event_t* /*e*/) {
+        // Simulate READY event on textarea to trigger submit
+        lv_obj_send_event(s_term_input, LV_EVENT_READY, nullptr);
+    }, LV_EVENT_CLICKED, nullptr);
+
+    // Seed the log with boot info
+    term_append("Tritium-OS Terminal v1.0");
+    term_append("Type commands (e.g. HELP, STATUS, WIFI_STATUS)");
+    term_append("---");
+
+    // Refresh timer
+    s_term_timer = lv_timer_create(term_refresh, 500, nullptr);
 }
 
 //  Register all new apps
 // ===========================================================================
 
 void register_all_apps() {
-    // All system tools (Monitor, Mesh, Storage, BLE) are now inside Settings.
-    // No standalone launcher apps needed — Settings is the central hub.
+    // Terminal — on-device serial console for debugging and commands
+    tritium_shell::registerApp({"Terminal", "Serial console", LV_SYMBOL_KEYBOARD,
+                                true, terminal_create});
+
+    // File Manager — browse LittleFS and SD card
+    tritium_shell::registerApp({"Files", "File browser", LV_SYMBOL_DRIVE,
+                                true, files_app_create});
+
+    // About — version, board info, memory stats
+    tritium_shell::registerApp({"About", "System info", LV_SYMBOL_LIST,
+                                true, about_create});
 }
 
 }  // namespace shell_apps

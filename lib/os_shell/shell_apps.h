@@ -41,6 +41,9 @@ void files_app_create(lv_obj_t* viewport);
 /// Power manager — battery, profiles, sleep timeouts.
 void power_app_create(lv_obj_t* viewport);
 
+/// On-device terminal — serial command console with scrollback.
+void terminal_create(lv_obj_t* viewport);
+
 /// Delete any active LVGL timers from shell apps (call before switching apps).
 void cleanup_timers();
 
