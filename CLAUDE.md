@@ -11,16 +11,20 @@ Multi-family edge device management platform. ESP32-S3 Waveshare boards are the 
 ## Directory Structure
 
 ```
-tritium-edge/
+esp32-hardware/
   platformio.ini      # Build config with per-board environments
   Makefile            # Build automation (make build/flash/monitor)
   src/                # Main firmware source (main.cpp entry point)
   include/            # Headers
-    display_init.h    # Board-specific LovyanGFX display initialization
     app.h             # Base App class interface
     boards/           # Per-board pin definitions (one .h per board)
   lib/                # Shared libraries and HALs
-    Panel_AXS15231B/  # Custom LovyanGFX panel driver for AXS15231B QSPI LCD
+    display/          # esp_lcd display HAL
+      display.h       # display_init(), display_get_panel(), display_push_fb()
+      display.cpp     # Board-agnostic esp_lcd init + DMA chunked push
+      backlight.h     # Backlight control (PWM + active-LOW support)
+      drivers/        # Per-panel esp_lcd drivers (AXS15231B, RM690B0, etc.)
+      boards/         # Per-board display configs (pins, timing, init_cmds)
     hal_camera/       # OV5640 DVP camera via esp_camera
     hal_audio/        # ES8311 codec + I2S
     hal_imu/          # QMI8658 IMU
@@ -43,26 +47,26 @@ tritium-edge/
 
 ```bash
 # Basic workflow
-make build BOARD=touch-lcd-35bc             # Build starfield for board
-make build BOARD=touch-lcd-35bc APP=camera  # Build camera app
-make flash BOARD=touch-lcd-35bc             # Build + upload (auto-detects port + fixes perms)
-make flash BOARD=touch-lcd-35bc APP=camera  # Flash camera app
-make monitor                                # Serial monitor
-make flash-monitor BOARD=touch-lcd-35bc     # Flash then monitor
+make build BOARD=touch-lcd-349               # Build starfield for board
+make build BOARD=touch-lcd-35bc APP=camera   # Build camera app
+make flash BOARD=touch-lcd-349               # Build + upload (auto-detects port + fixes perms)
+make flash BOARD=touch-lcd-35bc APP=camera   # Flash camera app
+make monitor                                 # Serial monitor
+make flash-monitor BOARD=touch-lcd-349       # Flash then monitor
 
 # Discovery
-make list-boards                            # Show all boards
-make list-apps                              # Show all apps
-make identify                               # Detect connected boards via USB
+make list-boards                             # Show all boards
+make list-apps                               # Show all apps
+make identify                                # Detect connected boards via USB
 
 # Utilities
-make clean                                  # Clean build artifacts
-make new-app NAME=myapp                     # Scaffold new app from template
-make format                                 # clang-format all sources
-make sim BOARD=touch-lcd-35bc               # Desktop simulator
+make clean                                   # Clean build artifacts
+make new-app NAME=myapp                      # Scaffold new app from template
+make format                                  # clang-format all sources
+make sim BOARD=touch-lcd-35bc                # Desktop simulator
 ```
 
-Or use PlatformIO directly: `pio run -e touch-lcd-35bc-camera`
+Or use PlatformIO directly: `pio run -e touch-lcd-349-starfield`
 
 ## Supported Boards
 
@@ -73,12 +77,12 @@ Or use PlatformIO directly: `pio run -e touch-lcd-35bc-camera`
 | touch-amoled-18 | ESP32-S3-Touch-AMOLED-1.8 | 368x448 | SH8601Z QSPI | Needs verification |
 | touch-lcd-35bc | ESP32-S3-Touch-LCD-3.5B-C | 320x480 | AXS15231B QSPI | HW Verified (display+camera+audio) |
 | touch-lcd-43c-box | ESP32-S3-Touch-LCD-4.3C-BOX | 800x480 | ST7262 RGB | Pin-verified |
-| touch-lcd-349 | ESP32-S3-Touch-LCD-3.49 | 172x640 | AXS15231B QSPI | HW Verified |
+| touch-lcd-349 | ESP32-S3-Touch-LCD-3.49 | 172x640 | AXS15231B QSPI | HW Verified (esp_lcd) |
 
 ## Adding a New Board
 
 1. Add pin definitions in `include/boards/esp32_s3_<name>.h`
-2. Add an LGFX class block in `include/display_init.h` with `#elif defined(BOARD_<NAME>)`
+2. Add a board config in `lib/display/boards/` with panel-specific pins, timing, and init_cmds
 3. Add a `[env:<name>]` section in `platformio.ini` with `-DBOARD_<NAME>` build flag
 4. Find the official Waveshare demo code and extract the display init sequence
 5. Update `Makefile` BOARDS list
@@ -88,39 +92,39 @@ Or use PlatformIO directly: `pio run -e touch-lcd-35bc-camera`
 Run `make new-app NAME=myapp` to scaffold, or manually:
 
 1. Create `apps/<name>/<name>_app.h` implementing the `App` interface from `include/app.h`
-2. Create `apps/<name>/<name>_app.cpp` with setup() and loop()
+2. Create `apps/<name>/<name>_app.cpp` with `setup(esp_lcd_panel_handle_t panel, int w, int h)` and `loop()`
 3. Add `#elif defined(APP_<NAME>)` block in `src/main.cpp`
 4. Add `[app_<name>]` section in `platformio.ini` with build flags and src filter
 5. Add board-specific env: `[env:board-appname]` referencing the app section
 
 ## Architecture Decisions
 
-- **LovyanGFX** over TFT_eSPI: Better QSPI support, cleaner multi-panel API, built-in sprite double-buffering, active maintenance for ESP32-S3. Display drivers use esp_lcd underneath.
-- **Compile-time board selection**: Each board gets a PlatformIO environment with `-DBOARD_*` flag. `display_init.h` uses `#if defined()` to select the right LGFX class. No runtime overhead.
-- **App pattern**: Apps inherit from `App` base class with virtual `setup()`/`loop()`. Selected via `-DAPP_*` build flag.
-- **PSRAM sprites**: All boards have 8MB PSRAM. Use `LGFX_Sprite` with `setPsram(true)` for double-buffered rendering.
-- **HAL I2C**: Peripherals on shared I2C bus use ESP-IDF i2c_master driver (TritiumI2C wrapper).
+- **esp_lcd over LovyanGFX**: Native ESP-IDF driver, DMA completion semaphore, no abstraction overhead, proven 55+ FPS on 3.49. Display path: `display_init()` -> `display_get_panel()` -> `esp_lcd_panel_draw_bitmap()`.
+- **Compile-time board selection**: Each board gets a PlatformIO environment with `-DBOARD_*` flag. Board configs in `lib/display/boards/` use `#if defined()` to select the right driver. No runtime overhead.
+- **App pattern**: Apps inherit from `App` base class with virtual `setup(esp_lcd_panel_handle_t panel, int w, int h)` / `loop()`. Selected via `-DAPP_*` build flag.
+- **PSRAM framebuffer + DMA buffer**: All boards have 8MB PSRAM. Framebuffer allocated in PSRAM (`MALLOC_CAP_SPIRAM`), DMA transfer buffer in internal SRAM (`MALLOC_CAP_DMA`). Chunked push copies framebuffer slices to DMA buffer for SPI transfer.
+- **HAL dual-mode I2C**: Peripherals on shared I2C bus support both Arduino Wire and lgfx::i2c backends.
 
 ## Common Pitfalls
 
-- **AXS15231B display init**: Needs full register init sequence (~500 bytes), not just Sleep Out + Display On. See `Panel_AXS15231B.hpp` for the complete sequences converted from official Waveshare Arduino_GFX demos.
-- **3.5B-C TCA9554 display reset**: Display reset is routed through I/O expander (I2C 0x20, pin 1). Must call `tca9554_reset_display()` before `display.init()`. Without this, the display stays black.
-- **3.5B-C backlight**: Needs manual `pinMode(LCD_BL, OUTPUT); digitalWrite(LCD_BL, HIGH)` as fallback — LovyanGFX Light_PWM alone may not suffice.
+- **RGB565 byte-swap for QSPI**: All QSPI panels need byte-swapped pixels for SPI transport: `(c >> 8) | (c << 8)`. Without this, colors are wrong.
+- **DMA buffer must be in internal SRAM**: `heap_caps_malloc(size, MALLOC_CAP_DMA)` for the DMA transfer buffer. Framebuffer goes in PSRAM (`MALLOC_CAP_SPIRAM`). DMA from PSRAM directly will fail or corrupt.
+- **SPI host enum values changed in ESP-IDF 5.x**: SPI2_HOST=1, SPI3_HOST=2 (was 2, 3 in ESP-IDF 4.x). Always use enum names (`SPI3_HOST`), never raw integers. Using `3` silently picks the wrong peripheral.
+- **AXS15231B on 3.49**: `vendor_specific_init_default` works fine -- just send SleepOut (0x11) + DispOn (0x29). No need for the full register init sequence. ROM defaults handle the rest.
+- **3.5B-C TCA9554 display reset**: Display reset is routed through I/O expander (I2C 0x20, pin 1). Must call `tca9554_reset_display()` before panel init. Without this, the display stays black.
+- **3.5B-C backlight**: Needs manual `pinMode(LCD_BL, OUTPUT); digitalWrite(LCD_BL, HIGH)` as fallback.
+- **Camera LEDC timer conflict**: Camera (esp_camera) claims LEDC_TIMER_0 + LEDC_CHANNEL_0 for XCLK (20MHz). Display backlight PWM should use ch4+ (TIMER2/TIMER3) when camera is active.
 - **Camera orientation**: OV5640 on 3.5B-C needs `setFlip(false, true)` for correct orientation.
-- **QSPI pixel push**: `pushImage()` works reliably on AXS15231B. `setAddrWindow()` + `pushPixels()` may not render on QSPI panels — use sprite `pushSprite()` instead.
+- **Power cycle vs soft reset**: AXS15231B retains state across ESP32 soft resets (RTS). A bad init can persist until USB power is physically unplugged. Always power cycle between test iterations.
 - **Serial port permissions**: The Makefile auto-fixes `/dev/ttyACM0` permissions. If flashing manually, run `sudo chmod 666 /dev/ttyACM0` first, or add user to `dialout` group.
 - **ESP32-S3 native USB**: CDC-on-boot is enabled. Serial goes through native USB, not UART.
-- **PSRAM cache**: `-mfix-esp32-psram-cache-issue` build flag is required for stable PSRAM access.
-- **RGB parallel panel (43C-BOX)**: Uses `Bus_RGB` + `Panel_RGB`, different from QSPI boards. Display glitches when USB connected — PSRAM bus contention, hardware limitation. See `docs/KNOWN_ISSUES.md` EDGE-001.
-- **RGB565 byte order**: RGB parallel panels (43C-BOX) use native byte order. QSPI/SPI panels need byte-swapped RGB565. Boot sequence handles this with `_swap_bytes` flag.
-- **43C-BOX SD card**: Uses SPI mode (not SDMMC) with CS routed through CH422G IO expander EXIO4. Requires expander init before SD access.
-- **All 6 boards have SD cards**: 43C-BOX and 241B use SPI mode; 349, 35BC, 191M, 1.8 use SDMMC 1-bit mode.
+- **RGB parallel panel (43C-BOX)**: Uses esp_lcd RGB panel driver, different config from QSPI boards.
 - **RM690B0 memory offset**: The 2.41-B panel has 452px memory width but 450px visible. Requires `offset_x = 16`.
 - **Reference code**: Official Waveshare demos are in `references/`. Repos are under `waveshareteam` GitHub org (not `waveshare`). Always check these when debugging display issues.
 
 ## Coding Conventions
 
-- C++17, ESP-IDF 5.5.2
+- C++17, Arduino framework
 - 4-space indentation, 100-column line width
 - Board pin headers: `SCREAMING_SNAKE_CASE` for pin defines
 - App classes: `PascalCase` + `App` suffix (e.g., `CameraApp`)
@@ -128,7 +132,7 @@ Run `make new-app NAME=myapp` to scaffold, or manually:
 
 ## Flashing and Monitoring
 
-Always use the standard scripts — never use manual pio/chmod commands:
+Always use the standard scripts -- never use manual pio/chmod commands:
 
 ```bash
 # Flash firmware to a connected board
