@@ -4406,6 +4406,10 @@ void register_all_apps() {
     tritium_shell::registerApp({"Mesh", "Network peers", LV_SYMBOL_LOOP,
                                 true, mesh_app_create});
 
+    // BLE Scanner — nearby Bluetooth devices
+    tritium_shell::registerApp({"BLE", "Device scanner", LV_SYMBOL_BLUETOOTH,
+                                true, ble_app_create});
+
     // Terminal — on-device serial console for debugging and commands
     tritium_shell::registerApp({"Terminal", "Serial console", LV_SYMBOL_KEYBOARD,
                                 true, terminal_create});

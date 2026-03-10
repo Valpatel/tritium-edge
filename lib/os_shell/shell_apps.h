@@ -50,6 +50,9 @@ void mesh_chat_create(lv_obj_t* viewport);
 /// Map viewer — offline tile map from MBTiles on SD card.
 void map_app_create(lv_obj_t* viewport);
 
+/// BLE scanner — nearby Bluetooth devices with manufacturer and type.
+void ble_app_create(lv_obj_t* viewport);
+
 /// Delete any active LVGL timers from shell apps (call before switching apps).
 void cleanup_timers();
 
