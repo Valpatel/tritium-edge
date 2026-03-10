@@ -93,6 +93,13 @@ static uint32_t millis() { return SDL_GetTicks(); }
 #define BLE_APP_AVAILABLE 0
 #endif
 
+#if __has_include("hal_sighting_logger.h")
+#include "hal_sighting_logger.h"
+#define SIGHTING_LOGGER_AVAILABLE 1
+#else
+#define SIGHTING_LOGGER_AVAILABLE 0
+#endif
+
 namespace shell_apps {
 
 // ---------------------------------------------------------------------------
@@ -397,16 +404,21 @@ static void power_off_slider_cb(lv_event_t* e) {
 }
 
 // ---------------------------------------------------------------------------
-// Settings Hub — tabbed interface with 5 categories
+// Settings Hub — tabbed interface with 10 categories
 // ---------------------------------------------------------------------------
 
 static lv_obj_t* s_settings_content = nullptr;
-static lv_obj_t* s_settings_tab_btns[5] = {};
+static lv_obj_t* s_settings_tab_btns[10] = {};
 static int s_settings_active_tab = 0;
 
 // Forward declarations for tab content builders
 static void settings_build_display(lv_obj_t* cont);
 static void settings_build_wifi(lv_obj_t* cont);
+static void settings_build_ble(lv_obj_t* cont);
+static void settings_build_mesh(lv_obj_t* cont);
+static void settings_build_monitor(lv_obj_t* cont);
+static void settings_build_storage(lv_obj_t* cont);
+static void settings_build_tracking(lv_obj_t* cont);
 static void settings_build_power(lv_obj_t* cont);
 static void settings_build_screensaver(lv_obj_t* cont);
 static void settings_build_system(lv_obj_t* cont);
@@ -416,7 +428,7 @@ static void settings_select_tab(int idx) {
     s_settings_active_tab = idx;
 
     // Update tab button styling
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 10; i++) {
         if (!s_settings_tab_btns[i]) continue;
         bool active = (i == idx);
         lv_obj_set_style_border_color(s_settings_tab_btns[i],
@@ -436,9 +448,14 @@ static void settings_select_tab(int idx) {
     switch (idx) {
         case 0: settings_build_display(s_settings_content); break;
         case 1: settings_build_wifi(s_settings_content); break;
-        case 2: settings_build_power(s_settings_content); break;
-        case 3: settings_build_screensaver(s_settings_content); break;
-        case 4: settings_build_system(s_settings_content); break;
+        case 2: settings_build_ble(s_settings_content); break;
+        case 3: settings_build_mesh(s_settings_content); break;
+        case 4: settings_build_monitor(s_settings_content); break;
+        case 5: settings_build_storage(s_settings_content); break;
+        case 6: settings_build_tracking(s_settings_content); break;
+        case 7: settings_build_power(s_settings_content); break;
+        case 8: settings_build_screensaver(s_settings_content); break;
+        case 9: settings_build_system(s_settings_content); break;
     }
 }
 
@@ -456,7 +473,7 @@ void settings_create(lv_obj_t* viewport) {
     lv_obj_set_style_pad_all(viewport, 4, 0);
     lv_obj_set_style_pad_gap(viewport, 4, 0);
 
-    // --- Tab bar: 5 icon buttons ---
+    // --- Tab bar: 10 icon buttons (scrollable) ---
     lv_obj_t* tab_bar = lv_obj_create(viewport);
     lv_obj_set_width(tab_bar, lv_pct(100));
     lv_obj_set_height(tab_bar, LV_SIZE_CONTENT);
@@ -465,21 +482,26 @@ void settings_create(lv_obj_t* viewport) {
     lv_obj_set_style_pad_all(tab_bar, 2, 0);
     lv_obj_set_style_pad_gap(tab_bar, 4, 0);
     lv_obj_set_flex_flow(tab_bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(tab_bar, LV_FLEX_ALIGN_SPACE_EVENLY,
+    lv_obj_set_flex_align(tab_bar, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(tab_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_snap_x(tab_bar, LV_SCROLL_SNAP_CENTER);
 
     static const char* tab_icons[] = {
-        LV_SYMBOL_EYE_OPEN,    // Display
-        LV_SYMBOL_WIFI,        // WiFi
-        LV_SYMBOL_BATTERY_FULL,// Power
-        LV_SYMBOL_IMAGE,       // Screensaver
-        LV_SYMBOL_SETTINGS,    // System
+        LV_SYMBOL_EYE_OPEN,       // Display
+        LV_SYMBOL_WIFI,            // WiFi
+        LV_SYMBOL_BLUETOOTH,       // BLE
+        LV_SYMBOL_SHUFFLE,         // Mesh
+        LV_SYMBOL_CHARGE,          // Monitor
+        LV_SYMBOL_DRIVE,           // Storage
+        LV_SYMBOL_GPS,             // Tracking
+        LV_SYMBOL_BATTERY_FULL,    // Power
+        LV_SYMBOL_IMAGE,           // Screensaver
+        LV_SYMBOL_SETTINGS,        // System
     };
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 10; i++) {
         lv_obj_t* btn = lv_btn_create(tab_bar);
-        lv_obj_set_flex_grow(btn, 1);
         int tab_h = (tritium_shell::uiConfig().screen_height > 400) ? 48 : 36;
+        lv_obj_set_width(btn, tab_h + 8);
         lv_obj_set_height(btn, tab_h);
         lv_obj_set_style_radius(btn, 4, 0);
         lv_obj_set_style_border_width(btn, 1, 0);
@@ -2961,6 +2983,9 @@ static lv_obj_t* s_ble_count_lbl   = nullptr;
 static lv_obj_t* s_ble_status_lbl  = nullptr;
 static lv_timer_t* s_ble_timer     = nullptr;
 
+static lv_obj_t* s_tracking_stats_lbl = nullptr;
+static lv_timer_t* s_tracking_timer   = nullptr;
+
 #if BLE_APP_AVAILABLE
 
 static void ble_refresh(lv_timer_t* t) {
@@ -3130,27 +3155,359 @@ void ble_app_create(lv_obj_t* viewport) {
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// Settings Tab: BLE (wrapper around BLE scanner content)
+// ---------------------------------------------------------------------------
+
+static void settings_build_ble(lv_obj_t* cont) {
+#if !BLE_APP_AVAILABLE
+    tritium_theme::createLabel(cont, "BLE Scanner not available in this build");
+    return;
+#else
+    // Reuse the BLE app header
+    lv_obj_t* hdr = lv_obj_create(cont);
+    lv_obj_set_size(hdr, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(hdr, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 0, 0);
+    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_ble_status_lbl = tritium_theme::createLabel(hdr, "Scanner: --");
+    s_ble_count_lbl  = tritium_theme::createLabel(hdr, "Devices: --", true);
+
+    lv_obj_t* list_panel = tritium_theme::createPanel(cont, "BLE DEVICES");
+    lv_obj_set_width(list_panel, lv_pct(100));
+    lv_obj_set_height(list_panel, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_height(list_panel, 300, 0);
+    lv_obj_set_flex_flow(list_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(list_panel, 24, 0);
+    lv_obj_set_style_pad_gap(list_panel, 4, 0);
+
+    s_ble_device_list = lv_obj_create(list_panel);
+    lv_obj_set_size(s_ble_device_list, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(s_ble_device_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_ble_device_list, 0, 0);
+    lv_obj_set_style_pad_all(s_ble_device_list, 0, 0);
+    lv_obj_set_flex_flow(s_ble_device_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(s_ble_device_list, 4, 0);
+
+    tritium_theme::createLabel(s_ble_device_list, "Scanning...", true);
+    ble_refresh(nullptr);
+    s_ble_timer = lv_timer_create(ble_refresh, 5000, nullptr);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Settings Tab: MESH (wrapper around Mesh content)
+// ---------------------------------------------------------------------------
+
+static void settings_build_mesh(lv_obj_t* cont) {
+#if !MESH_APP_AVAILABLE
+    tritium_theme::createLabel(cont, "Mesh HAL not available");
+    return;
+#else
+    lv_obj_t* status_panel = tritium_theme::createPanel(cont, "MESH STATUS");
+    lv_obj_set_width(status_panel, lv_pct(100));
+    lv_obj_set_height(status_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(status_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(status_panel, 24, 0);
+    lv_obj_set_style_pad_gap(status_panel, 4, 0);
+
+    s_mesh_role_lbl  = tritium_theme::createLabel(status_panel, "Role: --", true);
+    s_mesh_peers_lbl = tritium_theme::createLabel(status_panel, "Peers: 0", true);
+
+    lv_obj_t* peer_panel = tritium_theme::createPanel(cont, "PEERS");
+    lv_obj_set_width(peer_panel, lv_pct(100));
+    lv_obj_set_height(peer_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(peer_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(peer_panel, 24, 0);
+    lv_obj_set_style_max_height(peer_panel, 200, 0);
+
+    s_mesh_peer_list = lv_obj_create(peer_panel);
+    lv_obj_set_size(s_mesh_peer_list, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(s_mesh_peer_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_mesh_peer_list, 0, 0);
+    lv_obj_set_style_pad_all(s_mesh_peer_list, 0, 0);
+    lv_obj_set_flex_flow(s_mesh_peer_list, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t* bcast_panel = tritium_theme::createPanel(cont, "BROADCAST");
+    lv_obj_set_width(bcast_panel, lv_pct(100));
+    lv_obj_set_height(bcast_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(bcast_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(bcast_panel, 24, 0);
+    lv_obj_set_style_pad_gap(bcast_panel, 4, 0);
+
+    s_mesh_bcast_ta = lv_textarea_create(bcast_panel);
+    lv_textarea_set_one_line(s_mesh_bcast_ta, true);
+    lv_textarea_set_placeholder_text(s_mesh_bcast_ta, "Message...");
+    lv_obj_set_width(s_mesh_bcast_ta, lv_pct(100));
+    lv_obj_set_style_bg_color(s_mesh_bcast_ta, T_SURFACE3, 0);
+    lv_obj_set_style_text_color(s_mesh_bcast_ta, T_TEXT, 0);
+    lv_obj_set_style_border_color(s_mesh_bcast_ta, T_CYAN, 0);
+    lv_obj_set_style_border_opa(s_mesh_bcast_ta, LV_OPA_20, 0);
+
+    lv_obj_t* send_btn = tritium_theme::createButton(bcast_panel, LV_SYMBOL_OK " SEND");
+    lv_obj_set_width(send_btn, lv_pct(50));
+    lv_obj_add_event_cb(send_btn, mesh_send_cb, LV_EVENT_CLICKED, nullptr);
+
+    s_mesh_stats_lbl = tritium_theme::createLabel(cont, "TX:0 RX:0 Relay:0 Drop:0", true);
+    lv_obj_set_style_text_color(s_mesh_stats_lbl, T_GHOST, 0);
+
+    mesh_refresh(nullptr);
+    s_mesh_timer = lv_timer_create(mesh_refresh, 3000, nullptr);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Settings Tab: MONITOR (wrapper around System Monitor content)
+// ---------------------------------------------------------------------------
+
+static void settings_build_monitor(lv_obj_t* cont) {
+#ifdef SIMULATOR
+    tritium_theme::createLabel(cont, "System Monitor not available in simulator");
+    return;
+#else
+    // Memory panel
+    lv_obj_t* mem_panel = tritium_theme::createPanel(cont, "MEMORY");
+    lv_obj_set_width(mem_panel, lv_pct(100));
+    lv_obj_set_height(mem_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(mem_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(mem_panel, 24, 0);
+    lv_obj_set_style_pad_gap(mem_panel, 4, 0);
+
+    s_sysmon_heap_lbl = tritium_theme::createLabel(mem_panel, "Heap: --", true);
+    s_sysmon_heap_bar = lv_bar_create(mem_panel);
+    lv_obj_set_width(s_sysmon_heap_bar, lv_pct(95));
+    lv_obj_set_height(s_sysmon_heap_bar, 10);
+    lv_bar_set_range(s_sysmon_heap_bar, 0, 100);
+    lv_obj_set_style_bg_color(s_sysmon_heap_bar, T_SURFACE3, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_sysmon_heap_bar, T_GREEN, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_sysmon_heap_bar, 4, 0);
+    lv_obj_set_style_radius(s_sysmon_heap_bar, 4, LV_PART_INDICATOR);
+
+    s_sysmon_heap_min = tritium_theme::createLabel(mem_panel, "Min free: --", true);
+    lv_obj_set_style_text_font(s_sysmon_heap_min, tritium_shell::uiSmallFont(), 0);
+    lv_obj_set_style_text_color(s_sysmon_heap_min, T_GHOST, 0);
+
+    s_sysmon_psram_lbl = tritium_theme::createLabel(mem_panel, "PSRAM: --", true);
+    s_sysmon_psram_bar = lv_bar_create(mem_panel);
+    lv_obj_set_width(s_sysmon_psram_bar, lv_pct(95));
+    lv_obj_set_height(s_sysmon_psram_bar, 10);
+    lv_bar_set_range(s_sysmon_psram_bar, 0, 100);
+    lv_obj_set_style_bg_color(s_sysmon_psram_bar, T_SURFACE3, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_sysmon_psram_bar, T_GREEN, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_sysmon_psram_bar, 4, 0);
+    lv_obj_set_style_radius(s_sysmon_psram_bar, 4, LV_PART_INDICATOR);
+
+    // CPU panel
+    lv_obj_t* cpu_panel = tritium_theme::createPanel(cont, "CPU");
+    lv_obj_set_width(cpu_panel, lv_pct(100));
+    lv_obj_set_height(cpu_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(cpu_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(cpu_panel, 24, 0);
+    lv_obj_set_style_pad_gap(cpu_panel, 4, 0);
+
+    s_sysmon_loop_lbl   = tritium_theme::createLabel(cpu_panel, "Loop: --", true);
+    s_sysmon_temp_lbl   = tritium_theme::createLabel(cpu_panel, "CPU Temp: --", true);
+    s_sysmon_uptime_lbl = tritium_theme::createLabel(cpu_panel, "Uptime: --", true);
+    s_sysmon_tasks_lbl  = tritium_theme::createLabel(cpu_panel, "Tasks: --", true);
+
+    // Network panel
+    lv_obj_t* net_panel = tritium_theme::createPanel(cont, "NETWORK");
+    lv_obj_set_width(net_panel, lv_pct(100));
+    lv_obj_set_height(net_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(net_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(net_panel, 24, 0);
+    lv_obj_set_style_pad_gap(net_panel, 4, 0);
+
+    s_sysmon_wifi_lbl = tritium_theme::createLabel(net_panel, "WiFi: --", true);
+
+    // Storage panel
+    lv_obj_t* stor_panel = tritium_theme::createPanel(cont, "STORAGE");
+    lv_obj_set_width(stor_panel, lv_pct(100));
+    lv_obj_set_height(stor_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(stor_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(stor_panel, 24, 0);
+    lv_obj_set_style_pad_gap(stor_panel, 4, 0);
+
+    s_sysmon_storage_lbl = tritium_theme::createLabel(stor_panel, "Storage: --", true);
+
+    sysmon_update(nullptr);
+    s_sysmon_timer = lv_timer_create(sysmon_update, 2000, nullptr);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Settings Tab: STORAGE (simplified file browser)
+// ---------------------------------------------------------------------------
+
+static void settings_build_storage(lv_obj_t* cont) {
+#ifdef SIMULATOR
+    tritium_theme::createLabel(cont, "Storage not available in simulator");
+    return;
+#else
+    lv_obj_t* panel = tritium_theme::createPanel(cont, "STORAGE");
+    lv_obj_set_width(panel, lv_pct(100));
+    lv_obj_set_height(panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(panel, 24, 0);
+    lv_obj_set_style_pad_gap(panel, 4, 0);
+
+    // Show storage stats
+    struct stat st;
+    bool sd_ok = (stat("/sdcard", &st) == 0);
+    bool fs_ok = (stat("/littlefs", &st) == 0);
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "SD Card: %s", sd_ok ? "mounted" : "not available");
+    tritium_theme::createLabel(panel, buf, true);
+
+    snprintf(buf, sizeof(buf), "LittleFS: %s", fs_ok ? "mounted" : "not available");
+    tritium_theme::createLabel(panel, buf, true);
+
+    // File browser panel - simplified directory listing of /sdcard
+    lv_obj_t* files_panel = tritium_theme::createPanel(cont, "SD CARD FILES");
+    lv_obj_set_width(files_panel, lv_pct(100));
+    lv_obj_set_height(files_panel, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_height(files_panel, 300, 0);
+    lv_obj_set_flex_flow(files_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(files_panel, 24, 0);
+    lv_obj_set_style_pad_gap(files_panel, 2, 0);
+
+    if (sd_ok) {
+        DIR* dir = opendir("/sdcard");
+        if (dir) {
+            struct dirent* entry;
+            int count = 0;
+            while ((entry = readdir(dir)) != nullptr && count < 20) {
+                if (entry->d_name[0] == '.') continue;
+                bool is_dir = (entry->d_type == DT_DIR);
+                snprintf(buf, sizeof(buf), "%s %s", is_dir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE, entry->d_name);
+                lv_obj_t* lbl = tritium_theme::createLabel(files_panel, buf, true);
+                lv_obj_set_style_text_color(lbl, is_dir ? T_CYAN : T_TEXT, 0);
+                count++;
+            }
+            closedir(dir);
+            if (count == 0) {
+                tritium_theme::createLabel(files_panel, "Empty", true);
+            }
+        }
+    } else {
+        tritium_theme::createLabel(files_panel, "Insert SD card to browse files", true);
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Settings Tab: TRACKING (sighting logger)
+// ---------------------------------------------------------------------------
+
+static void tracking_toggle_cb(lv_event_t* e) {
+    lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
+    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+#if SIGHTING_LOGGER_AVAILABLE
+    if (on) hal_sighting_logger::enable();
+    else hal_sighting_logger::disable();
+#endif
+    (void)on;
+}
+
+static void tracking_refresh(lv_timer_t*) {
+#if SIGHTING_LOGGER_AVAILABLE
+    if (!s_tracking_stats_lbl) return;
+    auto stats = hal_sighting_logger::get_stats();
+    char buf[128];
+    snprintf(buf, sizeof(buf), "BLE: %lu  WiFi: %lu  Total: %lu  DB: %lu KB",
+             (unsigned long)stats.ble_logged,
+             (unsigned long)stats.wifi_logged,
+             (unsigned long)stats.total_rows,
+             (unsigned long)(stats.db_size_bytes / 1024));
+    lv_label_set_text(s_tracking_stats_lbl, buf);
+#endif
+}
+
+static void settings_build_tracking(lv_obj_t* cont) {
+#if !SIGHTING_LOGGER_AVAILABLE
+    tritium_theme::createLabel(cont, "Sighting Logger not available");
+    tritium_theme::createLabel(cont, "Enable with -DENABLE_SIGHTING_LOGGER", true);
+    return;
+#else
+    // Enable/disable toggle
+    lv_obj_t* panel = tritium_theme::createPanel(cont, "SIGHTING LOGGER");
+    lv_obj_set_width(panel, lv_pct(100));
+    lv_obj_set_height(panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(panel, 24, 0);
+    lv_obj_set_style_pad_gap(panel, 8, 0);
+
+    tritium_theme::createLabel(panel, "Log BLE + WiFi sightings to SD card");
+    lv_obj_set_style_text_color(lv_obj_get_child(panel, -1), T_GHOST, 0);
+
+    // Toggle row
+    lv_obj_t* row = lv_obj_create(panel);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    tritium_theme::createLabel(row, "Enable Logging");
+
+    lv_obj_t* sw = lv_switch_create(row);
+    lv_obj_set_style_bg_color(sw, T_SURFACE3, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, T_GREEN, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, T_CYAN, LV_PART_KNOB);
+    if (hal_sighting_logger::is_active()) {
+        lv_obj_add_state(sw, LV_STATE_CHECKED);
+    }
+    lv_obj_add_event_cb(sw, tracking_toggle_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    // Stats panel
+    lv_obj_t* stats_panel = tritium_theme::createPanel(cont, "STATISTICS");
+    lv_obj_set_width(stats_panel, lv_pct(100));
+    lv_obj_set_height(stats_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(stats_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(stats_panel, 24, 0);
+    lv_obj_set_style_pad_gap(stats_panel, 4, 0);
+
+    s_tracking_stats_lbl = tritium_theme::createLabel(stats_panel, "BLE: 0  WiFi: 0  Total: 0", true);
+
+    auto stats = hal_sighting_logger::get_stats();
+    char db_info[64];
+    snprintf(db_info, sizeof(db_info), "Database: %s", stats.db_open ? "open" : "closed");
+    tritium_theme::createLabel(stats_panel, db_info, true);
+
+    // Auto-refresh
+    tracking_refresh(nullptr);
+    s_tracking_timer = lv_timer_create(tracking_refresh, 3000, nullptr);
+#endif
+}
+
 // ===========================================================================
 //  Cleanup — delete active LVGL timers before switching apps
 // ===========================================================================
 
 void cleanup_timers() {
-    if (s_sysmon_timer) { lv_timer_delete(s_sysmon_timer); s_sysmon_timer = nullptr; }
-    if (s_wifi_timer)   { lv_timer_delete(s_wifi_timer);   s_wifi_timer   = nullptr; }
-    if (s_mesh_timer)   { lv_timer_delete(s_mesh_timer);   s_mesh_timer   = nullptr; }
-    if (s_power_timer)  { lv_timer_delete(s_power_timer);  s_power_timer  = nullptr; }
-    if (s_ble_timer)    { lv_timer_delete(s_ble_timer);    s_ble_timer    = nullptr; }
+    if (s_sysmon_timer)    { lv_timer_delete(s_sysmon_timer);    s_sysmon_timer    = nullptr; }
+    if (s_wifi_timer)      { lv_timer_delete(s_wifi_timer);      s_wifi_timer      = nullptr; }
+    if (s_mesh_timer)      { lv_timer_delete(s_mesh_timer);      s_mesh_timer      = nullptr; }
+    if (s_power_timer)     { lv_timer_delete(s_power_timer);     s_power_timer     = nullptr; }
+    if (s_ble_timer)       { lv_timer_delete(s_ble_timer);       s_ble_timer       = nullptr; }
+    if (s_tracking_timer)  { lv_timer_delete(s_tracking_timer);  s_tracking_timer  = nullptr; }
 }
 
 //  Register all new apps
 // ===========================================================================
 
 void register_all_apps() {
-    // WiFi, Power, Brightness, About are now sub-panels inside Settings.
-    tritium_shell::registerApp({"Monitor", "System health",    LV_SYMBOL_EYE_OPEN,     true, sysmon_app_create});
-    tritium_shell::registerApp({"Mesh",    "P2P network",      LV_SYMBOL_SHUFFLE,      true, mesh_app_create});
-    tritium_shell::registerApp({"Storage", "Storage manager",  LV_SYMBOL_DRIVE,         true, files_app_create});
-    tritium_shell::registerApp({"BLE",     "BLE scanner",      LV_SYMBOL_BLUETOOTH,    true, ble_app_create});
+    // All system tools (Monitor, Mesh, Storage, BLE) are now inside Settings.
+    // No standalone launcher apps needed — Settings is the central hub.
 }
 
 }  // namespace shell_apps

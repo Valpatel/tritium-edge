@@ -3,9 +3,11 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 #include "hal_ble_scanner.h"
+#include <cstdio>
 
-#ifdef SIMULATOR
+#if defined(SIMULATOR) || !__has_include(<NimBLEDevice.h>)
 
+// Stub implementation — NimBLE not available or running in simulator
 namespace hal_ble_scanner {
 bool init(const ScanConfig&) { return false; }
 void shutdown() {}

@@ -26,6 +26,7 @@ list(APPEND LIB_INCS "${CMAKE_SOURCE_DIR}/apps/starfield")
 list(APPEND LIB_INCS "${CMAKE_SOURCE_DIR}/lib/StarField")
 
 # OS service libs
+add_tritium_lib(hal_ble_scanner)
 add_tritium_lib(hal_wifi)
 add_tritium_lib(hal_heartbeat)
 add_tritium_lib(hal_provision)
@@ -57,6 +58,15 @@ add_tritium_lib(hal_gis)
 add_tritium_lib(hal_sleep)
 add_tritium_lib(hal_camera)
 add_tritium_lib(hal_mqtt)
+add_tritium_lib(hal_sighting_logger)
+
+# SQLite3 amalgamation — compiled via wrapper that force-includes config header.
+# Only compile the wrapper (sqlite3_esp32.c) and the VFS shim, NOT sqlite3.c directly.
+list(APPEND LIB_SRCS
+    "${CMAKE_SOURCE_DIR}/lib/sqlite3/sqlite3_esp32.c"
+    "${CMAKE_SOURCE_DIR}/lib/sqlite3/sqlite3_vfs_esp32.c"
+)
+list(APPEND LIB_INCS "${CMAKE_SOURCE_DIR}/lib/sqlite3")
 
 # StarField lib
 file(GLOB STARFIELD_SRCS "${CMAKE_SOURCE_DIR}/lib/StarField/*.cpp")
