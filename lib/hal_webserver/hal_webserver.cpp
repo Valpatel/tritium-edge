@@ -151,10 +151,9 @@ static bool _captive_portal_active = false;
 static TaskHandle_t _dns_task = nullptr;
 static void _captive_dns_task(void* param);
 
-// Shared JSON response buffer — esp_http_server can serve multiple requests
-// concurrently on different sockets, but we serialize via the shared buffer.
-static char _shared_json[4096];
-static const size_t SHARED_JSON_SIZE = sizeof(_shared_json);
+// Shared JSON response buffer — allocated in PSRAM during init() (saves 4KB BSS).
+static const size_t SHARED_JSON_SIZE = 4096;
+static char* _shared_json = nullptr;
 
 // ── Helpers for esp_http_server ─────────────────────────────────────────────
 
@@ -639,6 +638,12 @@ static int rssiToPercent(int rssi) {
 
 bool WebServerHAL::init(uint16_t port) {
     if (_running) return true;
+
+    // Allocate shared JSON buffer in PSRAM (saves 4KB BSS)
+    if (!_shared_json) {
+        _shared_json = (char*)heap_caps_malloc(SHARED_JSON_SIZE, MALLOC_CAP_SPIRAM);
+        if (!_shared_json) _shared_json = (char*)malloc(SHARED_JSON_SIZE);
+    }
 
     _port = port;
     _instance = this;

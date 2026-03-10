@@ -2085,7 +2085,7 @@ static void files_navigate(const char* path) {
 
     struct dirent* entry;
     // Static ring buffer for path strings (kept alive for callbacks)
-    static char path_buf[32][160];
+    static char path_buf[12][160];
     static int path_idx = 0;
 
     int file_count = 0;
@@ -2120,7 +2120,7 @@ static void files_navigate(const char* path) {
         lv_obj_set_style_text_color(name_lbl, is_dir ? T_CYAN : T_TEXT, 0);
 
         // Build callback path (before size/delete so we can reuse pi)
-        int pi = path_idx % 32;
+        int pi = path_idx % 12;
         path_idx++;
         if (is_dir) {
             if (strcmp(s_files_cwd, "/") == 0)

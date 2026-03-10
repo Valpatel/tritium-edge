@@ -112,8 +112,9 @@ private:
     ProvisionState _state = ProvisionState::UNPROVISIONED;
     DeviceIdentity _identity = {};
     bool _usbActive = false;
-    char _usbBuf[4096] = {};
+    char* _usbBuf = nullptr;    // Lazy-allocated in PSRAM (4096)
     size_t _usbBufLen = 0;
+    static constexpr size_t PROV_BUF_SIZE = 4096;
 
     bool _loadIdentity();
     bool _saveIdentity();

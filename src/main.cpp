@@ -148,7 +148,7 @@ static StarfieldApp app_instance;
 static App* app = &app_instance;
 
 // --- Serial command handling ---
-static char _cmd_buf[512];
+static char _cmd_buf[256];
 static uint8_t _cmd_idx = 0;
 
 static void handleSerialCommands() {

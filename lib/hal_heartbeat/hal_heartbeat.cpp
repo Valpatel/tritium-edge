@@ -48,6 +48,7 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #include <esp_app_format.h>
 #include <esp_partition.h>
 #include <mbedtls/sha256.h>
+#include <esp_heap_caps.h>
 #include "hal_provision.h"
 
 // Optional BLE scanner integration
@@ -377,9 +378,14 @@ bool send_now() {
     const esp_partition_t* running = esp_ota_get_running_partition();
     if (running) partition = running->label;
 
-    // Shared scratch buffer for all heartbeat JSON operations (sequential, never concurrent)
+    // Shared scratch buffer — lazy-allocated in PSRAM
     static constexpr size_t HB_BUF_SIZE = 1536;
-    static char _hb_buf[HB_BUF_SIZE];
+    static char* _hb_buf = nullptr;
+    if (!_hb_buf) {
+        _hb_buf = (char*)heap_caps_malloc(HB_BUF_SIZE, MALLOC_CAP_SPIRAM);
+        if (!_hb_buf) _hb_buf = (char*)malloc(HB_BUF_SIZE);
+    }
+    if (!_hb_buf) return false;
     char* body = _hb_buf;
 
     // Gather WiFi info via ESP-IDF
@@ -481,9 +487,15 @@ bool send_now() {
         body[pos] = '\0';
     }
 
-    // Response buffer for heartbeat — reuse second half of scratch space
-    static char _resp_buf[512];
-    int code = http_post_with_response(url, body, pos, _resp_buf, sizeof(_resp_buf), 5000);
+    // Response buffer — reuse second half of scratch space
+    static char* _resp_buf = nullptr;
+    static constexpr size_t RESP_BUF_SIZE = 512;
+    if (!_resp_buf) {
+        _resp_buf = (char*)heap_caps_malloc(RESP_BUF_SIZE, MALLOC_CAP_SPIRAM);
+        if (!_resp_buf) _resp_buf = (char*)malloc(RESP_BUF_SIZE);
+    }
+    if (!_resp_buf) return false;
+    int code = http_post_with_response(url, body, pos, _resp_buf, RESP_BUF_SIZE, 5000);
 
     if (code == 200) {
         DBG_DEBUG(TAG, "Sent to %s - %d", _server_url, code);

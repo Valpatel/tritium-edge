@@ -318,7 +318,6 @@ bool ProvisionHAL::provisionFromSD(const char* sdPath) {
 bool ProvisionHAL::startUSBProvision() {
     _usbActive = true;
     _usbBufLen = 0;
-    memset(_usbBuf, 0, sizeof(_usbBuf));
     DBG_INFO(TAG, "USB provisioning started (simulator stub)");
     return true;
 }
@@ -558,6 +557,7 @@ ProvisionHAL::TestResult ProvisionHAL::runTest() {
 #else
 
 #include "tritium_compat.h"
+#include <esp_heap_caps.h>
 // LittleFS via VFS — use POSIX file ops on /littlefs/
 // Filesystem via VFS — use POSIX file ops
 // SD card via VFS — use POSIX file ops on /sdcard/
@@ -821,16 +821,21 @@ bool ProvisionHAL::provisionFromSD(const char* sdPath) {
 }
 
 bool ProvisionHAL::startUSBProvision() {
+    if (!_usbBuf) {
+        _usbBuf = (char*)heap_caps_malloc(PROV_BUF_SIZE, MALLOC_CAP_SPIRAM);
+        if (!_usbBuf) _usbBuf = (char*)malloc(PROV_BUF_SIZE);
+    }
+    if (!_usbBuf) return false;
     _usbActive = true;
     _usbBufLen = 0;
-    memset(_usbBuf, 0, sizeof(_usbBuf));
+    memset(_usbBuf, 0, PROV_BUF_SIZE);
     Serial.printf("{\"status\":\"ready\",\"msg\":\"Send provisioning JSON\"}\n");
     DBG_INFO(TAG, "USB provisioning started — waiting for data on Serial");
     return true;
 }
 
 bool ProvisionHAL::processUSBProvision() {
-    if (!_usbActive) return false;
+    if (!_usbActive || !_usbBuf) return false;
 
     while (Serial.available()) {
         char c = (char)Serial.read();
@@ -846,7 +851,7 @@ bool ProvisionHAL::processUSBProvision() {
                 }
                 return ok;
             }
-        } else if (_usbBufLen < sizeof(_usbBuf) - 1) {
+        } else if (_usbBufLen < PROV_BUF_SIZE - 1) {
             _usbBuf[_usbBufLen++] = c;
         } else {
             // Buffer overflow — reset
