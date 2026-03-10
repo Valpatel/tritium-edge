@@ -122,6 +122,13 @@ static SettingsService svc_settings;
 static BleSerialService svc_ble_serial;
 #endif
 
+#if defined(ENABLE_POWER_MGMT) && __has_include("power_service.h")
+#include "power_service.h"
+#define POWER_SVC_AVAILABLE 1
+#else
+#define POWER_SVC_AVAILABLE 0
+#endif
+
 // OUI manufacturer lookup (SD card database)
 #if __has_include("oui_lookup.h")
 #include "oui_lookup.h"
@@ -268,6 +275,9 @@ static void registerServices() {
 #if defined(ENABLE_MQTT)
     ServiceRegistry::add(&svc_mqtt);
 #endif
+#if POWER_SVC_AVAILABLE
+    ServiceRegistry::add(&PowerService::instance());
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +319,16 @@ static void updateShellStatus() {
         auto* en = ServiceRegistry::getAs<EspNowService>("espnow");
         if (en) {
             tritium_shell::setMeshStatus(en->mesh().peerCount());
+        }
+    }
+#endif
+
+    // Battery status
+#if POWER_SVC_AVAILABLE
+    {
+        auto& pwr = PowerService::instance();
+        if (pwr.hasBattery()) {
+            tritium_shell::setBatteryStatus(pwr.getBatteryPercent(), pwr.isBatteryCharging());
         }
     }
 #endif

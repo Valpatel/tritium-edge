@@ -69,6 +69,11 @@ public:
     ScreenState getScreenState() const;
     uint32_t getIdleSeconds() const;
 
+    // Battery info for status bar
+    int getBatteryPercent() const;
+    bool isBatteryCharging() const;
+    bool hasBattery() const;
+
 private:
     PowerService() = default;
     ~PowerService() = default;

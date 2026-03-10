@@ -13,6 +13,7 @@
 
 #ifndef SIMULATOR
 #include "tritium_compat.h"
+#include "display.h"
 #else
 #include <cstdlib>
 static uint32_t millis() { return 0; }
@@ -298,6 +299,10 @@ uint32_t PowerService::getIdleSeconds() const {
     return (now - _lastActivityMs) / 1000;
 }
 
+int PowerService::getBatteryPercent() const { return _lastInfo.percentage; }
+bool PowerService::isBatteryCharging() const { return _lastInfo.is_charging; }
+bool PowerService::hasBattery() const { return _lastInfo.has_battery || _power.hasPMIC(); }
+
 // ============================================================================
 // Tick — main loop, called every frame
 // ============================================================================
@@ -565,6 +570,9 @@ void PowerService::wake() {}
 PowerProfile PowerService::getProfile() const { return PowerProfile::AUTO; }
 ScreenState PowerService::getScreenState() const { return ScreenState::ON; }
 uint32_t PowerService::getIdleSeconds() const { return 0; }
+int PowerService::getBatteryPercent() const { return -1; }
+bool PowerService::isBatteryCharging() const { return false; }
+bool PowerService::hasBattery() const { return false; }
 
 bool PowerService::handleCommand(const char* cmd, const char* args) {
     (void)cmd;
