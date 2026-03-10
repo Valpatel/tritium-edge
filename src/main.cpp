@@ -67,6 +67,11 @@ static SightingBufferService svc_sighting;
 static SightingLoggerService svc_logger;
 #endif
 
+#if defined(ENABLE_MQTT)
+#include "mqtt_service.h"
+static MqttService svc_mqtt;
+#endif
+
 #if defined(ENABLE_LORA)
 #include "lora_service.h"
 static LoraService svc_lora;
@@ -251,6 +256,9 @@ static void registerServices() {
 #endif
 #if defined(ENABLE_BLE_SERIAL) && __has_include("ble_serial_service.h")
     ServiceRegistry::add(&svc_ble_serial);
+#endif
+#if defined(ENABLE_MQTT)
+    ServiceRegistry::add(&svc_mqtt);
 #endif
 }
 

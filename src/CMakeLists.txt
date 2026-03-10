@@ -59,6 +59,7 @@ add_tritium_lib(hal_sleep)
 add_tritium_lib(hal_camera)
 add_tritium_lib(hal_mqtt)
 add_tritium_lib(hal_sighting_logger)
+add_tritium_lib(hal_mqtt)
 
 # SQLite3 amalgamation — compiled via wrapper that force-includes config header.
 # Only compile the wrapper (sqlite3_esp32.c) and the VFS shim, NOT sqlite3.c directly.
