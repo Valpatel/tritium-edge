@@ -122,6 +122,14 @@ static SettingsService svc_settings;
 static BleSerialService svc_ble_serial;
 #endif
 
+// OUI manufacturer lookup (SD card database)
+#if __has_include("oui_lookup.h")
+#include "oui_lookup.h"
+#define OUI_AVAILABLE 1
+#else
+#define OUI_AVAILABLE 0
+#endif
+
 // --- App selection via build flag ---
 #if defined(APP_STARFIELD)
 #include "starfield_app.h"
@@ -402,6 +410,13 @@ static void main_task(void* /*arg*/) {
     boot_sequence::finish();
 #else
     ServiceRegistry::initAll();
+#endif
+
+    // Initialize OUI manufacturer lookup from SD card database
+#if OUI_AVAILABLE
+    if (oui_lookup::init()) {
+        Serial.printf("[tritium] OUI: %d manufacturer entries loaded\n", oui_lookup::get_entry_count());
+    }
 #endif
 
     // Start the app (skip when shell is active — LVGL owns the display)

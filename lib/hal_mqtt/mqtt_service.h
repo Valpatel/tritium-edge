@@ -30,6 +30,20 @@
 #include "os_settings.h"
 #endif
 
+#if defined(ENABLE_BLE_SCANNER) && __has_include("hal_ble_scanner.h")
+#include "hal_ble_scanner.h"
+#define MQTT_BLE_STATS 1
+#else
+#define MQTT_BLE_STATS 0
+#endif
+
+#if defined(ENABLE_SIGHTING_LOGGER) && __has_include("hal_sighting_logger.h")
+#include "hal_sighting_logger.h"
+#define MQTT_LOGGER_STATS 1
+#else
+#define MQTT_LOGGER_STATS 0
+#endif
+
 class MqttService : public ServiceInterface {
 public:
     const char* name() const override { return "mqtt"; }
@@ -188,17 +202,33 @@ private:
     MqttHAL _mqtt;
 
     void publishHeartbeat() {
-        char buf[256];
+        char buf[512];
         uint32_t uptime = millis() / 1000;
         size_t heap = esp_get_free_heap_size();
         size_t psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
 
-        int n = snprintf(buf, sizeof(buf),
-            "{\"uptime\":%lu,\"heap\":%u,\"psram\":%u,\"services\":%d}",
+        int pos = snprintf(buf, sizeof(buf),
+            "{\"uptime\":%lu,\"heap\":%u,\"psram\":%u,\"services\":%d",
             (unsigned long)uptime,
             (unsigned)(heap / 1024),
             (unsigned)(psram / 1024),
             ServiceRegistry::count());
+
+#if MQTT_BLE_STATS
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+            ",\"ble_devices\":%d", hal_ble_scanner::get_visible_count());
+#endif
+
+#if MQTT_LOGGER_STATS
+        if (hal_sighting_logger::is_active()) {
+            auto s = hal_sighting_logger::get_stats();
+            pos += snprintf(buf + pos, sizeof(buf) - pos,
+                ",\"sightings\":{\"ble\":%lu,\"wifi\":%lu}",
+                (unsigned long)s.ble_logged, (unsigned long)s.wifi_logged);
+        }
+#endif
+
+        snprintf(buf + pos, sizeof(buf) - pos, "}");
 
         char topic[128];
         snprintf(topic, sizeof(topic), "%s/heartbeat", _topicPrefix);

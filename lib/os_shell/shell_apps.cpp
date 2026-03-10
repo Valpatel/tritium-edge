@@ -101,6 +101,13 @@ static uint32_t millis() { return SDL_GetTicks(); }
 #define SIGHTING_LOGGER_AVAILABLE 0
 #endif
 
+#if defined(ENABLE_MQTT) && __has_include("mqtt_service.h")
+#include "mqtt_service.h"
+#define MQTT_BRIDGE_AVAILABLE 1
+#else
+#define MQTT_BRIDGE_AVAILABLE 0
+#endif
+
 namespace shell_apps {
 
 // ---------------------------------------------------------------------------
@@ -3587,6 +3594,18 @@ static void chat_rx_callback(const MeshHeaderEx& hdr,
 
     chat_add_msg(sender, text, false);
 
+    // Bridge received chat to MQTT
+#if MQTT_BRIDGE_AVAILABLE
+    {
+        auto* mqtt_svc = ServiceRegistry::getAs<MqttService>("mqtt");
+        if (mqtt_svc) {
+            char json[256];
+            snprintf(json, sizeof(json), "{\"from\":\"%s\",\"text\":\"%s\"}", sender, text);
+            mqtt_svc->publish("chat", json);
+        }
+    }
+#endif
+
     // Show toast for new messages
     char toast_buf[80];
     snprintf(toast_buf, sizeof(toast_buf), "%s: %s",
@@ -3606,6 +3625,16 @@ static void chat_send_cb(lv_event_t* /*e*/) {
 
     if (mm.broadcast((const uint8_t*)payload, len)) {
         chat_add_msg("You", text, true);
+#if MQTT_BRIDGE_AVAILABLE
+        {
+            auto* mqtt_svc = ServiceRegistry::getAs<MqttService>("mqtt");
+            if (mqtt_svc) {
+                char json[256];
+                snprintf(json, sizeof(json), "{\"from\":\"self\",\"text\":\"%s\"}", text);
+                mqtt_svc->publish("chat", json);
+            }
+        }
+#endif
         lv_textarea_set_text(s_chat_input, "");
     } else {
         tritium_shell::toast("Send failed", tritium_shell::NOTIFY_ERROR, 2000);
