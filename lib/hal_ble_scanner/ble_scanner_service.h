@@ -23,6 +23,13 @@
 #define OUI_LOOKUP_AVAILABLE 0
 #endif
 
+#if __has_include("ble_classifier.h")
+#include "ble_classifier.h"
+#define BLE_CLASSIFIER_AVAILABLE 1
+#else
+#define BLE_CLASSIFIER_AVAILABLE 0
+#endif
+
 class BleScannerService : public ServiceInterface {
 public:
     const char* name() const override { return "ble_scanner"; }
@@ -75,15 +82,28 @@ public:
             int n = hal_ble_scanner::get_devices(devs, 16);
             Serial.printf("[ble] %d devices:\n", n);
             for (int i = 0; i < n; i++) {
+#if OUI_LOOKUP_AVAILABLE || BLE_CLASSIFIER_AVAILABLE
+                {
 #if OUI_LOOKUP_AVAILABLE
-                const char* mfg = oui_lookup::is_available() ? oui_lookup::lookup(devs[i].addr) : nullptr;
-                Serial.printf("  %02X:%02X:%02X:%02X:%02X:%02X rssi=%d seen=%lu %s%s%s%s%s\n",
-                    devs[i].addr[0],devs[i].addr[1],devs[i].addr[2],
-                    devs[i].addr[3],devs[i].addr[4],devs[i].addr[5],
-                    devs[i].rssi, (unsigned long)devs[i].seen_count,
-                    devs[i].is_known ? "[KNOWN] " : "",
-                    devs[i].name,
-                    mfg ? " (" : "", mfg ? mfg : "", mfg ? ")" : "");
+                    const char* mfg = oui_lookup::is_available() ? oui_lookup::lookup(devs[i].addr) : nullptr;
+#else
+                    const char* mfg = nullptr;
+#endif
+#if BLE_CLASSIFIER_AVAILABLE
+                    auto dtype = ble_classifier::classify(devs[i].addr, devs[i].name, devs[i].addr_type);
+                    const char* tname = ble_classifier::type_name(dtype);
+#else
+                    const char* tname = nullptr;
+#endif
+                    Serial.printf("  %02X:%02X:%02X:%02X:%02X:%02X rssi=%d seen=%lu %s%s%s%s%s%s%s%s\n",
+                        devs[i].addr[0],devs[i].addr[1],devs[i].addr[2],
+                        devs[i].addr[3],devs[i].addr[4],devs[i].addr[5],
+                        devs[i].rssi, (unsigned long)devs[i].seen_count,
+                        devs[i].is_known ? "[KNOWN] " : "",
+                        devs[i].name,
+                        mfg ? " (" : "", mfg ? mfg : "", mfg ? ")" : "",
+                        tname ? " [" : "", tname ? tname : "", tname ? "]" : "");
+                }
 #else
                 Serial.printf("  %02X:%02X:%02X:%02X:%02X:%02X rssi=%d seen=%lu %s%s\n",
                     devs[i].addr[0],devs[i].addr[1],devs[i].addr[2],
@@ -140,17 +160,31 @@ public:
             "{\"active\":true,\"total\":%d,\"known\":%d,\"devices\":[", n, known);
         for (int i = 0; i < n && pos < (int)size - 150; i++) {
             if (i > 0) buf[pos++] = ',';
+#if OUI_LOOKUP_AVAILABLE || BLE_CLASSIFIER_AVAILABLE
+            {
 #if OUI_LOOKUP_AVAILABLE
-            const char* mfg = oui_lookup::is_available() ? oui_lookup::lookup(devs[i].addr) : nullptr;
-            pos += snprintf(buf + pos, size - pos,
-                "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
-                "\"rssi\":%d,\"name\":\"%s\",\"mfg\":\"%s\",\"seen\":%lu,\"known\":%s}",
-                devs[i].addr[0], devs[i].addr[1], devs[i].addr[2],
-                devs[i].addr[3], devs[i].addr[4], devs[i].addr[5],
-                devs[i].rssi, devs[i].name,
-                mfg ? mfg : "",
-                (unsigned long)devs[i].seen_count,
-                devs[i].is_known ? "true" : "false");
+                const char* mfg = oui_lookup::is_available() ? oui_lookup::lookup(devs[i].addr) : nullptr;
+#else
+                const char* mfg = nullptr;
+#endif
+#if BLE_CLASSIFIER_AVAILABLE
+                auto dtype = ble_classifier::classify(devs[i].addr, devs[i].name, devs[i].addr_type);
+                const char* tname = ble_classifier::type_name(dtype);
+#else
+                const char* tname = nullptr;
+#endif
+                pos += snprintf(buf + pos, size - pos,
+                    "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+                    "\"rssi\":%d,\"name\":\"%s\",\"mfg\":\"%s\",\"type\":\"%s\","
+                    "\"seen\":%lu,\"known\":%s}",
+                    devs[i].addr[0], devs[i].addr[1], devs[i].addr[2],
+                    devs[i].addr[3], devs[i].addr[4], devs[i].addr[5],
+                    devs[i].rssi, devs[i].name,
+                    mfg ? mfg : "",
+                    tname ? tname : "Unknown",
+                    (unsigned long)devs[i].seen_count,
+                    devs[i].is_known ? "true" : "false");
+            }
 #else
             pos += snprintf(buf + pos, size - pos,
                 "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
