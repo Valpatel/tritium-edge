@@ -47,6 +47,9 @@ void terminal_create(lv_obj_t* viewport);
 /// Mesh Chat — P2P messaging over ESP-NOW mesh.
 void mesh_chat_create(lv_obj_t* viewport);
 
+/// Map viewer — offline tile map from MBTiles on SD card.
+void map_app_create(lv_obj_t* viewport);
+
 /// Delete any active LVGL timers from shell apps (call before switching apps).
 void cleanup_timers();
 

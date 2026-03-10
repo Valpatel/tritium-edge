@@ -58,6 +58,12 @@
 #define LV_USE_FLEX 1
 #define LV_USE_GRID 1
 
+// Canvas for custom drawing (map tiles, etc.)
+#define LV_USE_CANVAS 1
+
+// PNG decoder (built-in lodepng — needed for map tiles)
+#define LV_USE_LODEPNG 1
+
 // Themes
 #define LV_USE_THEME_DEFAULT 1
 #define LV_THEME_DEFAULT_DARK 1

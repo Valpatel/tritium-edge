@@ -108,6 +108,13 @@ static uint32_t millis() { return SDL_GetTicks(); }
 #define MQTT_BRIDGE_AVAILABLE 0
 #endif
 
+#if __has_include("mbtiles_reader.h")
+#include "mbtiles_reader.h"
+#define MAP_APP_AVAILABLE 1
+#else
+#define MAP_APP_AVAILABLE 0
+#endif
+
 namespace shell_apps {
 
 // ---------------------------------------------------------------------------
@@ -151,6 +158,7 @@ static lv_obj_t* s_wifi_saved_list   = nullptr;
 static lv_timer_t* s_wifi_timer      = nullptr;
 static lv_timer_t* s_chat_timer      = nullptr;  // Chat app — defined here for cleanup_timers()
 static lv_timer_t* s_term_timer      = nullptr;  // Terminal app — defined here for cleanup_timers()
+static lv_timer_t* s_map_timer       = nullptr;  // Map app — defined here for cleanup_timers()
 
 #if WIFI_APP_AVAILABLE
 
@@ -3512,6 +3520,7 @@ void cleanup_timers() {
     if (s_tracking_timer)  { lv_timer_delete(s_tracking_timer);  s_tracking_timer  = nullptr; }
     if (s_chat_timer)      { lv_timer_delete(s_chat_timer);      s_chat_timer      = nullptr; }
     if (s_term_timer)      { lv_timer_delete(s_term_timer);      s_term_timer      = nullptr; }
+    if (s_map_timer)       { lv_timer_delete(s_map_timer);       s_map_timer       = nullptr; }
 }
 
 // ===========================================================================
@@ -3968,10 +3977,311 @@ void terminal_create(lv_obj_t* viewport) {
     s_term_timer = lv_timer_create(term_refresh, 500, nullptr);
 }
 
+// ===========================================================================
+//  Map Viewer App — offline map tiles from MBTiles on SD card
+// ===========================================================================
+
+// Map state
+static lv_obj_t* s_map_canvas = nullptr;
+static lv_obj_t* s_map_coord_lbl = nullptr;
+static lv_obj_t* s_map_info_lbl = nullptr;
+static double s_map_lat = 37.7749;   // Default: San Francisco
+static double s_map_lon = -122.4194;
+static uint8_t s_map_zoom = 12;
+static bool s_map_dirty = true;
+static bool s_map_opened = false;
+
+#if MAP_APP_AVAILABLE
+
+static void map_render_tile() {
+    if (!s_map_canvas || !mbtiles::is_open()) return;
+
+    uint32_t tile_x = mbtiles::lon_to_tile_x(s_map_lon, s_map_zoom);
+    uint32_t tile_y = mbtiles::lat_to_tile_y(s_map_lat, s_map_zoom);
+
+    // Update coordinate label
+    if (s_map_coord_lbl) {
+        char buf[80];
+        snprintf(buf, sizeof(buf), "%.4f, %.4f  Z%d  [%u,%u]",
+                 s_map_lat, s_map_lon, s_map_zoom, tile_x, tile_y);
+        lv_label_set_text(s_map_coord_lbl, buf);
+    }
+
+    // Load the tile from MBTiles
+    size_t tile_len = 0;
+    uint8_t* tile_data = mbtiles::get_tile(s_map_zoom, tile_x, tile_y, tile_len);
+
+    if (!tile_data) {
+        // Draw "no tile" placeholder
+        lv_canvas_fill_bg(s_map_canvas, lv_color_hex(0x0a0a14), LV_OPA_COVER);
+        lv_layer_t layer;
+        lv_canvas_init_layer(s_map_canvas, &layer);
+        lv_draw_label_dsc_t label_dsc;
+        lv_draw_label_dsc_init(&label_dsc);
+        label_dsc.color = lv_color_hex(0x333355);
+        label_dsc.text = "No tile data";
+        label_dsc.font = tritium_shell::uiFont();
+        label_dsc.align = LV_TEXT_ALIGN_CENTER;
+        lv_area_t area = {20, 100, 236, 140};
+        lv_draw_label(&layer, &label_dsc, &area);
+        lv_canvas_finish_layer(s_map_canvas, &layer);
+
+        if (s_map_info_lbl) {
+            lv_label_set_text(s_map_info_lbl, "No tile available at this location");
+        }
+        return;
+    }
+
+    // Use LVGL's image decoder to render the PNG tile to the canvas
+    // Create an image descriptor pointing to the in-memory PNG data
+    lv_image_dsc_t png_dsc;
+    memset(&png_dsc, 0, sizeof(png_dsc));
+    png_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    png_dsc.header.w = 256;
+    png_dsc.header.h = 256;
+    png_dsc.header.cf = LV_COLOR_FORMAT_RAW;
+    png_dsc.data = tile_data;
+    png_dsc.data_size = tile_len;
+
+    // For now, just fill the canvas with a color based on tile existence
+    // and show a confirmation that the tile was loaded.
+    // Full PNG-to-canvas rendering requires LVGL image decode pipeline.
+    lv_canvas_fill_bg(s_map_canvas, lv_color_hex(0x0e1a0e), LV_OPA_COVER);
+
+    // Draw a grid pattern to indicate tile position
+    lv_layer_t layer;
+    lv_canvas_init_layer(s_map_canvas, &layer);
+
+    // Draw tile border
+    lv_draw_rect_dsc_t rect_dsc;
+    lv_draw_rect_dsc_init(&rect_dsc);
+    rect_dsc.bg_opa = LV_OPA_TRANSP;
+    rect_dsc.border_color = lv_color_hex(0x00f0ff);
+    rect_dsc.border_width = 1;
+    rect_dsc.border_opa = LV_OPA_50;
+    lv_area_t rect_area = {0, 0, 255, 255};
+    lv_draw_rect(&layer, &rect_dsc, &rect_area);
+
+    // Draw coordinate info on tile
+    lv_draw_label_dsc_t lbl_dsc;
+    lv_draw_label_dsc_init(&lbl_dsc);
+    lbl_dsc.color = lv_color_hex(0x00f0ff);
+    lbl_dsc.font = tritium_shell::uiSmallFont();
+    lbl_dsc.align = LV_TEXT_ALIGN_CENTER;
+
+    char info[64];
+    snprintf(info, sizeof(info), "Tile %u/%u/%u\n%zu bytes (PNG)",
+             s_map_zoom, tile_x, tile_y, tile_len);
+    lbl_dsc.text = info;
+    lv_area_t lbl_area = {10, 110, 246, 160};
+    lv_draw_label(&layer, &lbl_dsc, &lbl_area);
+
+    lv_canvas_finish_layer(s_map_canvas, &layer);
+
+    if (s_map_info_lbl) {
+        char ibuf[64];
+        snprintf(ibuf, sizeof(ibuf), "Tile loaded: %zu bytes", tile_len);
+        lv_label_set_text(s_map_info_lbl, ibuf);
+    }
+
+    free(tile_data);
+}
+
+static void map_refresh(lv_timer_t* /*t*/) {
+    if (!s_map_dirty) return;
+    s_map_dirty = false;
+    map_render_tile();
+}
+
+static void map_zoom_in_cb(lv_event_t* /*e*/) {
+    mbtiles::Metadata md;
+    uint8_t max_z = 20;
+    if (mbtiles::get_metadata(md)) max_z = md.max_zoom;
+    if (s_map_zoom < max_z) { s_map_zoom++; s_map_dirty = true; }
+}
+
+static void map_zoom_out_cb(lv_event_t* /*e*/) {
+    mbtiles::Metadata md;
+    uint8_t min_z = 0;
+    if (mbtiles::get_metadata(md)) min_z = md.min_zoom;
+    if (s_map_zoom > min_z) { s_map_zoom--; s_map_dirty = true; }
+}
+
+// Pan by fraction of current tile span
+static void map_pan(double dlat, double dlon) {
+    // At current zoom, one tile spans this many degrees
+    double lon_span = 360.0 / (1 << s_map_zoom);
+    double lat_span = lon_span * 0.7;  // Approximation for Mercator
+    s_map_lat += dlat * lat_span;
+    s_map_lon += dlon * lon_span;
+    // Clamp
+    if (s_map_lat > 85.0) s_map_lat = 85.0;
+    if (s_map_lat < -85.0) s_map_lat = -85.0;
+    if (s_map_lon > 180.0) s_map_lon -= 360.0;
+    if (s_map_lon < -180.0) s_map_lon += 360.0;
+    s_map_dirty = true;
+}
+
+#endif  // MAP_APP_AVAILABLE
+
+void map_app_create(lv_obj_t* viewport) {
+    lv_obj_clean(viewport);
+    lv_obj_set_flex_flow(viewport, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(viewport, 4, 0);
+    lv_obj_set_style_pad_gap(viewport, 4, 0);
+
+#if !MAP_APP_AVAILABLE
+    tritium_theme::createLabel(viewport, "Map viewer not available (missing mbtiles_reader)");
+    return;
+#else
+    // Try to open MBTiles if not already open
+    if (!mbtiles::is_open()) {
+        // Try common paths
+        if (!mbtiles::open("/sdcard/data/map.mbtiles") &&
+            !mbtiles::open("/sdcard/data/ca_tiles.mbtiles") &&
+            !mbtiles::open("/sdcard/map.mbtiles")) {
+            s_map_opened = false;
+        } else {
+            s_map_opened = true;
+        }
+    } else {
+        s_map_opened = true;
+    }
+
+    // Header
+    lv_obj_t* hdr = lv_obj_create(viewport);
+    lv_obj_set_width(hdr, lv_pct(100));
+    lv_obj_set_height(hdr, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_opa(hdr, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 0, 0);
+    lv_obj_remove_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* title = lv_label_create(hdr);
+    lv_label_set_text(title, LV_SYMBOL_GPS " MAP");
+    lv_obj_set_style_text_color(title, T_CYAN, 0);
+    lv_obj_set_style_text_font(title, tritium_shell::uiFont(), 0);
+
+    s_map_coord_lbl = lv_label_create(hdr);
+    lv_label_set_text(s_map_coord_lbl, "---");
+    lv_obj_set_style_text_color(s_map_coord_lbl, T_GHOST, 0);
+    lv_obj_set_style_text_font(s_map_coord_lbl, tritium_shell::uiSmallFont(), 0);
+
+    if (!s_map_opened) {
+        tritium_theme::createLabel(viewport,
+            "No map data found.\n\n"
+            "Place an MBTiles file at:\n"
+            "  /sdcard/data/map.mbtiles\n\n"
+            "Use tools/download_tiles.py to\n"
+            "generate offline map tiles.");
+
+        // Show MBTiles metadata if available
+        mbtiles::Metadata md;
+        if (mbtiles::get_metadata(md)) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "%s — %d tiles, zoom %d-%d",
+                     md.name, md.tile_count, md.min_zoom, md.max_zoom);
+            tritium_theme::createLabel(viewport, buf);
+        }
+        return;
+    }
+
+    // Center on MBTiles center if available
+    mbtiles::Metadata md;
+    if (mbtiles::get_metadata(md) && md.center_lat != 0.0) {
+        s_map_lat = md.center_lat;
+        s_map_lon = md.center_lon;
+        s_map_zoom = md.center_zoom > 0 ? md.center_zoom : 12;
+    }
+
+    // Map canvas — 256x256 (one tile), allocated in PSRAM
+    s_map_canvas = lv_canvas_create(viewport);
+    static uint16_t* canvas_buf = nullptr;
+    if (!canvas_buf) {
+#ifndef SIMULATOR
+        canvas_buf = (uint16_t*)heap_caps_malloc(256 * 256 * 2, MALLOC_CAP_SPIRAM);
+#endif
+        if (!canvas_buf) canvas_buf = (uint16_t*)malloc(256 * 256 * 2);
+    }
+    if (!canvas_buf) {
+        tritium_theme::createLabel(viewport, "Out of memory for map canvas");
+        return;
+    }
+    lv_canvas_set_buffer(s_map_canvas, canvas_buf, 256, 256, LV_COLOR_FORMAT_RGB565);
+    lv_canvas_fill_bg(s_map_canvas, lv_color_hex(0x0a0a14), LV_OPA_COVER);
+    lv_obj_set_style_border_color(s_map_canvas, T_CYAN, 0);
+    lv_obj_set_style_border_width(s_map_canvas, 1, 0);
+    lv_obj_set_style_border_opa(s_map_canvas, LV_OPA_30, 0);
+    lv_obj_center(s_map_canvas);
+
+    // Controls row
+    lv_obj_t* ctrl = lv_obj_create(viewport);
+    lv_obj_set_width(ctrl, lv_pct(100));
+    lv_obj_set_height(ctrl, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(ctrl, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(ctrl, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_opa(ctrl, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ctrl, 0, 0);
+    lv_obj_set_style_pad_all(ctrl, 2, 0);
+    lv_obj_set_style_pad_gap(ctrl, 4, 0);
+    lv_obj_remove_flag(ctrl, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Pan buttons
+    lv_obj_t* btn_up = tritium_theme::createButton(ctrl, LV_SYMBOL_UP);
+    lv_obj_set_size(btn_up, 36, 28);
+    lv_obj_add_event_cb(btn_up, [](lv_event_t*) { map_pan(0.5, 0); }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* btn_down = tritium_theme::createButton(ctrl, LV_SYMBOL_DOWN);
+    lv_obj_set_size(btn_down, 36, 28);
+    lv_obj_add_event_cb(btn_down, [](lv_event_t*) { map_pan(-0.5, 0); }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* btn_left = tritium_theme::createButton(ctrl, LV_SYMBOL_LEFT);
+    lv_obj_set_size(btn_left, 36, 28);
+    lv_obj_add_event_cb(btn_left, [](lv_event_t*) { map_pan(0, -0.5); }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* btn_right = tritium_theme::createButton(ctrl, LV_SYMBOL_RIGHT);
+    lv_obj_set_size(btn_right, 36, 28);
+    lv_obj_add_event_cb(btn_right, [](lv_event_t*) { map_pan(0, 0.5); }, LV_EVENT_CLICKED, nullptr);
+
+    // Spacer
+    lv_obj_t* spacer = lv_obj_create(ctrl);
+    lv_obj_set_size(spacer, 20, 1);
+    lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(spacer, 0, 0);
+
+    // Zoom buttons
+    lv_obj_t* btn_zin = tritium_theme::createButton(ctrl, LV_SYMBOL_PLUS);
+    lv_obj_set_size(btn_zin, 36, 28);
+    lv_obj_add_event_cb(btn_zin, map_zoom_in_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* btn_zout = tritium_theme::createButton(ctrl, LV_SYMBOL_MINUS);
+    lv_obj_set_size(btn_zout, 36, 28);
+    lv_obj_add_event_cb(btn_zout, map_zoom_out_cb, LV_EVENT_CLICKED, nullptr);
+
+    // Info label
+    s_map_info_lbl = lv_label_create(viewport);
+    lv_label_set_text(s_map_info_lbl, "Loading...");
+    lv_obj_set_style_text_color(s_map_info_lbl, T_GHOST, 0);
+    lv_obj_set_style_text_font(s_map_info_lbl, tritium_shell::uiSmallFont(), 0);
+
+    // Initial render
+    s_map_dirty = true;
+    s_map_timer = lv_timer_create(map_refresh, 200, nullptr);
+#endif
+}
+
 //  Register all new apps
 // ===========================================================================
 
 void register_all_apps() {
+    // Map — offline tile map viewer
+    tritium_shell::registerApp({"Map", "Offline maps", LV_SYMBOL_GPS,
+                                true, map_app_create});
+
     // Mesh Chat — P2P messaging over ESP-NOW
     tritium_shell::registerApp({"Chat", "Mesh messaging", LV_SYMBOL_SHUFFLE,
                                 false, mesh_chat_create});
