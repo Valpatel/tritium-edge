@@ -37,6 +37,7 @@ class ElementSpec:
 
     dangerous: bool = False   # Never interact — just verify presence
     restore: bool = True      # Restore original value after testing
+    optional: bool = False    # Element may not exist (build config dependent)
 
 
 # ── Settings tabs (order matters — matches firmware tab order) ──────────
@@ -106,7 +107,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         action="skip",
         match={"type": "switch", "index": 0},
         expect={"reason": "toggling BLE scanner disrupts scanning"},
-        dangerous=True,
+        dangerous=True, optional=True,
     ),
     ElementSpec(
         screen="Settings/BLE",
@@ -114,6 +115,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         action="test_switch",
         match={"type": "switch", "index": 1},
         expect={"visual_min_pct": 0.05},
+        optional=True,
     ),
     ElementSpec(
         screen="Settings/BLE",
@@ -121,6 +123,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         action="test_button",
         match={"type": "btn", "text_contains": "SCAN", "y_min": 80},
         expect={"max_shift_px": 2.0},
+        optional=True,
     ),
 
     # ╔══════════════════════════════════════════════════════════════════╗

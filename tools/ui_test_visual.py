@@ -195,11 +195,17 @@ def test_element_sweep(dev: TritiumDevice, report: TestReport,
                     widget = match_widget(spec, tab_widgets)
 
                     if widget is None:
-                        detail = f"{spec.name}: not found (match={spec.match})"
-                        report.add("elements", f"{screen}/{spec.name}", False,
-                                   detail)
-                        print(f"  [MISS] {screen}/{spec.name}: not found")
-                        not_found += 1
+                        if spec.optional:
+                            detail = f"{spec.name}: not present (optional)"
+                            report.add("elements", f"{screen}/{spec.name}",
+                                       True, detail)
+                            print(f"  [SKIP] {screen}/{spec.name}: optional, not present")
+                        else:
+                            detail = f"{spec.name}: not found (match={spec.match})"
+                            report.add("elements", f"{screen}/{spec.name}",
+                                       False, detail)
+                            print(f"  [MISS] {screen}/{spec.name}: not found")
+                            not_found += 1
                         total += 1
                         continue
 
@@ -259,10 +265,15 @@ def test_element_sweep(dev: TritiumDevice, report: TestReport,
             widget = match_widget(spec, widgets)
 
             if widget is None:
-                detail = f"{spec.name}: not found (match={spec.match})"
-                report.add("elements", f"{screen}/{spec.name}", False, detail)
-                print(f"  [MISS] {screen}/{spec.name}: not found")
-                not_found += 1
+                if spec.optional:
+                    detail = f"{spec.name}: not present (optional)"
+                    report.add("elements", f"{screen}/{spec.name}", True, detail)
+                    print(f"  [SKIP] {screen}/{spec.name}: optional, not present")
+                else:
+                    detail = f"{spec.name}: not found (match={spec.match})"
+                    report.add("elements", f"{screen}/{spec.name}", False, detail)
+                    print(f"  [MISS] {screen}/{spec.name}: not found")
+                    not_found += 1
                 total += 1
                 continue
 
