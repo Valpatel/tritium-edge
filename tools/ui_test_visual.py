@@ -43,6 +43,18 @@ from lib.registry import (
 )
 from lib.actions import ACTION_MAP
 
+# Module-level flag: skip screenshots to avoid httpd socket exhaustion.
+# ESP32 httpd can only stream the 1.15MB BMP at ~70KB/s, tying up a socket
+# for 15+ seconds and causing cascade failures during sustained testing.
+SKIP_SCREENSHOTS = False
+
+
+def safe_screenshot(dev: TritiumDevice) -> "np.ndarray | None":
+    """Get screenshot, respecting SKIP_SCREENSHOTS flag."""
+    if SKIP_SCREENSHOTS:
+        return None
+    return safe_screenshot(dev)
+
 
 # ── Navigation ──────────────────────────────────────────────────────────
 
@@ -435,16 +447,18 @@ def test_performance(dev: TritiumDevice, report: TestReport, vis: VisualValidato
 
     # Screenshot latency — ESP32 httpd throughput is ~70KB/s for the
     # 1.15MB BMP, so 15s+ is expected.  Only check that it succeeds.
-    t0 = time.time()
-    img = dev.screenshot_np()
-    dt = (time.time() - t0) * 1000
-    report.add("performance", "screenshot_latency",
-               img is not None,
-               f"{dt:.0f}ms, {'ok' if img is not None else 'FAILED'}",
-               duration_ms=dt)
-
-    if img is not None:
-        vis.save(img, "perf_screenshot")
+    if SKIP_SCREENSHOTS:
+        report.add("performance", "screenshot_latency", True, "skipped (soak mode)")
+    else:
+        t0 = time.time()
+        img = safe_screenshot(dev)
+        dt = (time.time() - t0) * 1000
+        report.add("performance", "screenshot_latency",
+                   img is not None,
+                   f"{dt:.0f}ms, {'ok' if img is not None else 'FAILED'}",
+                   duration_ms=dt)
+        if img is not None:
+            vis.save(img, "perf_screenshot")
 
     # UI tree latency
     t0 = time.time()
@@ -460,6 +474,10 @@ def test_performance(dev: TritiumDevice, report: TestReport, vis: VisualValidato
 def test_visual_stability(dev: TritiumDevice, report: TestReport, vis: VisualValidator):
     """Check that the current screen is visually stable (no flicker)."""
     print("\n--- Visual Stability ---")
+
+    if SKIP_SCREENSHOTS:
+        report.add("visual", "screen_stable", True, "skipped (soak mode)")
+        return
 
     diff = vis.check_screen_stability(dev, duration_s=2.0, interval_s=0.5)
     report.add("visual", "screen_stable",
@@ -491,7 +509,7 @@ def test_app_launch(dev: TritiumDevice, report: TestReport, vis: VisualValidator
     if randomize:
         random.shuffle(available)
 
-    launcher_img = dev.screenshot_np()
+    launcher_img = safe_screenshot(dev)
     if launcher_img is not None:
         vis.save(launcher_img, "launcher_baseline")
 
@@ -506,7 +524,7 @@ def test_app_launch(dev: TritiumDevice, report: TestReport, vis: VisualValidator
         widgets = dev.ui_tree(flat=True)
         wcount = len(widgets) if isinstance(widgets, list) else 0
 
-        app_img = dev.screenshot_np()
+        app_img = safe_screenshot(dev)
         diff_pct = 0.0
         if app_img is not None:
             vis.save(app_img, f"app_{name}")
@@ -561,7 +579,7 @@ def test_settings_tabs(dev: TritiumDevice, report: TestReport, vis: VisualValida
         time.sleep(1.2)
         dt = (time.time() - t0) * 1000
 
-        tab_img = dev.screenshot_np()
+        tab_img = safe_screenshot(dev)
         tab_widgets = dev.ui_tree(flat=True)
         wcount = len(tab_widgets) if isinstance(tab_widgets, list) else 0
 
@@ -596,7 +614,7 @@ def test_map_content(dev: TritiumDevice, report: TestReport, vis: VisualValidato
         dev.home()
         return
 
-    img = dev.screenshot_np()
+    img = safe_screenshot(dev)
     if img is None:
         report.add("map", "render", False, "Screenshot failed")
         dev.home()
@@ -995,6 +1013,12 @@ def main():
             print("  [Setup] Disabled sleep/screensaver for testing")
     except Exception:
         print("  [Setup] Warning: could not disable sleep")
+
+    # In soak mode, skip screenshots — they tie up an httpd socket for
+    # 15+ seconds (1.15MB BMP at ~70KB/s) and cause cascade failures.
+    global SKIP_SCREENSHOTS
+    if args.soak > 0:
+        SKIP_SCREENSHOTS = True
 
     try:
         if args.soak > 0:
