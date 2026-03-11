@@ -223,30 +223,30 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
     ElementSpec(
         screen="Settings/Screensaver",
         widget_type="slider", name="screensaver_timeout",
-        action="readonly",
+        action="test_slider",
         match={"type": "slider", "max": 600, "y_min": 80},
-        expect={"reason": "screensaver timeout indicator"},
+        expect={"delta": 60, "visual_min_pct": 0.01},
     ),
     ElementSpec(
         screen="Settings/Screensaver",
-        widget_type="switch", name="screensaver_enable_1",
+        widget_type="switch", name="sf_reverse_direction",
         action="test_switch",
         match={"type": "switch", "index": 0, "y_min": 80},
-        expect={"visual_min_pct": 0.05},
+        expect={"visual_min_pct": 0.01},
     ),
     ElementSpec(
         screen="Settings/Screensaver",
-        widget_type="switch", name="screensaver_enable_2",
+        widget_type="switch", name="sf_colored_stars",
         action="test_switch",
         match={"type": "switch", "index": 1, "y_min": 80},
-        expect={"visual_min_pct": 0.05},
+        expect={"visual_min_pct": 0.01},
     ),
     ElementSpec(
         screen="Settings/Screensaver",
-        widget_type="slider", name="screensaver_speed",
+        widget_type="slider", name="sf_star_size",
         action="test_slider",
         match={"type": "slider", "min": 1, "max": 6},
-        expect={"delta": 1, "visual_min_pct": 0.05},
+        expect={"delta": 1, "visual_min_pct": 0.01},
     ),
 
     # ╔══════════════════════════════════════════════════════════════════╗

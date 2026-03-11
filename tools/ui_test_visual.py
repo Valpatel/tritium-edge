@@ -91,16 +91,34 @@ def navigate_to(dev: TritiumDevice, screen: str) -> bool:
 # ── Registry-driven element sweep ──────────────────────────────────────
 
 def _switch_settings_tab(dev: TritiumDevice, tab_name: str,
-                         tab_btns: list) -> bool:
-    """Click a settings tab button by index. tab_btns must already be populated."""
+                         tab_btns: list) -> list:
+    """Click a settings tab button by index with retry.
+
+    Returns the widget tree after switching, or empty list on failure.
+    Clicks the tab button up to 3 times with increasing delays.
+    """
     if tab_name not in SETTINGS_TABS:
-        return False
+        return []
     tab_idx = SETTINGS_TABS.index(tab_name)
     if tab_idx >= len(tab_btns):
-        return False
-    dev.click(tab_btns[tab_idx]["id"])
-    time.sleep(1.5)
-    return True
+        return []
+
+    delays = [1.5, 2.0, 2.5]
+    for attempt, delay in enumerate(delays):
+        dev.click(tab_btns[tab_idx]["id"])
+        time.sleep(delay)
+
+        widgets = dev.ui_tree(flat=True)
+        if isinstance(widgets, list) and len(widgets) > 10:
+            return widgets
+
+        if attempt < len(delays) - 1:
+            n = len(widgets) if isinstance(widgets, list) else 0
+            print(f"  [RETRY] Tab '{tab_name}' switch attempt {attempt + 1}"
+                  f" — got {n} widgets, retrying...")
+
+    # Final fallback: return whatever we got
+    return widgets if isinstance(widgets, list) else []
 
 
 def test_element_sweep(dev: TritiumDevice, report: TestReport,
@@ -165,21 +183,8 @@ def test_element_sweep(dev: TritiumDevice, report: TestReport,
 
                 print(f"\n  Screen: {screen} ({len(specs)} elements)")
 
-                if not _switch_settings_tab(dev, tab_name, tab_btns):
-                    report.add("elements", f"{screen}_nav", False,
-                               f"Failed to switch to tab {tab_name}")
-                    for spec in specs:
-                        report.add("elements", f"{screen}/{spec.name}", False,
-                                   "Skipped: tab switch failed")
-                        total += 1
-                    continue
-
-                # Get fresh widget tree for this tab (retry once)
-                tab_widgets = dev.ui_tree(flat=True)
-                if not isinstance(tab_widgets, list) or len(tab_widgets) < 5:
-                    time.sleep(1.5)
-                    tab_widgets = dev.ui_tree(flat=True)
-                if not isinstance(tab_widgets, list):
+                tab_widgets = _switch_settings_tab(dev, tab_name, tab_btns)
+                if not tab_widgets:
                     for spec in specs:
                         report.add("elements", f"{screen}/{spec.name}", False,
                                    "Skipped: widget tree failed")
@@ -313,10 +318,9 @@ def _discover_unregistered(dev: TritiumDevice, report: TestReport,
         wtype = w.get("type", "").removeprefix("lv_")
         if wtype not in ("btn", "slider", "switch", "dropdown", "checkbox"):
             continue
-        # Skip nav buttons (bottom bar, y >= 400 with no text)
-        if wtype == "btn" and w.get("y", 0) >= 400:
-            if not w.get("text", "").strip():
-                continue
+        # Skip nav buttons (bottom bar, y >= 430)
+        if wtype == "btn" and w.get("y", 0) >= 430:
+            continue
         # Skip tab buttons (top bar, y < 80)
         if wtype == "btn" and w.get("y", 999) < 80:
             continue
@@ -620,6 +624,62 @@ def test_stability(dev: TritiumDevice, report: TestReport, vis: VisualValidator,
         pass
 
 
+def test_tab_stress(dev: TritiumDevice, report: TestReport, vis: VisualValidator,
+                    cycles: int = 2):
+    """Rapidly cycle through all Settings tabs to stress httpd and LVGL."""
+    print("\n--- Tab Stress ---")
+
+    result = dev.launch("Settings")
+    time.sleep(1.5)
+    if not result or not result.get("ok"):
+        report.add("tab_stress", "launch", False, "Settings launch failed")
+        return
+
+    widgets = dev.ui_tree(flat=True)
+    if not isinstance(widgets, list):
+        report.add("tab_stress", "ui_tree", False, "Widget tree failed")
+        return
+
+    buttons = extract_buttons(widgets)
+    tab_btns = [b for b in buttons
+                if b.get("y", 999) < 80 and b.get("h", 0) > 30]
+
+    if len(tab_btns) < 11:
+        report.add("tab_stress", "tab_count", False,
+                   f"Only {len(tab_btns)} tabs found")
+        dev.home()
+        return
+
+    errors = 0
+    start = time.time()
+    total_switches = 0
+
+    for cycle in range(cycles):
+        order = list(range(len(tab_btns)))
+        random.shuffle(order)
+        for idx in order:
+            dev.click(tab_btns[idx]["id"])
+            time.sleep(0.8)  # Minimum safe delay
+            total_switches += 1
+
+            # Verify device still responsive every few switches
+            if total_switches % 5 == 0:
+                tree = dev.ui_tree(flat=True)
+                if not isinstance(tree, list) or len(tree) < 3:
+                    errors += 1
+
+    elapsed = time.time() - start
+    rate = total_switches / elapsed if elapsed > 0 else 0
+
+    report.add("tab_stress", "rapid_switching",
+               errors == 0,
+               f"{total_switches} switches in {elapsed:.1f}s "
+               f"({rate:.1f}/s), {errors} errors")
+
+    dev.home()
+    time.sleep(0.8)
+
+
 # ── Sweep orchestration ────────────────────────────────────────────────
 
 def run_single_sweep(dev: TritiumDevice, report: TestReport,
@@ -637,6 +697,7 @@ def run_single_sweep(dev: TritiumDevice, report: TestReport,
         ("element_sweep", lambda: test_element_sweep(dev, report, vis, randomize)),
         ("map_content", lambda: test_map_content(dev, report, vis)),
         ("stability", lambda: test_stability(dev, report, vis, randomize=randomize)),
+        ("tab_stress", lambda: test_tab_stress(dev, report, vis)),
     ]
 
     if randomize:
