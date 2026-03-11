@@ -228,6 +228,8 @@ static float _crystal_angle = 0.0f;   // current crystal rotation
 static int _crystal_cx, _crystal_cy;  // crystal center
 static int _crystal_r;                // crystal pixel radius
 static int _crystal_bottom;           // Y below crystal + title area
+static int _footer_height = 0;       // reserved space at bottom for author/ready
+static int _service_zone_top = 0;    // Y where service log starts (for scrolling)
 static const int CHUNK = 64;
 
 // ============================================================================
@@ -776,14 +778,34 @@ void showLogo(const char* version) {
     draw_string(author2_x, author2_y, author2, scale_color(COL_DIM_CYAN, 0.5f), 1);
     draw_string(author1_x, author1_y, author1, scale_color(COL_DIM_CYAN, 0.5f), 1);
     _line_y = sep_y + 8;
+    _service_zone_top = _line_y;  // Remember where service log starts for scrolling
     push_full();
 }
 
+// Moved to module-level statics so showLogo can set and showService can read
+
 void showService(const char* name, const char* status, const char* detail) {
     if (!_fb) return;
-    if (_line_y + _line_height > _h) return;
 
-    // Crystal stays static (frozen at final showLogo angle) — no flicker.
+    // Footer = 2 lines of author text + separator + SYSTEM READY + padding
+    if (_footer_height == 0) {
+        _footer_height = 7 + 3 + 7 + 4 + _line_height + 6 + _line_height;
+    }
+    int max_y = _h - _footer_height;
+
+    // If next line would overflow, scroll the service log region up
+    if (_line_y + _line_height > max_y) {
+        int scroll_amount = _line_height;
+        int log_top = _service_zone_top;
+        // Shift pixels up within the service log region
+        memmove(&_fb[log_top * _w],
+                &_fb[(log_top + scroll_amount) * _w],
+                (max_y - log_top - scroll_amount) * _w * sizeof(uint16_t));
+        // Clear the newly exposed line at bottom
+        memset(&_fb[(max_y - scroll_amount) * _w], 0,
+               scroll_amount * _w * sizeof(uint16_t));
+        _line_y -= scroll_amount;
+    }
 
     // Draw the service line
     int x = _margin_x;
@@ -811,8 +833,8 @@ void showService(const char* name, const char* status, const char* detail) {
 
     _line_y += _line_height;
 
-    // Push just the service line region — clean, no flicker
-    push_region(y, y + _line_height + 2);
+    // Push the entire service log region (scrolled content needs full repaint)
+    push_region(_service_zone_top, max_y);
     delay(80);
 }
 
@@ -836,8 +858,8 @@ void showReady() {
 
     push_full();
 
-    // Hold long enough to read the service log and ready status
-    delay(2000);
+    // Brief hold to see final status before shell takes over
+    delay(800);
 }
 
 void finish() {
