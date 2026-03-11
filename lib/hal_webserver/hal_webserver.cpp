@@ -2813,9 +2813,13 @@ static esp_err_t _api_screenshot_handler(httpd_req_t* req) {
     // Send BMP header
     httpd_resp_send_chunk(req, (const char*)hdr, 54);
 
-    // Convert and stream row by row
-    uint8_t* row_buf = (uint8_t*)malloc(padded_row);
-    if (!row_buf) {
+    // Convert and stream in batched chunks (~32KB) to reduce socket ops.
+    // Sending row-by-row (480 sends) causes EAGAIN under WiFi congestion.
+    const int rows_per_chunk = 12;  // 12 rows × 2400B = ~28.8KB per send
+    int chunk_size = padded_row * rows_per_chunk;
+    uint8_t* chunk_buf = (uint8_t*)heap_caps_malloc(chunk_size, MALLOC_CAP_SPIRAM);
+    if (!chunk_buf) chunk_buf = (uint8_t*)malloc(chunk_size);
+    if (!chunk_buf) {
         return httpd_resp_send_chunk(req, nullptr, 0);
     }
 
@@ -2824,22 +2828,31 @@ static esp_err_t _api_screenshot_handler(httpd_req_t* req) {
     needs_swap = false;
 #endif
 
+    int buf_pos = 0;
     for (int y = 0; y < h; y++) {
         uint16_t* row_src = &fb[y * w];
+        uint8_t* row_dst = chunk_buf + buf_pos;
         for (int x = 0; x < w; x++) {
             uint16_t px = row_src[x];
             if (needs_swap) px = (px >> 8) | (px << 8);
             uint8_t r5 = (px >> 11) & 0x1F;
             uint8_t g6 = (px >> 5) & 0x3F;
             uint8_t b5 = px & 0x1F;
-            row_buf[x * 3 + 0] = (b5 << 3) | (b5 >> 2);
-            row_buf[x * 3 + 1] = (g6 << 2) | (g6 >> 4);
-            row_buf[x * 3 + 2] = (r5 << 3) | (r5 >> 2);
+            row_dst[x * 3 + 0] = (b5 << 3) | (b5 >> 2);
+            row_dst[x * 3 + 1] = (g6 << 2) | (g6 >> 4);
+            row_dst[x * 3 + 2] = (r5 << 3) | (r5 >> 2);
         }
-        for (int p = 0; p < row_pad; p++) row_buf[row_bytes + p] = 0;
-        httpd_resp_send_chunk(req, (const char*)row_buf, padded_row);
+        for (int p = 0; p < row_pad; p++) row_dst[row_bytes + p] = 0;
+        buf_pos += padded_row;
+
+        // Flush chunk when full or at last row
+        if (buf_pos >= chunk_size || y == h - 1) {
+            esp_err_t err = httpd_resp_send_chunk(req, (const char*)chunk_buf, buf_pos);
+            if (err != ESP_OK) break;
+            buf_pos = 0;
+        }
     }
-    free(row_buf);
+    free(chunk_buf);
     return httpd_resp_send_chunk(req, nullptr, 0);
 }
 
@@ -2973,22 +2986,32 @@ static esp_err_t _api_remote_screenshot_handler(httpd_req_t* req) {
     httpd_resp_set_hdr(req, "Access-Control-Expose-Headers", "X-Width, X-Height");
 
     if (needs_swap) {
-        const int row_words = w;
-        uint16_t* row_buf = (uint16_t*)malloc(row_words * 2);
-        if (!row_buf) {
+        // Batch rows into ~32KB chunks to reduce socket operations
+        const int rows_per_chunk = 20;  // 20 × 1600B = 32KB
+        const int chunk_bytes = w * 2 * rows_per_chunk;
+        uint16_t* chunk_buf = (uint16_t*)heap_caps_malloc(chunk_bytes, MALLOC_CAP_SPIRAM);
+        if (!chunk_buf) chunk_buf = (uint16_t*)malloc(chunk_bytes);
+        if (!chunk_buf) {
             httpd_resp_send_chunk(req, (const char*)fb, data_size);
         } else {
+            int buf_rows = 0;
             for (int y = 0; y < h; y++) {
                 uint16_t* src = &fb[y * w];
+                uint16_t* dst = &chunk_buf[buf_rows * w];
                 for (int x = 0; x < w; x++) {
                     uint16_t px = src[x];
-                    row_buf[x] = (px >> 8) | (px << 8);
+                    dst[x] = (px >> 8) | (px << 8);
                 }
-                httpd_resp_send_chunk(req, (const char*)row_buf, row_words * 2);
+                buf_rows++;
+                if (buf_rows >= rows_per_chunk || y == h - 1) {
+                    httpd_resp_send_chunk(req, (const char*)chunk_buf, buf_rows * w * 2);
+                    buf_rows = 0;
+                }
             }
-            free(row_buf);
+            free(chunk_buf);
         }
     } else {
+        // No swap needed — send entire framebuffer in one shot
         httpd_resp_send_chunk(req, (const char*)fb, data_size);
     }
     return httpd_resp_send_chunk(req, nullptr, 0);

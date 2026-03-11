@@ -17,7 +17,7 @@ import requests
 class TritiumDevice:
     """REST API client for a Tritium-OS device."""
 
-    def __init__(self, host: str, port: int = 80, timeout: float = 5.0):
+    def __init__(self, host: str, port: int = 80, timeout: float = 10.0):
         self.host = host
         self.port = port
         self.base = f"http://{host}:{port}"
@@ -54,10 +54,10 @@ class TritiumDevice:
                     continue
                 return {"_error": str(e)}
 
-    def _get_raw(self, path: str) -> bytes | None:
+    def _get_raw(self, path: str, timeout: float | None = None) -> bytes | None:
         self.request_count += 1
         try:
-            r = self.session.get(f"{self.base}{path}", timeout=self.timeout)
+            r = self.session.get(f"{self.base}{path}", timeout=timeout or self.timeout)
             r.raise_for_status()
             return r.content
         except Exception:
@@ -90,7 +90,7 @@ class TritiumDevice:
 
     def screenshot_bmp(self) -> bytes | None:
         """Get raw BMP screenshot bytes from the device."""
-        return self._get_raw("/api/screenshot")
+        return self._get_raw("/api/screenshot", timeout=15.0)
 
     def screenshot_np(self) -> Optional[np.ndarray]:
         """Get screenshot as a BGR numpy array (OpenCV format)."""
