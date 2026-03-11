@@ -30,6 +30,8 @@ class TritiumDevice:
         self.timeout = timeout
         self.request_count = 0
         self.error_count = 0
+        self._last_request_time = 0.0
+        self._min_request_interval = 0.1  # 100ms between requests
         self._init_session()
 
     def _init_session(self):
@@ -46,8 +48,17 @@ class TritiumDevice:
         self.session.close()
         self._init_session()
 
+    def _throttle(self):
+        """Enforce minimum inter-request delay to prevent socket exhaustion."""
+        now = time.time()
+        elapsed = now - self._last_request_time
+        if elapsed < self._min_request_interval:
+            time.sleep(self._min_request_interval - elapsed)
+        self._last_request_time = time.time()
+
     def _get(self, path: str, retries: int = 1) -> dict | list | None:
         for attempt in range(1 + retries):
+            self._throttle()
             self.request_count += 1
             try:
                 r = self.session.get(f"{self.base}{path}", timeout=self.timeout)
@@ -63,6 +74,7 @@ class TritiumDevice:
 
     def _post(self, path: str, data: dict, retries: int = 1) -> dict | None:
         for attempt in range(1 + retries):
+            self._throttle()
             self.request_count += 1
             try:
                 r = self.session.post(f"{self.base}{path}", json=data, timeout=self.timeout)
@@ -77,6 +89,7 @@ class TritiumDevice:
                 return {"_error": str(e)}
 
     def _get_raw(self, path: str, timeout: float | None = None) -> bytes | None:
+        self._throttle()
         self.request_count += 1
         try:
             r = self.session.get(f"{self.base}{path}", timeout=timeout or self.timeout)

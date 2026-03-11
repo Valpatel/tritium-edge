@@ -661,7 +661,7 @@ bool WebServerHAL::init(uint16_t port) {
     config.server_port = port;
     config.lru_purge_enable = true;
     config.max_uri_handlers = 96;
-    config.max_open_sockets = 7;
+    config.max_open_sockets = 4;    // Low limit: LRU purge closes stale FIN-WAIT sockets
     config.stack_size = 16384;
     config.recv_wait_timeout = 3;    // seconds — short timeout to reclaim sockets quickly
     config.send_wait_timeout = 3;    // seconds — prevents socket exhaustion under load
