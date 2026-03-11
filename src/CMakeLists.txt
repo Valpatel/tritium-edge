@@ -112,6 +112,7 @@ idf_component_register(
         mdns
         littlefs
         mqtt
+        bt
     PRIV_REQUIRES
         spi_flash
 )
@@ -122,4 +123,15 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/.pio/libdeps/${PIOENV}/lvgl")
         "${CMAKE_SOURCE_DIR}/.pio/libdeps/${PIOENV}/lvgl"
         "${CMAKE_SOURCE_DIR}/.pio/libdeps/${PIOENV}/lvgl/src"
     )
+endif()
+
+# NimBLE-Arduino: scan for any env that has it installed.
+# Include all source files — NimBLE-Arduino is tightly coupled.
+file(GLOB _nimble_dirs "${CMAKE_SOURCE_DIR}/.pio/libdeps/*/NimBLE-Arduino/src")
+if(_nimble_dirs)
+    list(GET _nimble_dirs 0 _nimble_dir)
+    message(STATUS "[tritium] NimBLE-Arduino found: ${_nimble_dir}")
+    file(GLOB _nimble_srcs "${_nimble_dir}/*.cpp")
+    target_sources(${COMPONENT_LIB} PRIVATE ${_nimble_srcs})
+    target_include_directories(${COMPONENT_LIB} PUBLIC "${_nimble_dir}")
 endif()
