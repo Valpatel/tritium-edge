@@ -136,17 +136,17 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
     # ╚══════════════════════════════════════════════════════════════════╝
     ElementSpec(
         screen="Settings/Monitor",
-        widget_type="bar", name="ram_usage",
+        widget_type="bar", name="heap_usage",
         action="readonly",
         match={"type": "bar", "index": 0, "y_min": 80},
-        expect={"reason": "RAM usage indicator"},
+        expect={"reason": "Heap usage percentage"},
     ),
     ElementSpec(
         screen="Settings/Monitor",
-        widget_type="bar", name="flash_usage",
+        widget_type="bar", name="psram_usage",
         action="readonly",
         match={"type": "bar", "index": 1, "y_min": 80},
-        expect={"reason": "Flash usage indicator"},
+        expect={"reason": "PSRAM usage percentage"},
     ),
 
     # ╔══════════════════════════════════════════════════════════════════╗
@@ -345,17 +345,17 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
     # ╚══════════════════════════════════════════════════════════════════╝
     ElementSpec(
         screen="Monitor",
-        widget_type="bar", name="monitor_ram_bar",
+        widget_type="bar", name="monitor_heap_bar",
         action="readonly",
         match={"type": "bar", "index": 0},
-        expect={"reason": "RAM usage display"},
+        expect={"reason": "Heap usage percentage"},
     ),
     ElementSpec(
         screen="Monitor",
-        widget_type="bar", name="monitor_flash_bar",
+        widget_type="bar", name="monitor_psram_bar",
         action="readonly",
         match={"type": "bar", "index": 1},
-        expect={"reason": "Flash usage display"},
+        expect={"reason": "PSRAM usage percentage"},
     ),
 
     # ╔══════════════════════════════════════════════════════════════════╗
