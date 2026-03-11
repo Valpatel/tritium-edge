@@ -663,8 +663,8 @@ bool WebServerHAL::init(uint16_t port) {
     config.max_uri_handlers = 96;
     config.max_open_sockets = 7;
     config.stack_size = 16384;
-    config.recv_wait_timeout = 10;   // seconds (default 5)
-    config.send_wait_timeout = 10;   // seconds (default 5)
+    config.recv_wait_timeout = 3;    // seconds — short timeout to reclaim sockets quickly
+    config.send_wait_timeout = 3;    // seconds — prevents socket exhaustion under load
     config.uri_match_fn = httpd_uri_match_wildcard;
 
     if (httpd_start(&_server, &config) != ESP_OK) {

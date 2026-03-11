@@ -89,7 +89,7 @@ public:
 
             // Health check: restart httpd if it stopped unexpectedly
             _health_ticks++;
-            if (_health_ticks >= 30000) {  // ~30s at 1ms tick rate
+            if (_health_ticks >= 10000) {  // ~10s at 1ms tick rate
                 _health_ticks = 0;
                 bool needs_restart = false;
 
