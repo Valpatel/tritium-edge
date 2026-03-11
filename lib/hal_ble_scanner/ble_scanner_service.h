@@ -39,8 +39,10 @@ public:
     bool init() override {
 #if defined(ENABLE_BLE_SCANNER)
         hal_ble_scanner::ScanConfig ble_cfg;
-        ble_cfg.scan_duration_s = 5;
-        ble_cfg.pause_between_ms = 10000;  // Scan every 10s
+        ble_cfg.scan_interval_ms = 500;    // 500ms between scan windows
+        ble_cfg.scan_window_ms = 50;       // 50ms scan window (10% duty)
+        ble_cfg.scan_duration_s = 3;       // 3s scan cycles
+        ble_cfg.pause_between_ms = 15000;  // 15s pause — WiFi-friendly
         ble_cfg.active_scan = false;       // Passive — less intrusive
         if (hal_ble_scanner::init(ble_cfg)) {
             Serial.printf("[tritium] BLE Scanner: active\n");

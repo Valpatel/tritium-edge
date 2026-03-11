@@ -3324,7 +3324,9 @@ static void ble_enable_toggle_cb(lv_event_t* e) {
 // BLE scan now callback — force an immediate refresh
 static void ble_scan_now_cb(lv_event_t* e) {
     (void)e;
+#if BLE_APP_AVAILABLE
     ble_refresh(nullptr);
+#endif
 }
 
 // BLE logging toggle callback
