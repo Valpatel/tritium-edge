@@ -899,24 +899,24 @@ const char* WebServerHAL::getIP() const {
 
 #if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
 static esp_err_t _dashboard_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, DASHBOARD_HTML_V2, strlen(DASHBOARD_HTML_V2));
 }
 static esp_err_t _terminal_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, TERMINAL_HTML, strlen(TERMINAL_HTML));
 }
 
 static esp_err_t _settings_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, SETTINGS_HTML, strlen(SETTINGS_HTML));
 }
 #else
 static esp_err_t _dashboard_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 
     std::string html(DASHBOARD_HTML);
     strReplace(html, "%THEME%",     THEME_CSS);
@@ -1026,13 +1026,13 @@ void WebServerHAL::addDashboard() {
 
 #if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
 static esp_err_t _ota_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, OTA_HTML_V2, strlen(OTA_HTML_V2));
 }
 #else
 static esp_err_t _ota_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     std::string html(OTA_HTML);
     strReplace(html, "%THEME%", THEME_CSS);
     strReplace(html, "%NAV%",   NAV_HTML);
@@ -1043,7 +1043,7 @@ static esp_err_t _ota_page_handler(httpd_req_t* req) {
 
 // OTA firmware upload via POST /update — receives raw binary body
 static esp_err_t _ota_upload_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 
     const esp_partition_t* update_part = esp_ota_get_next_update_partition(nullptr);
     if (!update_part) {
@@ -1117,7 +1117,7 @@ void WebServerHAL::addOtaPage() {
 // ── Config editor handlers ───────────────────────────────────────────────
 
 static esp_err_t _config_get_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 
     // Read config from POSIX VFS
     char config[2048] = "{}";
@@ -1137,7 +1137,7 @@ static esp_err_t _config_get_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _config_post_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 
     char* body = _recv_body(req, 4096);
     if (body) {
@@ -1174,13 +1174,13 @@ void WebServerHAL::addConfigEditor() {
 
 #if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
 static esp_err_t _files_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, FILES_HTML_V2, strlen(FILES_HTML_V2));
 }
 #else
 static esp_err_t _files_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 
     std::string fileList;
     DIR* dir = opendir("/littlefs");
@@ -1225,7 +1225,7 @@ static esp_err_t _files_page_handler(httpd_req_t* req) {
 #endif
 
 static esp_err_t _files_upload_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 
     // For simplicity, receive the entire body and write to a file.
     // The filename must be provided as a query parameter: ?name=foo.txt
@@ -1255,7 +1255,7 @@ static esp_err_t _files_upload_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _files_delete_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 
     char* body = _recv_body(req, 512);
     if (body) {
@@ -1294,7 +1294,7 @@ static esp_err_t _files_delete_handler(httpd_req_t* req) {
 // Writes to /sdcard/<path>. Creates parent directories as needed.
 // Streams the body directly to disk — supports large files.
 static esp_err_t _api_fs_upload_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 
     char rel_path[128] = "";
     _get_query_param(req, "path", rel_path, sizeof(rel_path));
@@ -1350,7 +1350,7 @@ static esp_err_t _api_fs_upload_handler(httpd_req_t* req) {
 
 // Delete SD card file: DELETE /api/fs/delete?path=/data/map.mbtiles
 static esp_err_t _api_fs_delete_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 
     char rel_path[128] = "";
     _get_query_param(req, "path", rel_path, sizeof(rel_path));
@@ -1464,7 +1464,7 @@ static int getEventPollJson(char* buf, size_t size, uint32_t since_ms) {
 // ── API handler functions ────────────────────────────────────────────────
 
 static esp_err_t _api_status_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char ipStr[16];
     _get_wifi_ip(ipStr, sizeof(ipStr));
     char buf[768];
@@ -1506,7 +1506,7 @@ static esp_err_t _api_status_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_board_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     uint8_t mac[6];
     esp_wifi_get_mac(WIFI_IF_STA, mac);
     esp_chip_info_t chip;
@@ -1526,7 +1526,7 @@ static esp_err_t _api_board_handler(httpd_req_t* req) {
 
 #if WEB_HAS_FINGERPRINT
 static esp_err_t _api_fingerprint_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     const board_fingerprint_t* fp = board_fingerprint_get();
     if (!fp) {
         return _send_json(req, 503, "{\"error\":\"not scanned\"}");
@@ -1569,7 +1569,7 @@ static esp_err_t _api_fingerprint_handler(httpd_req_t* req) {
 #endif
 
 static esp_err_t _api_reboot_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     _send_json(req, 200, "{\"status\":\"rebooting\"}");
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
@@ -1577,7 +1577,7 @@ static esp_err_t _api_reboot_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_scan_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     // Use esp_wifi_scan_start for a blocking scan
     wifi_scan_config_t scan_cfg = {};
     scan_cfg.show_hidden = true;
@@ -1603,7 +1603,7 @@ static esp_err_t _api_scan_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_node_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     uint8_t mac[6];
     esp_wifi_get_mac(WIFI_IF_STA, mac);
     char ipStr[16];
@@ -1682,7 +1682,7 @@ static esp_err_t _api_node_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_mesh_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     if (_instance->_meshProvider) {
         int len = _instance->_meshProvider(_shared_json, SHARED_JSON_SIZE);
         if (len > 0) return _send_json(req, 200, _shared_json);
@@ -1691,7 +1691,7 @@ static esp_err_t _api_mesh_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_diag_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     if (_instance->_diagProvider) {
         int len = _instance->_diagProvider(_shared_json, SHARED_JSON_SIZE);
         if (len > 0) return _send_json(req, 200, _shared_json);
@@ -1700,7 +1700,7 @@ static esp_err_t _api_diag_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_diag_health_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     if (_instance->_diagHealthProvider) {
         int len = _instance->_diagHealthProvider(_shared_json, SHARED_JSON_SIZE);
         if (len > 0) return _send_json(req, 200, _shared_json);
@@ -1709,7 +1709,7 @@ static esp_err_t _api_diag_health_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_diag_events_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     if (_instance->_diagEventsProvider) {
         int len = _instance->_diagEventsProvider(_shared_json, SHARED_JSON_SIZE);
         if (len > 0) return _send_json(req, 200, _shared_json);
@@ -1718,7 +1718,7 @@ static esp_err_t _api_diag_events_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_diag_anomalies_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     if (_instance->_diagAnomaliesProvider) {
         int len = _instance->_diagAnomaliesProvider(_shared_json, SHARED_JSON_SIZE);
         if (len > 0) return _send_json(req, 200, _shared_json);
@@ -1728,7 +1728,7 @@ static esp_err_t _api_diag_anomalies_handler(httpd_req_t* req) {
 
 #if WEB_HAS_DIAGLOG
 static esp_err_t _api_diaglog_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char val[16];
     int offset = 0, count = 50;
     if (_get_query_param(req, "offset", val, sizeof(val))) offset = atoi(val);
@@ -1743,14 +1743,14 @@ static esp_err_t _api_diaglog_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_diaglog_clear_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     diaglog_clear();
     return _send_json(req, 200, "{\"cleared\":true}");
 }
 #endif
 
 static esp_err_t _api_logs_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     int len = WebServerHAL::getLogJson(_shared_json, SHARED_JSON_SIZE);
     if (len > 0) return _send_json(req, 200, _shared_json);
     return _send_json(req, 200, "{\"lines\":[]}");
@@ -2766,7 +2766,7 @@ static const char MAP_HTML[] = R"rawliteral(
 // ── Remaining API handlers (screenshot, remote, settings, etc.) ──────────
 
 static esp_err_t _api_screenshot_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     if (!_instance->_screenshotProvider) {
         return _send(req, 503, "text/plain", "No screenshot provider");
     }
@@ -2844,7 +2844,7 @@ static esp_err_t _api_screenshot_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_screenshot_json_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     int w = 0, h = 0;
     uint16_t* fb = nullptr;
     if (_instance->_screenshotProvider) fb = _instance->_screenshotProvider(w, h);
@@ -2870,7 +2870,7 @@ static esp_err_t _api_screenshot_json_handler(httpd_req_t* req) {
 
 #if WEB_HAS_TOUCH_INPUT
 static esp_err_t _api_remote_touch_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"error\":\"empty body\"}");
 
@@ -2890,7 +2890,7 @@ static esp_err_t _api_remote_touch_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_remote_tap_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"error\":\"empty body\"}");
 
@@ -2908,7 +2908,7 @@ static esp_err_t _api_remote_tap_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_remote_swipe_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"error\":\"empty body\"}");
 
@@ -2943,7 +2943,7 @@ static esp_err_t _api_remote_swipe_handler(httpd_req_t* req) {
 #endif // WEB_HAS_TOUCH_INPUT
 
 static esp_err_t _api_remote_screenshot_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     if (!_instance->_screenshotProvider) {
         return _send(req, 503, "text/plain", "No screenshot provider");
     }
@@ -2995,7 +2995,7 @@ static esp_err_t _api_remote_screenshot_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_remote_info_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     int w = 0, h = 0;
     bool has_fb = false;
     if (_instance->_screenshotProvider) {
@@ -3039,14 +3039,14 @@ static esp_err_t _api_remote_info_handler(httpd_req_t* req) {
 
 #if WEB_HAS_SETTINGS
 static esp_err_t _api_settings_get_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     int len = TritiumSettings::instance().toJson(_shared_json, SHARED_JSON_SIZE);
     if (len > 0) return _send_json(req, 200, _shared_json);
     return _send_json(req, 500, "{\"error\":\"failed to export settings\"}");
 }
 
 static esp_err_t _api_settings_put_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"error\":\"empty body\"}");
     bool ok = TritiumSettings::instance().fromJson(body);
@@ -3056,7 +3056,7 @@ static esp_err_t _api_settings_put_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_settings_reset_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     const char* domain = nullptr;
     char domainBuf[32] = {0};
@@ -3081,7 +3081,7 @@ static esp_err_t _api_settings_reset_handler(httpd_req_t* req) {
 #if defined(ENABLE_SETTINGS) || defined(ENABLE_OS_EVENTS)
 
 static esp_err_t _api_events_poll_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     uint32_t since = 0;
     char val[16];
     if (_get_query_param(req, "since", val, sizeof(val))) since = (uint32_t)atol(val);
@@ -3091,7 +3091,7 @@ static esp_err_t _api_events_poll_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_serial_poll_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     int max_lines = 50;
     char val[16];
     if (_get_query_param(req, "lines", val, sizeof(val))) {
@@ -3105,7 +3105,7 @@ static esp_err_t _api_serial_poll_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_serial_send_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"ok\":false,\"error\":\"empty body\"}");
 
@@ -3125,7 +3125,7 @@ static esp_err_t _api_serial_send_handler(httpd_req_t* req) {
 
 #if WEB_HAS_TOUCH_INPUT
 static esp_err_t _api_debug_touch_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     auto info = touch_input::getDebugInfo();
     snprintf(_shared_json, SHARED_JSON_SIZE,
         "{\"hw_available\":%s,\"driver\":\"%s\","
@@ -3146,7 +3146,7 @@ static esp_err_t _api_debug_touch_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_debug_gt911_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     extern TouchHAL touch;
     touch.dumpDiag(_shared_json, SHARED_JSON_SIZE);
     return _send_json(req, 200, _shared_json);
@@ -3155,7 +3155,7 @@ static esp_err_t _api_debug_gt911_handler(httpd_req_t* req) {
 
 #if WEB_HAS_SHELL
 static esp_err_t _api_debug_lvgl_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     snprintf(_shared_json, SHARED_JSON_SIZE,
         "{\"initialized\":%s,\"width\":%d,\"height\":%d,"
         "\"render_mode\":\"%s\",\"flush_count\":%lu,"
@@ -3173,7 +3173,7 @@ static esp_err_t _api_debug_lvgl_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_shell_apps_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     int count = tritium_shell::getAppCount();
     int active = tritium_shell::getActiveApp();
     int pos = snprintf(_shared_json, SHARED_JSON_SIZE,
@@ -3195,7 +3195,7 @@ static esp_err_t _api_shell_apps_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_shell_launch_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"ok\":false,\"error\":\"empty body\"}");
 
@@ -3237,7 +3237,7 @@ static esp_err_t _api_shell_launch_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_shell_home_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     if (!lvgl_driver::lock(2000)) {
         return _send_json(req, 503, "{\"ok\":false,\"error\":\"lvgl busy\"}");
     }
@@ -3477,7 +3477,7 @@ static int _flatten_widgets(lv_obj_t* obj, char* buf, size_t size, int depth, bo
 // Query params:
 //   ?flat=1 — returns flat array instead of nested tree (easier for testing)
 static esp_err_t _api_ui_tree_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 
     // Allocate a large buffer in PSRAM for the widget tree
     static const size_t UI_TREE_BUF_SIZE = 32768;
@@ -3521,7 +3521,7 @@ static esp_err_t _api_ui_tree_handler(httpd_req_t* req) {
 // POST /api/ui/click — Click a widget by address ID
 // Body: {"id":"0x3fca1234"}
 static esp_err_t _api_ui_click_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"ok\":false,\"error\":\"empty body\"}");
 
@@ -3599,7 +3599,7 @@ static esp_err_t _api_ui_click_handler(httpd_req_t* req) {
 // Body: {"id":"0x3fca1234", "text": "hello"}    (textarea)
 // Body: {"id":"0x3fca1234", "selected": 2}      (dropdown)
 static esp_err_t _api_ui_set_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"ok\":false,\"error\":\"empty body\"}");
 
@@ -3699,7 +3699,7 @@ static esp_err_t _api_ui_set_handler(httpd_req_t* req) {
 // ── BLE API handler ─────────────────────────────────────────────────────
 
 static esp_err_t _api_ble_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     if (_instance->_bleProvider) {
         int len = _instance->_bleProvider(_shared_json, SHARED_JSON_SIZE);
         if (len > 0) return _send_json(req, 200, _shared_json);
@@ -3710,7 +3710,7 @@ static esp_err_t _api_ble_handler(httpd_req_t* req) {
 // ── GIS API handlers ────────────────────────────────────────────────────
 
 static esp_err_t _api_gis_layers_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     if (_instance->_gisLayerProvider) {
         int len = _instance->_gisLayerProvider(_shared_json, SHARED_JSON_SIZE);
         if (len > 0) return _send_json(req, 200, _shared_json);
@@ -3721,7 +3721,7 @@ static esp_err_t _api_gis_layers_handler(httpd_req_t* req) {
 // ── Mesh API handlers ───────────────────────────────────────────────────
 
 static esp_err_t _api_mesh_ping_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char val[20] = {0};
     if (!_get_query_param(req, "mac", val, sizeof(val)) || strlen(val) < 17) {
         return _send_json(req, 400, "{\"ok\":false,\"error\":\"Missing mac param\"}");
@@ -3735,14 +3735,14 @@ static esp_err_t _api_mesh_ping_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_mesh_state_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (body) free(body);
     return _send_json(req, 200, "{\"ok\":true}");
 }
 
 static esp_err_t _api_mesh_send_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (body) free(body);
     return _send_json(req, 200, "{\"ok\":true}");
@@ -3751,7 +3751,7 @@ static esp_err_t _api_mesh_send_handler(httpd_req_t* req) {
 // ── WiFi API handlers ───────────────────────────────────────────────────
 
 static esp_err_t _api_wifi_status_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char buf[1536];
     int pos = 0;
 
@@ -3824,7 +3824,7 @@ static esp_err_t _api_wifi_status_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_wifi_scan_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 #if WEB_HAS_WIFI_MANAGER
     if (WifiManager::_instance) {
         WifiManager::_instance->startScan();
@@ -3877,7 +3877,7 @@ static esp_err_t _api_wifi_scan_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_wifi_connect_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"error\":\"empty body\"}");
 
@@ -3917,7 +3917,7 @@ static esp_err_t _api_wifi_connect_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_wifi_remove_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"ok\":false}");
     char ssid[33] = {0};
@@ -3936,7 +3936,7 @@ static esp_err_t _api_wifi_remove_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_wifi_reorder_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"ok\":false}");
     char ssid[33] = {0};
@@ -3956,7 +3956,7 @@ static esp_err_t _api_wifi_reorder_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_wifi_ap_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     bool activate = body && strstr(body, "true");
     if (body) free(body);
@@ -3972,7 +3972,7 @@ static esp_err_t _api_wifi_ap_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_wifi_disconnect_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 #if WEB_HAS_WIFI_MANAGER
     if (WifiManager::_instance) {
         WifiManager::_instance->disconnect();
@@ -3986,7 +3986,7 @@ static esp_err_t _api_wifi_disconnect_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_wifi_reconnect_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     bool ok = false;
 #if WEB_HAS_WIFI_MANAGER
     if (WifiManager::_instance) {
@@ -4000,7 +4000,7 @@ static esp_err_t _api_wifi_reconnect_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_wifi_failover_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     bool enabled = body && strstr(body, "\"enabled\"") && strstr(body, "true");
     int timeout_s = 30;
@@ -4022,7 +4022,7 @@ static esp_err_t _api_wifi_failover_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _api_wifi_ap_config_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     char* body = _recv_body(req);
     if (!body) return _send_json(req, 400, "{\"ok\":false}");
     char ssid[33] = {0}, pass[64] = {0};
@@ -4045,13 +4045,13 @@ static esp_err_t _api_wifi_ap_config_handler(httpd_req_t* req) {
 // ── Page handler functions for remaining pages ──────────────────────────
 
 static esp_err_t _screenshot_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     return _send(req, 200, "text/html", SCREENSHOT_HTML);
 }
 
 #if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
 static esp_err_t _remote_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, REMOTE_HTML, REMOTE_HTML_LEN);
@@ -4059,7 +4059,7 @@ static esp_err_t _remote_page_handler(httpd_req_t* req) {
 #endif
 
 static esp_err_t _wifi_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
 #if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
     return _send(req, 200, "text/html", WIFI_HTML_V2);
 #else
@@ -4073,7 +4073,7 @@ static esp_err_t _wifi_page_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _ble_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     std::string html(BLE_HTML);
     strReplace(html, "%THEME%", THEME_CSS);
     strReplace(html, "%NAV%",   NAV_HTML);
@@ -4083,7 +4083,7 @@ static esp_err_t _ble_page_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _commission_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     std::string html(COMMISSION_HTML);
     strReplace(html, "%THEME%", THEME_CSS);
     strReplace(html, "%NAV%",   NAV_HTML);
@@ -4132,13 +4132,13 @@ static esp_err_t _commission_page_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _commission_post_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     // TODO: parse form body and save fleet_url to config.json
     return _send_redirect(req, "/commission");
 }
 
 static esp_err_t _system_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     std::string html(SYSTEM_HTML);
     strReplace(html, "%THEME%", THEME_CSS);
     strReplace(html, "%NAV%",   NAV_HTML);
@@ -4253,7 +4253,7 @@ static esp_err_t _system_page_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _logs_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     std::string html(LOGS_HTML);
     strReplace(html, "%THEME%", THEME_CSS);
     strReplace(html, "%NAV%",   NAV_HTML);
@@ -4263,7 +4263,7 @@ static esp_err_t _logs_page_handler(httpd_req_t* req) {
 }
 
 static esp_err_t _map_page_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     std::string html(MAP_HTML);
     strReplace(html, "%THEME%", THEME_CSS);
     strReplace(html, "%NAV%",   NAV_HTML);
@@ -4274,12 +4274,12 @@ static esp_err_t _map_page_handler(httpd_req_t* req) {
 
 #if defined(ENABLE_FILE_MANAGER) || defined(ENABLE_OTA) || defined(ENABLE_SETTINGS)
 static esp_err_t _mesh_page_v2_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     return _send(req, 200, "text/html", MESH_HTML_V2);
 }
 #else
 static esp_err_t _mesh_page_fallback_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     // Check for mesh.html on LittleFS via POSIX
     struct stat st;
     if (stat("/littlefs/web/mesh.html", &st) == 0) {
@@ -4308,7 +4308,7 @@ static esp_err_t _mesh_page_fallback_handler(httpd_req_t* req) {
 // ── Wildcard catch-all handler (replaces onNotFound) ────────────────────
 
 static esp_err_t _catchall_handler(httpd_req_t* req) {
-    _instance->_requestCount++;
+    _instance->_requestCount++; _instance->_lastRequestMs = millis();
     const char* uri = req->uri;
 
     // CORS preflight

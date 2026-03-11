@@ -87,7 +87,7 @@ public:
         if (_active) {
             _webserver.process();
 
-            // Health check: restart httpd if it stopped unexpectedly
+            // Health check: restart httpd if it stopped or sockets are exhausted
             _health_ticks++;
             if (_health_ticks >= 10000) {  // ~10s at 1ms tick rate
                 _health_ticks = 0;
@@ -96,6 +96,21 @@ public:
                 if (!_webserver.isRunning()) {
                     printf("[tritium] httpd not running — restarting\n");
                     needs_restart = true;
+                }
+
+                // Detect socket exhaustion: if server handled requests before
+                // but none in the last 60s, force restart.  This catches the
+                // state where httpd is "running" but all sockets are stuck.
+                if (!needs_restart && _webserver._requestCount > 0 &&
+                    _webserver._lastRequestMs > 0) {
+                    uint32_t idle_ms = millis() - _webserver._lastRequestMs;
+                    if (idle_ms > 60000) {
+                        printf("[tritium] httpd socket exhaustion detected "
+                               "(%lu ms idle, %lu reqs) — restarting\n",
+                               (unsigned long)idle_ms,
+                               (unsigned long)_webserver._requestCount);
+                        needs_restart = true;
+                    }
                 }
 
                 if (needs_restart) {

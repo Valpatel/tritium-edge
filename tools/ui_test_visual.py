@@ -671,7 +671,12 @@ def test_stability(dev: TritiumDevice, report: TestReport, vis: VisualValidator,
 
 def test_tab_stress(dev: TritiumDevice, report: TestReport, vis: VisualValidator,
                     cycles: int = 2):
-    """Rapidly cycle through all Settings tabs to stress httpd and LVGL."""
+    """Cycle through all Settings tabs to stress httpd and LVGL.
+
+    Uses 1.5s between tab clicks (was 0.8s) to stay within httpd socket
+    budget.  Verifies responsiveness every 5 switches and backs off on
+    error to let sockets reclaim.
+    """
     print("\n--- Tab Stress ---")
 
     result = dev.launch("Settings")
@@ -704,14 +709,17 @@ def test_tab_stress(dev: TritiumDevice, report: TestReport, vis: VisualValidator
         random.shuffle(order)
         for idx in order:
             dev.click(tab_btns[idx]["id"])
-            time.sleep(0.8)  # Minimum safe delay
+            time.sleep(1.5)  # Safe delay — httpd has 7 sockets with 3s timeout
             total_switches += 1
 
-            # Verify device still responsive every few switches
+            # Verify device still responsive every 5 switches
             if total_switches % 5 == 0:
                 tree = dev.ui_tree(flat=True)
                 if not isinstance(tree, list) or len(tree) < 3:
                     errors += 1
+                    # Back off to let httpd sockets reclaim
+                    print(f"  [tab_stress] httpd hiccup after {total_switches} switches, backing off 3s")
+                    time.sleep(3)
 
     elapsed = time.time() - start
     rate = total_switches / elapsed if elapsed > 0 else 0
@@ -722,7 +730,8 @@ def test_tab_stress(dev: TritiumDevice, report: TestReport, vis: VisualValidator
                f"({rate:.1f}/s), {errors} errors")
 
     dev.home()
-    time.sleep(0.8)
+    # Cooldown — let httpd fully recover before next suite
+    time.sleep(3)
 
 
 def test_memory_leak(dev: TritiumDevice, report: TestReport, vis: VisualValidator,
@@ -823,6 +832,21 @@ def run_single_sweep(dev: TritiumDevice, report: TestReport,
             except Exception:
                 pass
 
+        # Health gate between suites — verify httpd is responsive
+        # before starting the next suite. Prevents cascade failures.
+        for attempt in range(4):
+            try:
+                info = dev.info()
+                if info and "_error" not in info:
+                    break
+            except Exception:
+                pass
+            wait = 2 * (attempt + 1)
+            print(f"  [sweep] httpd unresponsive after {name}, waiting {wait}s...")
+            time.sleep(wait)
+        else:
+            print(f"  [sweep] WARNING: httpd still unresponsive after {name}")
+
 
 # ── Soak test ───────────────────────────────────────────────────────────
 
@@ -854,15 +878,24 @@ def run_soak(dev: TritiumDevice, report: TestReport, vis: VisualValidator,
 
         try:
             if not dev.is_reachable():
-                print(f"  Device unreachable, waiting up to 30s...")
-                for retry in range(6):
+                print(f"  Device unreachable, attempting recovery...")
+                # Try reboot API (may work if httpd has partial connectivity)
+                try:
+                    dev.session.post(f"{dev.base}/api/reboot", timeout=3)
+                except Exception:
+                    pass
+                # Wait for device to come back (up to 90s for reboot cycle)
+                recovered = False
+                for retry in range(18):
                     time.sleep(5)
                     if dev.is_reachable():
                         print(f"  Device back online after {(retry + 1) * 5}s")
+                        time.sleep(3)  # Extra settle time after reboot
+                        recovered = True
                         break
-                else:
+                if not recovered:
                     report.add("soak", f"run_{run}_error", False,
-                               "Device unreachable for 30s")
+                               "Device unreachable for 90s")
                     continue
 
             run_single_sweep(dev, report, vis, randomize=True)

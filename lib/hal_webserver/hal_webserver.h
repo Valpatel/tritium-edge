@@ -110,6 +110,7 @@ public:
     bool _running = false;
     uint16_t _port = 80;
     uint32_t _requestCount = 0;
+    uint32_t _lastRequestMs = 0;  // millis() of last successful request
     char _ip[16] = {0};
     BleJsonProvider _bleProvider = nullptr;
     DiagJsonProvider _diagProvider = nullptr;

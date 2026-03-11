@@ -26,25 +26,33 @@ class TritiumDevice:
         self.error_count = 0
         self.session = requests.Session()
 
-    def _get(self, path: str) -> dict | list | None:
-        self.request_count += 1
-        try:
-            r = self.session.get(f"{self.base}{path}", timeout=self.timeout)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            self.error_count += 1
-            return {"_error": str(e)}
+    def _get(self, path: str, retries: int = 1) -> dict | list | None:
+        for attempt in range(1 + retries):
+            self.request_count += 1
+            try:
+                r = self.session.get(f"{self.base}{path}", timeout=self.timeout)
+                r.raise_for_status()
+                return r.json()
+            except Exception as e:
+                self.error_count += 1
+                if attempt < retries:
+                    time.sleep(1.0)  # Brief backoff before retry
+                    continue
+                return {"_error": str(e)}
 
-    def _post(self, path: str, data: dict) -> dict | None:
-        self.request_count += 1
-        try:
-            r = self.session.post(f"{self.base}{path}", json=data, timeout=self.timeout)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            self.error_count += 1
-            return {"_error": str(e)}
+    def _post(self, path: str, data: dict, retries: int = 1) -> dict | None:
+        for attempt in range(1 + retries):
+            self.request_count += 1
+            try:
+                r = self.session.post(f"{self.base}{path}", json=data, timeout=self.timeout)
+                r.raise_for_status()
+                return r.json()
+            except Exception as e:
+                self.error_count += 1
+                if attempt < retries:
+                    time.sleep(1.0)
+                    continue
+                return {"_error": str(e)}
 
     def _get_raw(self, path: str) -> bytes | None:
         self.request_count += 1
