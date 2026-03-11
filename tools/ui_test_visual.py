@@ -261,6 +261,18 @@ def test_element_sweep(dev: TritiumDevice, report: TestReport,
             time.sleep(0.8)
             continue
 
+        # Track specs that need widget tree retry (not found on first try)
+        retry_needed = False
+        for spec in specs:
+            if match_widget(spec, widgets) is None and not spec.optional:
+                retry_needed = True
+                break
+        if retry_needed:
+            time.sleep(1.5)
+            widgets2 = dev.ui_tree(flat=True)
+            if isinstance(widgets2, list) and len(widgets2) >= len(widgets):
+                widgets = widgets2
+
         for spec in specs:
             widget = match_widget(spec, widgets)
 
