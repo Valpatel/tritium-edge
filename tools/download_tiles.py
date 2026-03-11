@@ -39,7 +39,7 @@ REGIONS = {
 }
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "sdcard_data")
-OUTPUT_DB = os.path.join(OUTPUT_DIR, "map.mbtiles")
+OUTPUT_DB = os.path.join(OUTPUT_DIR, "map.db")  # .db extension for FAT32 compat
 
 # OSM tile server (respect usage policy: max 2 req/sec, include User-Agent)
 TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -69,7 +69,8 @@ def count_tiles(south: float, west: float, north: float, east: float,
 
 
 def download_tiles(south: float, west: float, north: float, east: float,
-                   zoom_min: int, zoom_max: int, db_path: str):
+                   zoom_min: int, zoom_max: int, db_path: str,
+                   delay: float = 0.5):
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     if os.path.exists(db_path):
         os.remove(db_path)
@@ -113,7 +114,7 @@ def download_tiles(south: float, west: float, north: float, east: float,
     print(f"Downloading {total:,} tiles (zoom {zoom_min}-{zoom_max})...")
     print(f"Bounds: {south:.4f},{west:.4f} to {north:.4f},{east:.4f}")
     print(f"Center: {center_lat:.4f},{center_lon:.4f} @ z{center_zoom}")
-    print(f"Estimated time: ~{total * REQUEST_DELAY / 60:.0f} minutes")
+    print(f"Estimated time: ~{total * delay / 60:.0f} minutes")
     print()
 
     downloaded = 0
@@ -155,7 +156,7 @@ def download_tiles(south: float, west: float, north: float, east: float,
                     pct = downloaded / total * 100
                     print(f"  {downloaded:,}/{total:,} ({pct:.1f}%) — {total_bytes / 1024:.0f} KB")
 
-                time.sleep(REQUEST_DELAY)
+                time.sleep(delay)
 
     conn.commit()
     cur.execute("ANALYZE")
@@ -206,12 +207,11 @@ def main():
     zoom_min = int(zoom_parts[0])
     zoom_max = int(zoom_parts[1]) if len(zoom_parts) > 1 else zoom_min
 
-    global REQUEST_DELAY
-    REQUEST_DELAY = args.delay
+    delay = args.delay
 
     total = count_tiles(south, west, north, east, zoom_min, zoom_max)
     est_mb = total * 15 / 1024  # ~15KB avg per tile
-    est_min = total * REQUEST_DELAY / 60
+    est_min = total * delay / 60
 
     print(f"Region: ({south},{west}) to ({north},{east})")
     print(f"Zoom: {zoom_min}-{zoom_max}")
@@ -231,7 +231,8 @@ def main():
             return
 
     print()
-    download_tiles(south, west, north, east, zoom_min, zoom_max, args.output)
+    download_tiles(south, west, north, east, zoom_min, zoom_max, args.output,
+                   delay=delay)
 
 
 if __name__ == "__main__":
