@@ -12,10 +12,16 @@ from typing import Optional
 
 import numpy as np
 import requests
+from requests.adapters import HTTPAdapter
 
 
 class TritiumDevice:
-    """REST API client for a Tritium-OS device."""
+    """REST API client for a Tritium-OS device.
+
+    Uses Connection: close and a pool_connections=1 adapter to avoid
+    exhausting the ESP32 httpd's 7 sockets with stale keep-alive or
+    FIN-WAIT connections.
+    """
 
     def __init__(self, host: str, port: int = 80, timeout: float = 10.0):
         self.host = host
@@ -24,16 +30,21 @@ class TritiumDevice:
         self.timeout = timeout
         self.request_count = 0
         self.error_count = 0
+        self._init_session()
+
+    def _init_session(self):
         self.session = requests.Session()
-        # Disable keep-alive — ESP32 httpd has limited sockets and
-        # stale keep-alive connections poison the session pool.
+        # Force Connection: close so the ESP32 drops the socket immediately.
         self.session.headers["Connection"] = "close"
+        # Limit the urllib3 pool to 1 connection — prevents opening
+        # multiple sockets that consume ESP32 httpd's 7-socket budget.
+        adapter = HTTPAdapter(pool_connections=1, pool_maxsize=1)
+        self.session.mount("http://", adapter)
 
     def _reset_session(self):
         """Close all pooled connections to clear stale/broken sockets."""
         self.session.close()
-        self.session = requests.Session()
-        self.session.headers["Connection"] = "close"
+        self._init_session()
 
     def _get(self, path: str, retries: int = 1) -> dict | list | None:
         for attempt in range(1 + retries):
