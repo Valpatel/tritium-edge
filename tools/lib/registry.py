@@ -100,7 +100,28 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
     # ╔══════════════════════════════════════════════════════════════════╗
     # ║  Settings / BLE                                                 ║
     # ╚══════════════════════════════════════════════════════════════════╝
-    # Currently no interactive controls (user noted this gap)
+    ElementSpec(
+        screen="Settings/BLE",
+        widget_type="switch", name="ble_scanner_enable",
+        action="skip",
+        match={"type": "switch", "index": 0},
+        expect={"reason": "toggling BLE scanner disrupts scanning"},
+        dangerous=True,
+    ),
+    ElementSpec(
+        screen="Settings/BLE",
+        widget_type="switch", name="ble_logging",
+        action="test_switch",
+        match={"type": "switch", "index": 1},
+        expect={"visual_min_pct": 0.05},
+    ),
+    ElementSpec(
+        screen="Settings/BLE",
+        widget_type="button", name="ble_scan_now",
+        action="test_button",
+        match={"type": "btn", "text_contains": "SCAN", "y_min": 80},
+        expect={"max_shift_px": 2.0},
+    ),
 
     # ╔══════════════════════════════════════════════════════════════════╗
     # ║  Settings / Mesh                                                ║

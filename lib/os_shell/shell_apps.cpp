@@ -3304,12 +3304,50 @@ void ble_app_create(lv_obj_t* viewport) {
 // Settings Tab: BLE (wrapper around BLE scanner content)
 // ---------------------------------------------------------------------------
 
+// BLE scanner enable/disable callback
+static void ble_enable_toggle_cb(lv_event_t* e) {
+#if BLE_APP_AVAILABLE
+    lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
+    bool enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    if (enabled) {
+        hal_ble_scanner::ScanConfig cfg;
+        cfg.scan_duration_s = 5;
+        cfg.pause_between_ms = 10000;
+        cfg.active_scan = false;
+        hal_ble_scanner::init(cfg);
+    } else {
+        hal_ble_scanner::shutdown();
+    }
+#endif
+}
+
+// BLE scan now callback — force an immediate refresh
+static void ble_scan_now_cb(lv_event_t* e) {
+    (void)e;
+    ble_refresh(nullptr);
+}
+
+// BLE logging toggle callback
+static void ble_logging_toggle_cb(lv_event_t* e) {
+#if defined(ENABLE_SIGHTING_LOGGER)
+    lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
+    bool enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    if (enabled) {
+        hal_sighting_logger::enable();
+    } else {
+        hal_sighting_logger::disable();
+    }
+#else
+    (void)e;
+#endif
+}
+
 static void settings_build_ble(lv_obj_t* cont) {
 #if !BLE_APP_AVAILABLE
     tritium_theme::createLabel(cont, "BLE Scanner not available in this build");
     return;
 #else
-    // Reuse the BLE app header
+    // --- Status header ---
     lv_obj_t* hdr = lv_obj_create(cont);
     lv_obj_set_size(hdr, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(hdr, LV_OPA_TRANSP, 0);
@@ -3323,10 +3361,50 @@ static void settings_build_ble(lv_obj_t* cont) {
     s_ble_status_lbl = tritium_theme::createLabel(hdr, "Scanner: --");
     s_ble_count_lbl  = tritium_theme::createLabel(hdr, "Devices: --", true);
 
+    // --- BLE Scanner enable/disable ---
+    lv_obj_t* ble_sw_row = lv_obj_create(cont);
+    lv_obj_set_size(ble_sw_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(ble_sw_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ble_sw_row, 0, 0);
+    lv_obj_set_style_pad_all(ble_sw_row, 0, 0);
+    lv_obj_set_flex_flow(ble_sw_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(ble_sw_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(ble_sw_row, LV_OBJ_FLAG_SCROLLABLE);
+    tritium_theme::createLabel(ble_sw_row, "BLE SCANNER");
+    lv_obj_t* ble_sw = tritium_theme::createSwitch(ble_sw_row,
+        hal_ble_scanner::is_active());
+    lv_obj_add_event_cb(ble_sw, ble_enable_toggle_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    // --- Logging toggle ---
+    lv_obj_t* log_row = lv_obj_create(cont);
+    lv_obj_set_size(log_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(log_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(log_row, 0, 0);
+    lv_obj_set_style_pad_all(log_row, 0, 0);
+    lv_obj_set_flex_flow(log_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(log_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(log_row, LV_OBJ_FLAG_SCROLLABLE);
+    tritium_theme::createLabel(log_row, "LOG SIGHTINGS");
+    bool logging_active = false;
+#if defined(ENABLE_SIGHTING_LOGGER)
+    logging_active = hal_sighting_logger::is_active();
+#endif
+    lv_obj_t* log_sw = tritium_theme::createSwitch(log_row, logging_active);
+    lv_obj_add_event_cb(log_sw, ble_logging_toggle_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    // --- Scan now button ---
+    lv_obj_t* scan_btn = tritium_theme::createButton(cont,
+        LV_SYMBOL_REFRESH " SCAN NOW");
+    lv_obj_set_width(scan_btn, lv_pct(50));
+    lv_obj_add_event_cb(scan_btn, ble_scan_now_cb, LV_EVENT_CLICKED, nullptr);
+
+    // --- Device list ---
     lv_obj_t* list_panel = tritium_theme::createPanel(cont, "BLE DEVICES");
     lv_obj_set_width(list_panel, lv_pct(100));
     lv_obj_set_height(list_panel, LV_SIZE_CONTENT);
-    lv_obj_set_style_max_height(list_panel, 300, 0);
+    lv_obj_set_style_max_height(list_panel, 250, 0);
     lv_obj_set_flex_flow(list_panel, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_top(list_panel, 24, 0);
     lv_obj_set_style_pad_gap(list_panel, 4, 0);
