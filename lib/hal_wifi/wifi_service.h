@@ -28,50 +28,18 @@ public:
 
     bool init() override {
 #ifndef SIMULATOR
-        Serial.printf("[tritium] WiFi: connecting...\n");
+        _wifi.init();
 
 #if defined(DEFAULT_WIFI_SSID) && defined(DEFAULT_WIFI_PASS)
-        // Build-flag network: connect directly before WifiManager init
-        // to avoid autoConnect picking a different saved network.
-        // We use the WifiManager's init which handles esp_wifi_start(),
-        // then connect via connectTo().
-        _wifi.init();
+        // Kick off connection — non-blocking. WifiManager::tick() handles
+        // reconnect, backoff, and failover in the main loop.
         _wifi.connectTo(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, true);
-
-        uint32_t start = millis();
-        while (!_wifi.isConnected() && (millis() - start) < 15000) {
-            delay(250);
-        }
-
-        if (_wifi.isConnected()) {
-            Serial.printf("[WiFi] Connected to %s, IP: %s\n",
-                          _wifi.getSSID(), _wifi.getIP());
-        } else {
-            Serial.printf("[WiFi] Failed to connect to %s\n", DEFAULT_WIFI_SSID);
-            _wifi.disconnect();
-        }
+        Serial.printf("[tritium] WiFi: connecting to %s (async)...\n", DEFAULT_WIFI_SSID);
 #else
-        _wifi.init();
-
-        uint32_t start = millis();
-        while (!_wifi.isConnected() && (millis() - start) < 10000) {
-            delay(100);
-        }
+        Serial.printf("[tritium] WiFi: initialized (connecting async)...\n");
 #endif
-
-        if (_wifi.isConnected()) {
-            Serial.printf("[tritium] WiFi: %s (%s)\n", _wifi.getSSID(), _wifi.getIP());
-        } else {
-            Serial.printf("[tritium] WiFi: not connected\n");
-#if defined(ENABLE_WEBSERVER)
-            // No WiFi? Start AP for commissioning
-            Serial.printf("[tritium] Starting AP for commissioning...\n");
-            _wifi.startAP();
-            _wifi.startScan();
-#else
-            Serial.printf("[tritium] Will retry in background\n");
-#endif
-        }
+        // Don't block — connection completes in background via tick().
+        // Other services that need WiFi should check isConnected().
 #else
         _wifi.init();
 #endif
