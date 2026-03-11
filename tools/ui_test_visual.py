@@ -191,6 +191,17 @@ def test_element_sweep(dev: TritiumDevice, report: TestReport,
                         total += 1
                     continue
 
+                # Retry widget tree if non-optional elements are missing
+                retry_needed = any(
+                    match_widget(s, tab_widgets) is None and not s.optional
+                    for s in specs
+                )
+                if retry_needed:
+                    time.sleep(1.5)
+                    tab_widgets2 = dev.ui_tree(flat=True)
+                    if isinstance(tab_widgets2, list) and len(tab_widgets2) >= len(tab_widgets):
+                        tab_widgets = tab_widgets2
+
                 for spec in specs:
                     widget = match_widget(spec, tab_widgets)
 
