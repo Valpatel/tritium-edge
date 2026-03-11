@@ -237,6 +237,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         action="test_slider",
         match={"type": "slider", "max": 600, "y_min": 80},
         expect={"delta": 60, "visual_min_pct": 0.01},
+        optional=True,  # Hidden when screensaver is disabled (test disables it)
     ),
     ElementSpec(
         screen="Settings/Screensaver",
@@ -244,6 +245,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         action="test_switch",
         match={"type": "switch", "index": 0, "y_min": 80},
         expect={"visual_min_pct": 0.01},
+        optional=True,
     ),
     ElementSpec(
         screen="Settings/Screensaver",
@@ -251,6 +253,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         action="test_switch",
         match={"type": "switch", "index": 1, "y_min": 80},
         expect={"visual_min_pct": 0.01},
+        optional=True,
     ),
     ElementSpec(
         screen="Settings/Screensaver",
@@ -258,6 +261,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         action="test_slider",
         match={"type": "slider", "min": 1, "max": 6},
         expect={"delta": 1, "visual_min_pct": 0.01},
+        optional=True,
     ),
 
     # ╔══════════════════════════════════════════════════════════════════╗
