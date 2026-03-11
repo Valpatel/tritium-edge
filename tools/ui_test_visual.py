@@ -347,6 +347,9 @@ def _discover_unregistered(dev: TritiumDevice, report: TestReport,
         # Skip tab buttons (top bar, y < 80)
         if wtype == "btn" and w.get("y", 999) < 80:
             continue
+        # Skip small icon-only buttons (delete/action buttons inside panels)
+        if wtype == "btn" and w.get("w", 0) < 50 and w.get("h", 0) < 40:
+            continue
         if not w.get("clickable", False):
             continue
 

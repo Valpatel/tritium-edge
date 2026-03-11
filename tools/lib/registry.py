@@ -92,6 +92,14 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
     ),
     ElementSpec(
         screen="Settings/WiFi",
+        widget_type="switch", name="wifi_ap_mode",
+        action="skip",
+        match={"type": "switch", "index": 1},
+        expect={"reason": "toggling AP mode disrupts connectivity"},
+        dangerous=True,
+    ),
+    ElementSpec(
+        screen="Settings/WiFi",
         widget_type="button", name="wifi_scan",
         action="test_button",
         match={"type": "btn", "text_contains": "SCAN", "y_min": 100},
