@@ -20,7 +20,7 @@
  *   // After LVGL is initialized (via ui_init or equivalent):
  *   tritium_shell::init(panel, width, height);
  *   tritium_shell::registerApp({"Settings", "System settings", LV_SYMBOL_SETTINGS,
- *                               true, settings_create});
+ *                               true, settings_create, true});
  *   // In main loop:
  *   tritium_shell::tick();
  */
@@ -71,6 +71,7 @@ struct AppDescriptor {
     const char* icon;        ///< LV_SYMBOL_* constant or custom icon data
     bool is_system;
     void (*launch)(lv_obj_t* viewport);  ///< Creates the app UI inside viewport
+    bool available;          ///< False if backing service/HAL is missing — hidden from launcher
 };
 
 /**

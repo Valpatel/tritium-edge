@@ -430,7 +430,8 @@ static lv_obj_t* s_settings_content = nullptr;
 static lv_obj_t* s_settings_tab_btns[11] = {};
 static int s_settings_active_tab = 0;
 
-// Forward declarations for tab content builders
+// Forward declarations
+void cleanup_timers();  // defined later — needed by settings_select_tab
 static void settings_build_display(lv_obj_t* cont);
 static void settings_build_wifi(lv_obj_t* cont);
 static void settings_build_ble(lv_obj_t* cont);
@@ -462,6 +463,10 @@ static void settings_select_tab(int idx) {
         lv_obj_t* lbl = lv_obj_get_child(s_settings_tab_btns[i], 0);
         if (lbl) lv_obj_set_style_text_color(lbl, active ? T_CYAN : T_GHOST, 0);
     }
+
+    // Clean up any active timers from the previous tab before destroying widgets.
+    // Without this, timer callbacks fire on freed LVGL objects → use-after-free crash.
+    cleanup_timers();
 
     // Rebuild content
     lv_obj_clean(s_settings_content);
@@ -529,6 +534,12 @@ void settings_create(lv_obj_t* viewport) {
         lv_obj_set_style_border_width(btn, 1, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         lv_obj_set_style_pad_all(btn, 4, 0);
+
+        // Prevent button movement on press — LVGL default theme shifts buttons
+        lv_obj_set_style_translate_y(btn, 0, (lv_style_selector_t)(LV_PART_MAIN | LV_STATE_PRESSED));
+        lv_obj_set_style_translate_x(btn, 0, (lv_style_selector_t)(LV_PART_MAIN | LV_STATE_PRESSED));
+        lv_obj_set_style_shadow_width(btn, 0, LV_STATE_PRESSED);
+        lv_obj_set_style_pad_all(btn, 4, LV_STATE_PRESSED);
 
         lv_obj_t* lbl = lv_label_create(btn);
         lv_label_set_text(lbl, tab_icons[i]);
@@ -4253,7 +4264,8 @@ void map_app_create(lv_obj_t* viewport) {
     // Try to open MBTiles if not already open
     if (!mbtiles::is_open()) {
         // Try common paths
-        if (!mbtiles::open("/sdcard/data/map.mbtiles") &&
+        if (!mbtiles::open("/sdcard/data/map.db") &&
+            !mbtiles::open("/sdcard/data/map.mbtiles") &&
             !mbtiles::open("/sdcard/data/ca_tiles.mbtiles") &&
             !mbtiles::open("/sdcard/map.mbtiles")) {
             s_map_opened = false;
@@ -4394,37 +4406,38 @@ void map_app_create(lv_obj_t* viewport) {
 // ===========================================================================
 
 void register_all_apps() {
-    // Map — offline tile map viewer
+    // Map — offline tile map viewer (needs MBTiles reader)
     tritium_shell::registerApp({"Map", "Offline maps", LV_SYMBOL_GPS,
-                                true, map_app_create});
+                                true, map_app_create, MAP_APP_AVAILABLE});
 
-    // Mesh Chat — P2P messaging over ESP-NOW
+    // Mesh Chat — P2P messaging over ESP-NOW (needs mesh HAL)
     tritium_shell::registerApp({"Chat", "Mesh messaging", LV_SYMBOL_SHUFFLE,
-                                false, mesh_chat_create});
+                                false, mesh_chat_create, MESH_APP_AVAILABLE});
 
-    // Mesh Viewer — peers, topology, broadcast, stats
+    // Mesh Viewer — peers, topology, broadcast, stats (needs mesh HAL)
     tritium_shell::registerApp({"Mesh", "Network peers", LV_SYMBOL_LOOP,
-                                true, mesh_app_create});
+                                true, mesh_app_create, MESH_APP_AVAILABLE});
 
-    // BLE Scanner — nearby Bluetooth devices
+    // BLE Scanner — nearby Bluetooth devices (needs BLE scanner HAL)
     tritium_shell::registerApp({"BLE", "Device scanner", LV_SYMBOL_BLUETOOTH,
-                                true, ble_app_create});
+                                true, ble_app_create, BLE_APP_AVAILABLE});
 
-    // System Monitor — heap, PSRAM, CPU, uptime, network
+    // System Monitor — heap, PSRAM, CPU, uptime, network (needs diag HAL)
     tritium_shell::registerApp({"Monitor", "System health", LV_SYMBOL_CHARGE,
-                                true, sysmon_app_create});
+                                true, sysmon_app_create, SYSMON_AVAILABLE});
 
-    // Terminal — on-device serial console for debugging and commands
+    // Terminal — on-device serial console (always available)
     tritium_shell::registerApp({"Terminal", "Serial console", LV_SYMBOL_KEYBOARD,
-                                true, terminal_create});
+                                true, terminal_create, true});
 
-    // File Manager — browse LittleFS and SD card
+    // File Manager — browse LittleFS and SD card (needs at least one FS)
     tritium_shell::registerApp({"Files", "File browser", LV_SYMBOL_DRIVE,
-                                true, files_app_create});
+                                true, files_app_create,
+                                FILES_FS_AVAILABLE || FILES_SD_AVAILABLE});
 
-    // About — version, board info, memory stats
+    // About — version, board info, memory stats (always available)
     tritium_shell::registerApp({"About", "System info", LV_SYMBOL_LIST,
-                                true, about_create});
+                                true, about_create, true});
 }
 
 }  // namespace shell_apps

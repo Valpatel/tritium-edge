@@ -589,8 +589,12 @@ static void build_launcher_grid(lv_obj_t* viewport) {
     int vp_w = s_cfg.screen_width - 2 * pad;
     int vp_h = s_cfg.screen_height - s_cfg.status_bar_height - 2 * pad;
 
-    // Determine grid layout: pick columns based on app count and width
-    int n_apps = s_app_count > 0 ? s_app_count : 1;
+    // Count only available apps for layout calculation
+    int n_apps = 0;
+    for (int i = 0; i < s_app_count; i++) {
+        if (s_apps[i].available) n_apps++;
+    }
+    if (n_apps < 1) n_apps = 1;
     int cols, rows;
     if (s_size_class == SIZE_SMALL) {
         cols = (vp_w + gap) / (60 + gap);
@@ -616,9 +620,10 @@ static void build_launcher_grid(lv_obj_t* viewport) {
 
     const lv_font_t* name_font = font_for_size(s_size_class);
 
-    // System apps first, then user apps
+    // System apps first, then user apps — skip unavailable apps
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < s_app_count; i++) {
+            if (!s_apps[i].available) continue;
             bool is_sys = s_apps[i].is_system;
             if ((pass == 0 && !is_sys) || (pass == 1 && is_sys)) continue;
 
@@ -736,7 +741,7 @@ bool init(esp_lcd_panel_handle_t panel, int width, int height) {
     // About, Brightness, WiFi, Power are now sub-panels inside Settings.
     // The launcher IS the home screen — no need for a separate Launcher app icon.
     registerApp({"Settings", "System settings", LV_SYMBOL_SETTINGS, true,
-                  shell_apps::settings_create});
+                  shell_apps::settings_create, true});
 
     // Initialize lock screen (loads stored PIN from NVS)
     lock_screen::init();

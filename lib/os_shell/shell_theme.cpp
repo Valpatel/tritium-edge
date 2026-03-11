@@ -6,17 +6,54 @@
 
 #include "shell_theme.h"
 #include "os_shell.h"
+#include "themes/lv_theme_private.h"
 #include <cstdio>
 
 namespace tritium_theme {
 
 // ---------------------------------------------------------------------------
-// Theme application
+// Theme application — custom callback wrapper
 // ---------------------------------------------------------------------------
+
+// Style that neutralizes the LVGL default theme's button "grow" on press.
+// The default theme applies transform_width/height + translate_x/y on
+// LV_STATE_PRESSED which visually shifts button content. We add this style
+// AFTER the default theme so it wins the cascade (last-added = highest prio).
+static lv_style_t s_btn_no_grow;
+static bool s_btn_no_grow_inited = false;
+
+// Original theme callback from lv_theme_default_init().
+static lv_theme_apply_cb_t s_original_apply_cb = nullptr;
+
+// Our wrapper callback: let the default theme apply first, then for buttons
+// add the no-grow override so pressed state doesn't shift content.
+static void tritium_theme_apply_cb(lv_theme_t* th, lv_obj_t* obj) {
+    // Run the original default theme callback
+    if (s_original_apply_cb) {
+        s_original_apply_cb(th, obj);
+    }
+
+    // For buttons: neutralize grow/translate on pressed state
+    if (lv_obj_check_type(obj, &lv_button_class)) {
+        lv_obj_add_style(obj, &s_btn_no_grow,
+                         (lv_style_selector_t)(LV_PART_MAIN | LV_STATE_PRESSED));
+    }
+}
 
 void apply() {
     lv_display_t* disp = lv_display_get_default();
     if (!disp) return;
+
+    // Initialize the no-grow style once
+    if (!s_btn_no_grow_inited) {
+        lv_style_init(&s_btn_no_grow);
+        lv_style_set_transform_width(&s_btn_no_grow, 0);
+        lv_style_set_transform_height(&s_btn_no_grow, 0);
+        lv_style_set_translate_x(&s_btn_no_grow, 0);
+        lv_style_set_translate_y(&s_btn_no_grow, 0);
+        lv_style_set_shadow_ofs_y(&s_btn_no_grow, 0);
+        s_btn_no_grow_inited = true;
+    }
 
     // Initialize the built-in dark theme with Tritium primary/secondary colors
     lv_theme_t* theme = lv_theme_default_init(
@@ -26,6 +63,11 @@ void apply() {
         true,       // dark mode
         LV_FONT_DEFAULT
     );
+
+    // Wrap the theme callback: save original, install ours
+    s_original_apply_cb = theme->apply_cb;
+    lv_theme_set_apply_cb(theme, tritium_theme_apply_cb);
+
     lv_display_set_theme(disp, theme);
 
     // Set active screen to void black
