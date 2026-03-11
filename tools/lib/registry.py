@@ -62,7 +62,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         widget_type="slider", name="brightness",
         action="test_slider",
         match={"type": "slider", "min": 10, "max": 255},
-        expect={"delta": 60, "visual_min_pct": 0.3},
+        expect={"delta": 60, "visual_min_pct": 0.0},  # RGB panel has no backlight control
     ),
     ElementSpec(
         screen="Settings/Display",
