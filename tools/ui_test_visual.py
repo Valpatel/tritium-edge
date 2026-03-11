@@ -127,12 +127,21 @@ def test_element_sweep(dev: TritiumDevice, report: TestReport,
 
     # --- Settings screens: launch once, switch tabs ---
     if settings_screens:
-        dev.home()
-        time.sleep(0.5)
-        result = dev.launch("Settings")
-        time.sleep(1.5)
+        settings_ok = False
+        for attempt in range(2):
+            dev.home()
+            time.sleep(1.0)
+            result = dev.launch("Settings")
+            time.sleep(2.0)
+            if result and result.get("ok"):
+                # Verify UI actually loaded
+                widgets = dev.ui_tree(flat=True)
+                if isinstance(widgets, list) and len(widgets) > 10:
+                    settings_ok = True
+                    break
+            time.sleep(2.0)
 
-        if not result or not result.get("ok"):
+        if not settings_ok:
             for screen in settings_screens:
                 specs = elements_for_screen(screen)
                 for spec in specs:
@@ -140,13 +149,10 @@ def test_element_sweep(dev: TritiumDevice, report: TestReport,
                                "Skipped: Settings launch failed")
                     total += 1
         else:
-            # Get tab buttons once — they persist across tab switches
-            widgets = dev.ui_tree(flat=True)
-            tab_btns = []
-            if isinstance(widgets, list):
-                buttons = extract_buttons(widgets)
-                tab_btns = [b for b in buttons
-                            if b.get("y", 999) < 80 and b.get("h", 0) > 30]
+            # Extract tab buttons from already-fetched widget tree
+            buttons = extract_buttons(widgets)
+            tab_btns = [b for b in buttons
+                        if b.get("y", 999) < 80 and b.get("h", 0) > 30]
             if len(tab_btns) < len(SETTINGS_TABS):
                 print(f"  [WARN] Only {len(tab_btns)} tab buttons"
                       f" found (need {len(SETTINGS_TABS)})")
@@ -304,9 +310,10 @@ def _discover_unregistered(dev: TritiumDevice, report: TestReport,
         wtype = w.get("type", "").removeprefix("lv_")
         if wtype not in ("btn", "slider", "switch", "dropdown", "checkbox"):
             continue
-        # Skip nav buttons (bottom bar, y >= 430)
-        if wtype == "btn" and w.get("y", 0) >= 430:
-            continue
+        # Skip nav buttons (bottom bar, y >= 400 with no text)
+        if wtype == "btn" and w.get("y", 0) >= 400:
+            if not w.get("text", "").strip():
+                continue
         # Skip tab buttons (top bar, y < 80)
         if wtype == "btn" and w.get("y", 999) < 80:
             continue

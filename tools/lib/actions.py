@@ -141,7 +141,7 @@ def action_test_dropdown(dev, vis: VisualValidator, report, spec: ElementSpec,
 
     before = dev.screenshot_np()
     dev.click(dd_id)
-    time.sleep(0.6)
+    time.sleep(0.8)
     opened = dev.screenshot_np()
 
     passed = True
