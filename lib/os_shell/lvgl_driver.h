@@ -93,6 +93,11 @@ int getHeight();
 /// For DIRECT mode: pointer to the current draw buffer (full-screen)
 const uint8_t* getFramebuffer();
 
+/// Thread-safety mutex — lock before accessing LVGL from non-main tasks
+/// (e.g. HTTP handlers). Main loop tick() locks automatically.
+bool lock(uint32_t timeout_ms = 100);
+void unlock();
+
 }  // namespace lvgl_driver
 
 #endif  // ENABLE_SHELL

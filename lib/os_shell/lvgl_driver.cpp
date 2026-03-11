@@ -54,6 +54,9 @@ static SemaphoreHandle_t s_flush_sem = nullptr;
 static SemaphoreHandle_t s_sem_gui_ready = nullptr;
 static SemaphoreHandle_t s_sem_vsync_end = nullptr;
 
+// Thread-safety mutex for LVGL access from multiple tasks
+static SemaphoreHandle_t s_lvgl_mutex = nullptr;
+
 // Debug counters
 static volatile uint32_t s_flush_count = 0;
 static volatile uint32_t s_last_flush_ms = 0;
@@ -134,6 +137,11 @@ lv_display_t* init(esp_lcd_panel_handle_t panel, int width, int height) {
     }
     s_width = width;
     s_height = height;
+
+    // Create thread-safety mutex (before lv_init so it's ready immediately)
+    if (!s_lvgl_mutex) {
+        s_lvgl_mutex = xSemaphoreCreateRecursiveMutex();
+    }
 
     lv_init();
     lv_tick_set_cb([]() -> uint32_t { return millis(); });
@@ -242,7 +250,10 @@ lv_display_t* init(esp_lcd_panel_handle_t panel, int width, int height) {
 }
 
 uint32_t tick() {
-    return lv_timer_handler();
+    if (s_lvgl_mutex) xSemaphoreTakeRecursive(s_lvgl_mutex, portMAX_DELAY);
+    uint32_t next = lv_timer_handler();
+    if (s_lvgl_mutex) xSemaphoreGiveRecursive(s_lvgl_mutex);
+    return next;
 }
 
 lv_display_t* display() {
@@ -272,6 +283,15 @@ int getHeight() {
 // For DIRECT mode, return the current draw buffer (full-screen framebuffer)
 const uint8_t* getFramebuffer() {
     return s_buf1;
+}
+
+bool lock(uint32_t timeout_ms) {
+    if (!s_lvgl_mutex) return false;
+    return xSemaphoreTakeRecursive(s_lvgl_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+void unlock() {
+    if (s_lvgl_mutex) xSemaphoreGiveRecursive(s_lvgl_mutex);
 }
 
 }  // namespace lvgl_driver
