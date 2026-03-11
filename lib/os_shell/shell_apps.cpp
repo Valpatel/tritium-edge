@@ -4125,7 +4125,7 @@ void terminal_create(lv_obj_t* viewport) {
     lv_obj_set_scrollbar_mode(log_container, LV_SCROLLBAR_MODE_AUTO);
 
     s_term_log = lv_label_create(log_container);
-    lv_label_set_text(s_term_log, "Tritium-OS Terminal\nType a command below.\n");
+    lv_label_set_text(s_term_log, "");
     lv_obj_set_width(s_term_log, lv_pct(100));
     lv_label_set_long_mode(s_term_log, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(s_term_log, T_GREEN, 0);
@@ -4173,10 +4173,12 @@ void terminal_create(lv_obj_t* viewport) {
         lv_obj_send_event(s_term_input, LV_EVENT_READY, nullptr);
     }, LV_EVENT_CLICKED, nullptr);
 
-    // Seed the log with boot info
-    term_append("Tritium-OS Terminal v1.0");
-    term_append("Type commands (e.g. HELP, STATUS, WIFI_STATUS)");
-    term_append("---");
+    // Seed the log with boot info (only on first open)
+    if (s_term_count == 0) {
+        term_append("Tritium-OS Terminal v1.0");
+        term_append("Type commands (e.g. HELP, STATUS, WIFI_STATUS)");
+        term_append("---");
+    }
 
     // Refresh timer
     s_term_timer = lv_timer_create(term_refresh, 500, nullptr);
