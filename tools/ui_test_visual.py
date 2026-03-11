@@ -703,6 +703,60 @@ def test_tab_stress(dev: TritiumDevice, report: TestReport, vis: VisualValidator
     time.sleep(0.8)
 
 
+def test_memory_leak(dev: TritiumDevice, report: TestReport, vis: VisualValidator,
+                     cycles: int = 5):
+    """Open and close every app multiple times, checking for heap leaks."""
+    print("\n--- Memory Leak Detection ---")
+
+    apps_data = dev.apps()
+    apps = apps_data.get("apps", []) if "_error" not in apps_data else []
+    app_names = [a["name"] for a in apps if a.get("available", True)]
+
+    # Baseline memory
+    dev.home()
+    time.sleep(1.0)
+    status = dev.info()
+    heap_before = status.get("free_heap", 0) if status and "_error" not in status else 0
+    if heap_before == 0:
+        report.add("memleak", "baseline", False, "Cannot read heap")
+        return
+
+    # Open/close every app multiple times
+    for cycle in range(cycles):
+        random.shuffle(app_names)
+        for name in app_names:
+            dev.launch(name)
+            time.sleep(0.8)
+        dev.home()
+        time.sleep(0.5)
+
+    # Post-test memory
+    time.sleep(2.0)
+    status = dev.info()
+    heap_after = status.get("free_heap", 0) if status and "_error" not in status else 0
+
+    if heap_after == 0:
+        report.add("memleak", "post_test", False, "Cannot read heap")
+        return
+
+    leak_bytes = heap_before - heap_after
+    leak_kb = leak_bytes / 1024
+    total_ops = cycles * len(app_names)
+
+    # Allow up to 2KB loss per cycle (some fragmentation is normal)
+    max_leak = cycles * 2048
+    passed = leak_bytes < max_leak
+
+    report.add("memleak", "heap_delta", passed,
+               f"before={heap_before / 1024:.0f}KB after={heap_after / 1024:.0f}KB "
+               f"delta={leak_kb:+.1f}KB ({total_ops} ops, "
+               f"max_allowed={max_leak / 1024:.0f}KB)")
+    report.record_memory(heap_after,
+                         status.get("psram_free", 0))
+    print(f"  [{'PASS' if passed else 'FAIL'}] heap delta: {leak_kb:+.1f}KB "
+          f"after {total_ops} app open/close cycles")
+
+
 # ── Sweep orchestration ────────────────────────────────────────────────
 
 def run_single_sweep(dev: TritiumDevice, report: TestReport,
@@ -721,6 +775,7 @@ def run_single_sweep(dev: TritiumDevice, report: TestReport,
         ("map_content", lambda: test_map_content(dev, report, vis)),
         ("stability", lambda: test_stability(dev, report, vis, randomize=randomize)),
         ("tab_stress", lambda: test_tab_stress(dev, report, vis)),
+        ("memory_leak", lambda: test_memory_leak(dev, report, vis)),
     ]
 
     if randomize:
