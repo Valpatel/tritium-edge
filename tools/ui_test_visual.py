@@ -734,9 +734,16 @@ def test_memory_leak(dev: TritiumDevice, report: TestReport, vis: VisualValidato
     apps = apps_data.get("apps", []) if "_error" not in apps_data else []
     app_names = [a["name"] for a in apps if a.get("available", True)]
 
-    # Baseline memory
+    # Pre-warm: open/close all apps once to stabilize heap before measuring
     dev.home()
-    time.sleep(1.0)
+    time.sleep(0.5)
+    for name in app_names:
+        dev.launch(name)
+        time.sleep(0.5)
+    dev.home()
+    time.sleep(1.5)
+
+    # Baseline memory (after pre-warm)
     status = dev.info()
     heap_before = status.get("free_heap", 0) if status and "_error" not in status else 0
     if heap_before == 0:
