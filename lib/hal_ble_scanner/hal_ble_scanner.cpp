@@ -88,7 +88,7 @@ static void prune_stale() {
 
 class ScanCallbacks : public NimBLEScanCallbacks {
     void onResult(const NimBLEAdvertisedDevice* dev) override {
-        if (!_mutex) return;
+        if (!dev || !_mutex) return;
         if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
 
         NimBLEAddress addr = dev->getAddress();
@@ -142,12 +142,23 @@ static ScanCallbacks _scan_callbacks;
 static void scan_task(void* param) {
     while (_running) {
         NimBLEScan* scan = NimBLEDevice::getScan();
+        if (!scan) {
+            Serial.printf("[ble_scan] ERROR: getScan() returned null\n");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
         scan->setActiveScan(_config.active_scan);
         scan->setInterval(_config.scan_interval_ms);
         scan->setWindow(_config.scan_window_ms);
 
         Serial.printf("[ble_scan] Scanning for %lus...\n", (unsigned long)_config.scan_duration_s);
-        scan->start(_config.scan_duration_s, false);
+        if (!scan->start(_config.scan_duration_s)) {
+            Serial.printf("[ble_scan] Failed to start scan, retrying...\n");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+        // Wait for scan duration (non-blocking start, manual wait)
+        vTaskDelay(pdMS_TO_TICKS(_config.scan_duration_s * 1000));
 
         // Prune stale devices
         if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -176,11 +187,20 @@ bool init(const ScanConfig& config) {
     _device_count = 0;
 
     NimBLEDevice::init("Tritium-Node");
+
+    // Wait for BLE host to fully sync before configuring scan
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
     NimBLEScan* scan = NimBLEDevice::getScan();
+    if (!scan) {
+        Serial.printf("[ble_scan] ERROR: getScan() returned null after init\n");
+        return false;
+    }
     scan->setScanCallbacks(&_scan_callbacks, false);
+    scan->setMaxResults(0);  // Don't store results internally; we manage our own list
 
     _running = true;
-    xTaskCreatePinnedToCore(scan_task, "ble_scan", 4096, nullptr, 1, &_scan_task, 1);
+    xTaskCreatePinnedToCore(scan_task, "ble_scan", 8192, nullptr, 1, &_scan_task, 1);
 
     Serial.printf("[ble_scan] Started (interval=%dms, window=%dms, passive=%s)\n",
         config.scan_interval_ms, config.scan_window_ms,

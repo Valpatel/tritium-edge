@@ -125,11 +125,10 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/.pio/libdeps/${PIOENV}/lvgl")
     )
 endif()
 
-# NimBLE-Arduino: scan for any env that has it installed.
-# Include all source files — NimBLE-Arduino is tightly coupled.
-file(GLOB _nimble_dirs "${CMAKE_SOURCE_DIR}/.pio/libdeps/*/NimBLE-Arduino/src")
-if(_nimble_dirs)
-    list(GET _nimble_dirs 0 _nimble_dir)
+# NimBLE-Arduino: only include if installed for THIS env (PIOENV).
+# Previous wildcard glob pulled NimBLE from sibling envs, causing crashes.
+if(EXISTS "${CMAKE_SOURCE_DIR}/.pio/libdeps/${PIOENV}/NimBLE-Arduino/src")
+    set(_nimble_dir "${CMAKE_SOURCE_DIR}/.pio/libdeps/${PIOENV}/NimBLE-Arduino/src")
     message(STATUS "[tritium] NimBLE-Arduino found: ${_nimble_dir}")
     file(GLOB _nimble_srcs "${_nimble_dir}/*.cpp")
     target_sources(${COMPONENT_LIB} PRIVATE ${_nimble_srcs})
