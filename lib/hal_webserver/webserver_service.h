@@ -86,6 +86,29 @@ public:
 #if defined(ENABLE_WEBSERVER)
         if (_active) {
             _webserver.process();
+
+            // Health check: restart httpd if it stopped unexpectedly
+            _health_ticks++;
+            if (_health_ticks >= 30000) {  // ~30s at 1ms tick rate
+                _health_ticks = 0;
+                bool needs_restart = false;
+
+                if (!_webserver.isRunning()) {
+                    printf("[tritium] httpd not running — restarting\n");
+                    needs_restart = true;
+                }
+
+                if (needs_restart) {
+                    _webserver.stop();
+                    auto* wifi_svc = ServiceRegistry::getAs<WifiService>("wifi");
+                    if (wifi_svc && (wifi_svc->isConnected() || wifi_svc->isAPMode())) {
+                        startServer(wifi_svc);
+                    } else {
+                        _active = false;
+                        _pending = true;
+                    }
+                }
+            }
             return;
         }
         if (!_pending) return;
@@ -222,4 +245,5 @@ private:
 #endif
     bool _active = false;
     bool _pending = false;
+    uint32_t _health_ticks = 0;
 };
