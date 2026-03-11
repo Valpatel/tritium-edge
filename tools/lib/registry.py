@@ -89,6 +89,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         action="readonly",
         match={"type": "bar", "index": 0},
         expect={"reason": "signal strength indicator"},
+        optional=True,  # cross-tab widget bleed shifts bar indices
     ),
     ElementSpec(
         screen="Settings/WiFi",
@@ -97,6 +98,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         match={"type": "switch", "index": 1},
         expect={"reason": "toggling AP mode disrupts connectivity"},
         dangerous=True,
+        optional=True,  # cross-tab widget bleed shifts switch indices
     ),
     ElementSpec(
         screen="Settings/WiFi",
