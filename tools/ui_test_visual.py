@@ -327,9 +327,17 @@ def test_element_sweep(dev: TritiumDevice, report: TestReport,
 def _discover_unregistered(dev: TritiumDevice, report: TestReport,
                            screen: str, widgets: list, specs: list):
     """Warn about interactive widgets that aren't in the registry."""
-    # Find which widgets the registry matched
+    # Find which widgets the registry matched.
+    # For Settings tabs, LVGL widget tree includes ALL tab content (even hidden
+    # tabs), so also match against elements from sibling Settings tabs.
+    all_specs = list(specs)
+    if screen.startswith("Settings/"):
+        for sibling in all_screens():
+            if sibling.startswith("Settings/") and sibling != screen:
+                all_specs.extend(elements_for_screen(sibling))
+
     matched_ids = set()
-    for spec in specs:
+    for spec in all_specs:
         w = match_widget(spec, widgets)
         if w:
             matched_ids.add(w.get("id"))
