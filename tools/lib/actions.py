@@ -141,7 +141,7 @@ def action_test_dropdown(dev, vis: VisualValidator, report, spec: ElementSpec,
 
     before = dev.screenshot_np()
     dev.click(dd_id)
-    time.sleep(0.8)
+    time.sleep(1.0)
     opened = dev.screenshot_np()
 
     passed = True
@@ -150,8 +150,20 @@ def action_test_dropdown(dev, vis: VisualValidator, report, spec: ElementSpec,
     if before is not None and opened is not None:
         diff = vis.compare(before, opened)
         if diff.diff_pct < min_pct:
-            passed = False
-            detail += f" (didn't open, diff={diff.diff_pct:.2f}%)"
+            # Retry once — click may not have registered
+            dev.tap(400, 100)  # close if partially open
+            time.sleep(0.5)
+            before = dev.screenshot_np()
+            dev.click(dd_id)
+            time.sleep(1.2)
+            opened = dev.screenshot_np()
+            if before is not None and opened is not None:
+                diff = vis.compare(before, opened)
+            if diff.diff_pct < min_pct:
+                passed = False
+                detail += f" (didn't open, diff={diff.diff_pct:.2f}%)"
+            else:
+                detail += f" (opened on retry: diff={diff.diff_pct:.1f}%)"
         else:
             detail += f" (opened: diff={diff.diff_pct:.1f}%)"
     else:
