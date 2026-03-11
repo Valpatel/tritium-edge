@@ -99,7 +99,7 @@ def _switch_settings_tab(dev: TritiumDevice, tab_name: str,
     if tab_idx >= len(tab_btns):
         return False
     dev.click(tab_btns[tab_idx]["id"])
-    time.sleep(1.2)
+    time.sleep(1.5)
     return True
 
 
@@ -174,8 +174,11 @@ def test_element_sweep(dev: TritiumDevice, report: TestReport,
                         total += 1
                     continue
 
-                # Get fresh widget tree for this tab
+                # Get fresh widget tree for this tab (retry once)
                 tab_widgets = dev.ui_tree(flat=True)
+                if not isinstance(tab_widgets, list) or len(tab_widgets) < 5:
+                    time.sleep(1.5)
+                    tab_widgets = dev.ui_tree(flat=True)
                 if not isinstance(tab_widgets, list):
                     for spec in specs:
                         report.add("elements", f"{screen}/{spec.name}", False,
