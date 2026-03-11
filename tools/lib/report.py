@@ -668,12 +668,15 @@ canvas{{width:100%;height:200px;border:1px solid #1a1a2e;border-radius:4px;margi
         try:
             conn = sqlite3.connect(str(self.db_path))
             c = conn.cursor()
+
+            # Per-type summary for current run
             c.execute("""SELECT element_type, COUNT(*), SUM(passed)
                         FROM element_coverage WHERE run_id=?
                         GROUP BY element_type""", (self._run_id,))
             rows = c.fetchall()
-            conn.close()
+
             if not rows:
+                conn.close()
                 return ""
 
             total_elements = sum(r[1] for r in rows)
@@ -684,10 +687,57 @@ canvas{{width:100%;height:200px;border:1px solid #1a1a2e;border-radius:4px;margi
                 color = "#05ffa1" if passed == count else "#fcee0a" if passed/count > 0.9 else "#ff2a6d"
                 items += f'<div class="cov-item"><div class="cov-type">{etype}</div><div class="cov-count" style="color:{color}">{passed}/{count}</div></div>\n'
 
-            return f"""
+            coverage_grid = f"""
             <div class="card">
                 <h2>Element Coverage ({total_passed}/{total_elements} passed)</h2>
                 <div class="coverage-grid">{items}</div>
             </div>"""
+
+            # Per-element reliability across all soak runs
+            c.execute("""SELECT app_name, element_text, element_type,
+                                COUNT(*) as total,
+                                SUM(CASE WHEN passed THEN 1 ELSE 0 END) as pass_cnt,
+                                ROUND(100.0 * SUM(CASE WHEN passed THEN 1 ELSE 0 END) / COUNT(*), 1) as rate
+                         FROM element_coverage
+                         GROUP BY app_name, element_text
+                         ORDER BY rate ASC, app_name""")
+            reliability = c.fetchall()
+            conn.close()
+
+            if not reliability:
+                return coverage_grid
+
+            rel_rows = ""
+            for screen, name, etype, total, passed, rate in reliability:
+                if rate >= 100:
+                    color = "#05ffa1"
+                    bar_color = "#05ffa122"
+                elif rate >= 90:
+                    color = "#00f0ff"
+                    bar_color = "#00f0ff22"
+                elif rate >= 75:
+                    color = "#fcee0a"
+                    bar_color = "#fcee0a22"
+                else:
+                    color = "#ff2a6d"
+                    bar_color = "#ff2a6d22"
+                rel_rows += (
+                    f'<tr style="background:linear-gradient(90deg,{bar_color} {rate}%,transparent {rate}%)">'
+                    f'<td style="color:{color}">{rate:.0f}%</td>'
+                    f'<td>{screen}</td><td>{name}</td>'
+                    f'<td class="mono">{etype}</td>'
+                    f'<td class="mono">{passed}/{total}</td></tr>\n'
+                )
+
+            perfect = sum(1 for r in reliability if r[5] >= 100)
+            reliability_html = f"""
+            <div class="card">
+                <h2>Element Reliability ({perfect}/{len(reliability)} at 100%)</h2>
+                <table class="results">
+                <tr style="color:#666;font-size:11px"><td>Rate</td><td>Screen</td><td>Element</td><td>Type</td><td>Pass/Total</td></tr>
+                {rel_rows}</table>
+            </div>"""
+
+            return coverage_grid + reliability_html
         except Exception:
             return ""
