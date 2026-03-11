@@ -118,6 +118,7 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #if defined(ENABLE_SHELL) && __has_include("os_shell.h")
 #include "os_shell.h"
 #include "lvgl_driver.h"
+#include "core/lv_obj_class_private.h"  // Full lv_obj_class_t definition (has name field)
 #define WEB_HAS_SHELL 1
 #else
 #define WEB_HAS_SHELL 0
@@ -156,6 +157,12 @@ static void _captive_dns_task(void* param);
 static const size_t SHARED_JSON_SIZE = 4096;
 static char* _shared_json = nullptr;
 
+// Deferred click: httpd sets the target, main loop processes it.
+// This avoids running LVGL event callbacks on the httpd stack (only 16KB).
+static volatile lv_obj_t* _pending_click_obj = nullptr;
+static volatile bool _pending_click_done = false;
+static SemaphoreHandle_t _click_done_sem = nullptr;
+
 // ── Helpers for esp_http_server ─────────────────────────────────────────────
 
 // Send a complete response with content type and body
@@ -169,6 +176,7 @@ static esp_err_t _send(httpd_req_t* req, int status, const char* type, const cha
                                status == 503 ? "503 Service Unavailable" : "200 OK");
     if (type) httpd_resp_set_type(req, type);
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Connection", "close");
     return httpd_resp_send(req, body, body ? strlen(body) : 0);
 }
 
@@ -654,7 +662,9 @@ bool WebServerHAL::init(uint16_t port) {
     config.lru_purge_enable = true;
     config.max_uri_handlers = 96;
     config.max_open_sockets = 7;
-    config.stack_size = 8192;
+    config.stack_size = 16384;
+    config.recv_wait_timeout = 10;   // seconds (default 5)
+    config.send_wait_timeout = 10;   // seconds (default 5)
     config.uri_match_fn = httpd_uri_match_wildcard;
 
     if (httpd_start(&_server, &config) != ESP_OK) {
@@ -683,8 +693,24 @@ void WebServerHAL::stop() {
 bool WebServerHAL::isRunning() const { return _running; }
 
 void WebServerHAL::process() {
-    // esp_http_server is async — no handleClient() needed.
-    // Captive portal DNS is handled by its own task.
+    // Process any deferred click from the httpd task.
+    // This runs on the main loop task where the LVGL stack is large enough
+    // to handle event callbacks that create/destroy widgets.
+#if WEB_HAS_SHELL
+    lv_obj_t* click_target = (lv_obj_t*)_pending_click_obj;
+    if (click_target) {
+        _pending_click_obj = nullptr;
+        // Take LVGL mutex — we're about to modify the widget tree
+        if (lvgl_driver::lock(1000)) {
+            lv_obj_send_event(click_target, LV_EVENT_PRESSED, nullptr);
+            lv_obj_send_event(click_target, LV_EVENT_CLICKED, nullptr);
+            lv_obj_send_event(click_target, LV_EVENT_RELEASED, nullptr);
+            lvgl_driver::unlock();
+        }
+        _pending_click_done = true;
+        if (_click_done_sem) xSemaphoreGive(_click_done_sem);
+    }
+#endif
 }
 
 // ── Route registration ──────────────────────────────────────────────────────
@@ -1264,12 +1290,97 @@ static esp_err_t _files_delete_handler(httpd_req_t* req) {
     return _send_redirect(req, "/files");
 }
 
+// Upload to SD card: POST /api/fs/upload?path=/data/map.mbtiles
+// Writes to /sdcard/<path>. Creates parent directories as needed.
+// Streams the body directly to disk — supports large files.
+static esp_err_t _api_fs_upload_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+
+    char rel_path[128] = "";
+    _get_query_param(req, "path", rel_path, sizeof(rel_path));
+    if (rel_path[0] == '\0') {
+        return _send_json(req, 400, "{\"ok\":false,\"error\":\"missing ?path= parameter\"}");
+    }
+
+    char fullpath[192];
+    snprintf(fullpath, sizeof(fullpath), "/sdcard%s%s",
+             rel_path[0] == '/' ? "" : "/", rel_path);
+
+    // Create parent directories
+    char dir[192];
+    strncpy(dir, fullpath, sizeof(dir));
+    for (char* p = dir + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            mkdir(dir, 0755);
+            *p = '/';
+        }
+    }
+
+    // Remove existing file first (FAT32 can struggle overwriting large files)
+    remove(fullpath);
+
+    FILE* f = fopen(fullpath, "w");
+    if (!f) {
+        char err[256];
+        snprintf(err, sizeof(err),
+                 "{\"ok\":false,\"error\":\"Cannot create %s (errno=%d)\"}", fullpath, errno);
+        return _send_json(req, 500, err);
+    }
+
+    char buf[4096];
+    int total = req->content_len;
+    int received = 0;
+    while (received < total) {
+        int to_read = (total - received) < (int)sizeof(buf) ? (total - received) : (int)sizeof(buf);
+        int ret = httpd_req_recv(req, buf, to_read);
+        if (ret <= 0) break;
+        fwrite(buf, 1, ret, f);
+        received += ret;
+    }
+    fclose(f);
+
+    DBG_INFO("web", "SD upload: %s (%d bytes)", fullpath, received);
+
+    char json[256];
+    snprintf(json, sizeof(json),
+             "{\"ok\":true,\"path\":\"%s\",\"bytes\":%d}", fullpath, received);
+    return _send_json(req, 200, json);
+}
+
+// Delete SD card file: DELETE /api/fs/delete?path=/data/map.mbtiles
+static esp_err_t _api_fs_delete_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+
+    char rel_path[128] = "";
+    _get_query_param(req, "path", rel_path, sizeof(rel_path));
+    if (rel_path[0] == '\0') {
+        return _send_json(req, 400, "{\"ok\":false,\"error\":\"missing ?path= parameter\"}");
+    }
+
+    char fullpath[192];
+    snprintf(fullpath, sizeof(fullpath), "/sdcard%s%s",
+             rel_path[0] == '/' ? "" : "/", rel_path);
+
+    if (remove(fullpath) == 0) {
+        char json[256];
+        snprintf(json, sizeof(json), "{\"ok\":true,\"deleted\":\"%s\"}", fullpath);
+        return _send_json(req, 200, json);
+    }
+    char err[256];
+    snprintf(err, sizeof(err),
+             "{\"ok\":false,\"error\":\"Cannot delete %s (errno=%d)\"}", fullpath, errno);
+    return _send_json(req, 500, err);
+}
+
 void WebServerHAL::addFileManager() {
     if (!_server) return;
 
-    REG(_server, "/files",        HTTP_GET,  _files_page_handler);
-    REG(_server, "/files/upload", HTTP_POST, _files_upload_handler);
-    REG(_server, "/files/delete", HTTP_POST, _files_delete_handler);
+    REG(_server, "/files",          HTTP_GET,  _files_page_handler);
+    REG(_server, "/files/upload",   HTTP_POST, _files_upload_handler);
+    REG(_server, "/files/delete",   HTTP_POST, _files_delete_handler);
+    REG(_server, "/api/fs/upload",  HTTP_POST, _api_fs_upload_handler);
+    REG(_server, "/api/fs/delete",  HTTP_POST, _api_fs_delete_handler);
 
     DBG_INFO("web", "File manager added at /files");
 }
@@ -3072,10 +3183,12 @@ static esp_err_t _api_shell_apps_handler(httpd_req_t* req) {
         if (!app) continue;
         if (i > 0) pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, ",");
         pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos,
-            "{\"index\":%d,\"name\":\"%s\",\"description\":\"%s\",\"system\":%s}",
+            "{\"index\":%d,\"name\":\"%s\",\"description\":\"%s\","
+            "\"system\":%s,\"available\":%s}",
             i, app->name ? app->name : "",
             app->description ? app->description : "",
-            app->is_system ? "true" : "false");
+            app->is_system ? "true" : "false",
+            app->available ? "true" : "false");
     }
     pos += snprintf(_shared_json + pos, SHARED_JSON_SIZE - pos, "]}");
     return _send_json(req, 200, _shared_json);
@@ -3109,18 +3222,478 @@ static esp_err_t _api_shell_launch_handler(httpd_req_t* req) {
         return _send_json(req, 400, "{\"ok\":false,\"error\":\"invalid app index or name\"}");
     }
 
+    // Lock LVGL — showApp modifies the widget tree
+    if (!lvgl_driver::lock(2000)) {
+        return _send_json(req, 503, "{\"ok\":false,\"error\":\"lvgl busy\"}");
+    }
     tritium_shell::showApp(idx);
     const tritium_shell::AppDescriptor* app = tritium_shell::getApp(idx);
+    const char* app_name = (app && app->name) ? app->name : "";
+    lvgl_driver::unlock();
+
     snprintf(_shared_json, SHARED_JSON_SIZE,
-        "{\"ok\":true,\"app\":\"%s\"}", app && app->name ? app->name : "");
+        "{\"ok\":true,\"app\":\"%s\"}", app_name);
     return _send_json(req, 200, _shared_json);
 }
 
 static esp_err_t _api_shell_home_handler(httpd_req_t* req) {
     _instance->_requestCount++;
+    if (!lvgl_driver::lock(2000)) {
+        return _send_json(req, 503, "{\"ok\":false,\"error\":\"lvgl busy\"}");
+    }
     tritium_shell::showLauncher();
+    lvgl_driver::unlock();
     return _send_json(req, 200, "{\"ok\":true}");
 }
+
+// ── UI Introspection API ─────────────────────────────────────────────────
+// Provides widget tree enumeration, touch injection by widget ID, and
+// widget value manipulation for remote debugging and automated testing.
+
+// Get widget class name (e.g. "lv_btn", "lv_label", "lv_slider")
+static const char* _widget_class_name(const lv_obj_t* obj) {
+    const lv_obj_class_t* cls = lv_obj_get_class(obj);
+    if (cls && cls->name) return cls->name;
+    return "lv_obj";
+}
+
+// Check if widget is interactive (clickable, checkable, editable)
+static bool _widget_is_interactive(const lv_obj_t* obj) {
+    return lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE) ||
+           lv_obj_has_flag(obj, LV_OBJ_FLAG_CHECKABLE);
+}
+
+// Get label text from a widget (direct label or first child label)
+static const char* _widget_get_text(const lv_obj_t* obj) {
+    const lv_obj_class_t* cls = lv_obj_get_class(obj);
+    if (cls == &lv_label_class) {
+        return lv_label_get_text(obj);
+    }
+    // Check first child for label
+    uint32_t cnt = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < cnt && i < 3; i++) {
+        lv_obj_t* child = lv_obj_get_child(obj, i);
+        if (lv_obj_get_class(child) == &lv_label_class) {
+            return lv_label_get_text(child);
+        }
+    }
+    return nullptr;
+}
+
+// Escape a string for JSON output, writing to buf. Returns chars written.
+static int _json_escape(char* buf, size_t size, const char* str) {
+    int pos = 0;
+    buf[pos++] = '"';
+    for (const char* p = str; *p && pos < (int)size - 3; p++) {
+        if (*p == '"' || *p == '\\') {
+            buf[pos++] = '\\';
+            if (pos < (int)size - 2) buf[pos++] = *p;
+        } else if (*p == '\n') {
+            buf[pos++] = '\\';
+            if (pos < (int)size - 2) buf[pos++] = 'n';
+        } else if ((uint8_t)*p >= 0x20) {
+            buf[pos++] = *p;
+        }
+    }
+    buf[pos++] = '"';
+    buf[pos] = '\0';
+    return pos;
+}
+
+// Recursively serialize LVGL widget tree to JSON
+static int _serialize_widget(lv_obj_t* obj, char* buf, size_t size, int depth) {
+    if (!obj || depth > 12 || size < 128) return 0;
+    if (lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN)) return 0;
+
+    int pos = 0;
+    const char* cls_name = _widget_class_name(obj);
+    const lv_obj_class_t* cls = lv_obj_get_class(obj);
+
+    // Get absolute coordinates
+    lv_area_t coords;
+    lv_obj_get_coords(obj, &coords);
+
+    pos += snprintf(buf + pos, size - pos,
+        "{\"id\":\"%p\",\"type\":\"%s\","
+        "\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
+        "\"clickable\":%s,\"state\":%u",
+        (void*)obj, cls_name,
+        (int)coords.x1, (int)coords.y1,
+        (int)(coords.x2 - coords.x1 + 1),
+        (int)(coords.y2 - coords.y1 + 1),
+        _widget_is_interactive(obj) ? "true" : "false",
+        (unsigned)lv_obj_get_state(obj));
+
+    // Add text if available
+    const char* text = _widget_get_text(obj);
+    if (text && text[0]) {
+        pos += snprintf(buf + pos, size - pos, ",\"text\":");
+        pos += _json_escape(buf + pos, size - pos, text);
+    }
+
+    // Add value for specific widget types — covers every widget used in Tritium-OS
+    if (cls == &lv_slider_class) {
+        pos += snprintf(buf + pos, size - pos, ",\"value\":%d,\"min\":%d,\"max\":%d",
+                        (int)lv_slider_get_value(obj),
+                        (int)lv_slider_get_min_value(obj),
+                        (int)lv_slider_get_max_value(obj));
+    } else if (cls == &lv_bar_class) {
+        pos += snprintf(buf + pos, size - pos, ",\"value\":%d,\"min\":%d,\"max\":%d",
+                        (int)lv_bar_get_value(obj),
+                        (int)lv_bar_get_min_value(obj),
+                        (int)lv_bar_get_max_value(obj));
+    } else if (cls == &lv_checkbox_class || cls == &lv_switch_class) {
+        bool checked = lv_obj_get_state(obj) & LV_STATE_CHECKED;
+        pos += snprintf(buf + pos, size - pos, ",\"checked\":%s",
+                        checked ? "true" : "false");
+    } else if (cls == &lv_textarea_class) {
+        const char* ta_text = lv_textarea_get_text(obj);
+        if (ta_text) {
+            pos += snprintf(buf + pos, size - pos, ",\"value\":");
+            pos += _json_escape(buf + pos, size - pos, ta_text);
+        }
+    } else if (cls == &lv_dropdown_class) {
+        char sel_text[64] = {};
+        lv_dropdown_get_selected_str(obj, sel_text, sizeof(sel_text));
+        pos += snprintf(buf + pos, size - pos, ",\"selected\":%u,\"selected_text\":",
+                        (unsigned)lv_dropdown_get_selected(obj));
+        pos += _json_escape(buf + pos, size - pos, sel_text);
+        pos += snprintf(buf + pos, size - pos, ",\"option_count\":%u",
+                        (unsigned)lv_dropdown_get_option_count(obj));
+    } else if (cls == &lv_buttonmatrix_class) {
+        uint32_t sel = lv_buttonmatrix_get_selected_button(obj);
+        pos += snprintf(buf + pos, size - pos, ",\"selected_btn\":%u", (unsigned)sel);
+        const char* sel_txt = lv_buttonmatrix_get_button_text(obj, sel);
+        if (sel_txt) {
+            pos += snprintf(buf + pos, size - pos, ",\"selected_text\":");
+            pos += _json_escape(buf + pos, size - pos, sel_txt);
+        }
+    }
+
+    // Recurse into children
+    uint32_t child_cnt = lv_obj_get_child_count(obj);
+    if (child_cnt > 0 && pos < (int)size - 64) {
+        pos += snprintf(buf + pos, size - pos, ",\"children\":[");
+        bool first = true;
+        for (uint32_t i = 0; i < child_cnt && pos < (int)size - 128; i++) {
+            lv_obj_t* child = lv_obj_get_child(obj, i);
+            if (lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) continue;
+            if (!first) buf[pos++] = ',';
+            int wrote = _serialize_widget(child, buf + pos, size - pos, depth + 1);
+            if (wrote > 0) {
+                pos += wrote;
+                first = false;
+            }
+        }
+        pos += snprintf(buf + pos, size - pos, "]");
+    }
+
+    pos += snprintf(buf + pos, size - pos, "}");
+    return pos;
+}
+
+// Flatten widget tree into a list (for easier testing/parsing)
+static int _flatten_widgets(lv_obj_t* obj, char* buf, size_t size, int depth, bool* first) {
+    if (!obj || depth > 12 || size < 256) return 0;
+    if (lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN)) return 0;
+
+    int pos = 0;
+    if (!*first) buf[pos++] = ',';
+    *first = false;
+
+    // Serialize this widget (without children array — flat list)
+    const char* cls_name = _widget_class_name(obj);
+    const lv_obj_class_t* cls = lv_obj_get_class(obj);
+    lv_area_t coords;
+    lv_obj_get_coords(obj, &coords);
+
+    pos += snprintf(buf + pos, size - pos,
+        "{\"id\":\"%p\",\"type\":\"%s\",\"depth\":%d,"
+        "\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
+        "\"clickable\":%s,\"state\":%u",
+        (void*)obj, cls_name, depth,
+        (int)coords.x1, (int)coords.y1,
+        (int)(coords.x2 - coords.x1 + 1),
+        (int)(coords.y2 - coords.y1 + 1),
+        _widget_is_interactive(obj) ? "true" : "false",
+        (unsigned)lv_obj_get_state(obj));
+
+    // Text
+    const char* text = _widget_get_text(obj);
+    if (text && text[0]) {
+        pos += snprintf(buf + pos, size - pos, ",\"text\":");
+        pos += _json_escape(buf + pos, size - pos, text);
+    }
+
+    // Widget-specific values (same as tree mode)
+    if (cls == &lv_slider_class) {
+        pos += snprintf(buf + pos, size - pos, ",\"value\":%d,\"min\":%d,\"max\":%d",
+                        (int)lv_slider_get_value(obj),
+                        (int)lv_slider_get_min_value(obj),
+                        (int)lv_slider_get_max_value(obj));
+    } else if (cls == &lv_bar_class) {
+        pos += snprintf(buf + pos, size - pos, ",\"value\":%d,\"min\":%d,\"max\":%d",
+                        (int)lv_bar_get_value(obj),
+                        (int)lv_bar_get_min_value(obj),
+                        (int)lv_bar_get_max_value(obj));
+    } else if (cls == &lv_checkbox_class || cls == &lv_switch_class) {
+        bool checked = lv_obj_get_state(obj) & LV_STATE_CHECKED;
+        pos += snprintf(buf + pos, size - pos, ",\"checked\":%s",
+                        checked ? "true" : "false");
+    } else if (cls == &lv_textarea_class) {
+        const char* ta_text = lv_textarea_get_text(obj);
+        if (ta_text) {
+            pos += snprintf(buf + pos, size - pos, ",\"value\":");
+            pos += _json_escape(buf + pos, size - pos, ta_text);
+        }
+    } else if (cls == &lv_dropdown_class) {
+        char sel_text[64] = {};
+        lv_dropdown_get_selected_str(obj, sel_text, sizeof(sel_text));
+        pos += snprintf(buf + pos, size - pos, ",\"selected\":%u,\"selected_text\":",
+                        (unsigned)lv_dropdown_get_selected(obj));
+        pos += _json_escape(buf + pos, size - pos, sel_text);
+    } else if (cls == &lv_buttonmatrix_class) {
+        uint32_t sel = lv_buttonmatrix_get_selected_button(obj);
+        pos += snprintf(buf + pos, size - pos, ",\"selected_btn\":%u", (unsigned)sel);
+        const char* sel_txt = lv_buttonmatrix_get_button_text(obj, sel);
+        if (sel_txt) {
+            pos += snprintf(buf + pos, size - pos, ",\"selected_text\":");
+            pos += _json_escape(buf + pos, size - pos, sel_txt);
+        }
+    }
+
+    pos += snprintf(buf + pos, size - pos, "}");
+
+    // Recurse into children
+    uint32_t child_cnt = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < child_cnt && pos < (int)size - 256; i++) {
+        pos += _flatten_widgets(lv_obj_get_child(obj, i),
+                                buf + pos, size - pos, depth + 1, first);
+    }
+    return pos;
+}
+
+// GET /api/ui/tree — Full widget tree of current screen
+// Query params:
+//   ?flat=1 — returns flat array instead of nested tree (easier for testing)
+static esp_err_t _api_ui_tree_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+
+    // Allocate a large buffer in PSRAM for the widget tree
+    static const size_t UI_TREE_BUF_SIZE = 32768;
+    char* buf = (char*)heap_caps_malloc(UI_TREE_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    if (!buf) return _send_json(req, 500, "{\"error\":\"out of memory\"}");
+
+    // Check for flat mode
+    char flat_val[4] = {};
+    bool flat = _get_query_param(req, "flat", flat_val, sizeof(flat_val)) &&
+                (flat_val[0] == '1' || flat_val[0] == 't');
+
+    // Lock LVGL mutex — we're on the httpd task, not the LVGL task
+    if (!lvgl_driver::lock(2000)) {
+        heap_caps_free(buf);
+        return _send_json(req, 503, "{\"error\":\"lvgl busy\"}");
+    }
+
+    lv_obj_t* screen = lv_screen_active();
+    int len = 0;
+
+    if (flat) {
+        // Flat mode: return array of all widgets
+        buf[len++] = '[';
+        bool first = true;
+        len += _flatten_widgets(screen, buf + len, UI_TREE_BUF_SIZE - len - 2, 0, &first);
+        buf[len++] = ']';
+        buf[len] = '\0';
+    } else {
+        // Tree mode: nested object hierarchy
+        len = _serialize_widget(screen, buf, UI_TREE_BUF_SIZE - 1, 0);
+        buf[len] = '\0';
+    }
+
+    lvgl_driver::unlock();
+
+    esp_err_t ret = _send_json(req, 200, buf);
+    heap_caps_free(buf);
+    return ret;
+}
+
+// POST /api/ui/click — Click a widget by address ID
+// Body: {"id":"0x3fca1234"}
+static esp_err_t _api_ui_click_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"ok\":false,\"error\":\"empty body\"}");
+
+    char id_str[20] = {};
+    _json_extract_string(body, "id", id_str, sizeof(id_str));
+    free(body);
+
+    if (!id_str[0]) {
+        return _send_json(req, 400, "{\"ok\":false,\"error\":\"missing id\"}");
+    }
+
+    // Parse hex address
+    uintptr_t addr = (uintptr_t)strtoul(id_str, nullptr, 16);
+    lv_obj_t* obj = (lv_obj_t*)addr;
+
+    // Lock LVGL mutex for thread-safe widget access
+    if (!lvgl_driver::lock(2000)) {
+        return _send_json(req, 503, "{\"ok\":false,\"error\":\"lvgl busy\"}");
+    }
+
+    // Validate: walk the tree to confirm this is a real widget
+    // (prevents arbitrary memory access)
+    bool found = false;
+    lv_obj_t* screen = lv_screen_active();
+    // Simple BFS validation using a stack
+    lv_obj_t* stack[64];
+    int sp = 0;
+    stack[sp++] = screen;
+    while (sp > 0 && !found) {
+        lv_obj_t* cur = stack[--sp];
+        if (cur == obj) { found = true; break; }
+        uint32_t cnt = lv_obj_get_child_count(cur);
+        for (uint32_t i = 0; i < cnt && sp < 63; i++) {
+            stack[sp++] = lv_obj_get_child(cur, i);
+        }
+    }
+
+    if (!found) {
+        lvgl_driver::unlock();
+        return _send_json(req, 404, "{\"ok\":false,\"error\":\"widget not found\"}");
+    }
+
+    // Get widget info while holding mutex
+    lv_area_t coords;
+    lv_obj_get_coords(obj, &coords);
+    int cx = (coords.x1 + coords.x2) / 2;
+    int cy = (coords.y1 + coords.y2) / 2;
+    const char* type_name = _widget_class_name(obj);
+
+    // Defer the click to the main loop (process() method) so the event
+    // callback runs on the main task's stack, not the httpd task's stack.
+    // This prevents stack overflow when callbacks create complex UI.
+    if (!_click_done_sem) {
+        _click_done_sem = xSemaphoreCreateBinary();
+    }
+    _pending_click_done = false;
+    _pending_click_obj = obj;
+
+    lvgl_driver::unlock();
+
+    // Wait for the main loop to process the click (up to 2s)
+    if (_click_done_sem) {
+        xSemaphoreTake(_click_done_sem, pdMS_TO_TICKS(2000));
+    }
+
+    snprintf(_shared_json, SHARED_JSON_SIZE,
+        "{\"ok\":true,\"x\":%d,\"y\":%d,\"type\":\"%s\"}",
+        cx, cy, type_name);
+    return _send_json(req, 200, _shared_json);
+}
+
+// POST /api/ui/set — Set a widget's value
+// Body: {"id":"0x3fca1234", "value": 50}       (slider)
+// Body: {"id":"0x3fca1234", "checked": true}    (checkbox/switch)
+// Body: {"id":"0x3fca1234", "text": "hello"}    (textarea)
+// Body: {"id":"0x3fca1234", "selected": 2}      (dropdown)
+static esp_err_t _api_ui_set_handler(httpd_req_t* req) {
+    _instance->_requestCount++;
+    char* body = _recv_body(req);
+    if (!body) return _send_json(req, 400, "{\"ok\":false,\"error\":\"empty body\"}");
+
+    char id_str[20] = {};
+    _json_extract_string(body, "id", id_str, sizeof(id_str));
+
+    if (!id_str[0]) {
+        free(body);
+        return _send_json(req, 400, "{\"ok\":false,\"error\":\"missing id\"}");
+    }
+
+    uintptr_t addr = (uintptr_t)strtoul(id_str, nullptr, 16);
+    lv_obj_t* obj = (lv_obj_t*)addr;
+
+    // Lock LVGL mutex for thread-safe widget access
+    if (!lvgl_driver::lock(2000)) {
+        free(body);
+        return _send_json(req, 503, "{\"ok\":false,\"error\":\"lvgl busy\"}");
+    }
+
+    // Validate widget exists in tree
+    bool found = false;
+    lv_obj_t* stack[64];
+    int sp = 0;
+    stack[sp++] = lv_screen_active();
+    while (sp > 0 && !found) {
+        lv_obj_t* cur = stack[--sp];
+        if (cur == obj) { found = true; break; }
+        uint32_t cnt = lv_obj_get_child_count(cur);
+        for (uint32_t i = 0; i < cnt && sp < 63; i++) {
+            stack[sp++] = lv_obj_get_child(cur, i);
+        }
+    }
+
+    if (!found) {
+        lvgl_driver::unlock();
+        free(body);
+        return _send_json(req, 404, "{\"ok\":false,\"error\":\"widget not found\"}");
+    }
+
+    const lv_obj_class_t* cls = lv_obj_get_class(obj);
+    bool ok = false;
+
+    if (cls == &lv_slider_class) {
+        int val = 0;
+        if (_json_extract_int(body, "value", &val)) {
+            lv_slider_set_value(obj, val, LV_ANIM_OFF);
+            lv_obj_send_event(obj, LV_EVENT_VALUE_CHANGED, nullptr);
+            ok = true;
+        }
+    } else if (cls == &lv_bar_class) {
+        int val = 0;
+        if (_json_extract_int(body, "value", &val)) {
+            lv_bar_set_value(obj, val, LV_ANIM_OFF);
+            ok = true;
+        }
+    } else if (cls == &lv_checkbox_class || cls == &lv_switch_class) {
+        // Parse "checked":true/false
+        const char* chk = strstr(body, "\"checked\"");
+        if (chk) {
+            bool checked = strstr(chk, "true") != nullptr;
+            if (checked) lv_obj_add_state(obj, LV_STATE_CHECKED);
+            else lv_obj_remove_state(obj, LV_STATE_CHECKED);
+            lv_obj_send_event(obj, LV_EVENT_VALUE_CHANGED, nullptr);
+            ok = true;
+        }
+    } else if (cls == &lv_textarea_class) {
+        char text[256] = {};
+        if (_json_extract_string(body, "text", text, sizeof(text))) {
+            lv_textarea_set_text(obj, text);
+            ok = true;
+        }
+    } else if (cls == &lv_dropdown_class) {
+        int sel = 0;
+        if (_json_extract_int(body, "selected", &sel)) {
+            lv_dropdown_set_selected(obj, sel);
+            lv_obj_send_event(obj, LV_EVENT_VALUE_CHANGED, nullptr);
+            ok = true;
+        }
+    }
+
+    const char* type_name = _widget_class_name(obj);
+    lvgl_driver::unlock();
+
+    free(body);
+
+    if (ok) {
+        snprintf(_shared_json, SHARED_JSON_SIZE,
+            "{\"ok\":true,\"type\":\"%s\"}", type_name);
+        return _send_json(req, 200, _shared_json);
+    }
+    return _send_json(req, 400, "{\"ok\":false,\"error\":\"unsupported widget type or missing value\"}");
+}
+
 #endif // WEB_HAS_SHELL
 
 // ── BLE API handler ─────────────────────────────────────────────────────
@@ -3867,6 +4440,9 @@ void WebServerHAL::addApiEndpoints() {
     REG(_server, "/api/shell/apps",   HTTP_GET,  _api_shell_apps_handler);
     REG(_server, "/api/shell/launch", HTTP_POST, _api_shell_launch_handler);
     REG(_server, "/api/shell/home",   HTTP_POST, _api_shell_home_handler);
+    REG(_server, "/api/ui/tree",      HTTP_GET,  _api_ui_tree_handler);
+    REG(_server, "/api/ui/click",     HTTP_POST, _api_ui_click_handler);
+    REG(_server, "/api/ui/set",       HTTP_POST, _api_ui_set_handler);
 #endif
 
     // BLE

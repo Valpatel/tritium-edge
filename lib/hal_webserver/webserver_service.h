@@ -59,8 +59,10 @@ public:
     }
 
     // Wire a custom screenshot provider (e.g. LVGL framebuffer for OS shell)
+    // Can be called before server starts — provider is saved and applied on start.
     void setScreenshotProvider(WebServerHAL::ScreenshotProvider provider) {
 #if defined(ENABLE_WEBSERVER)
+        _pendingScreenshotProvider = provider;
         if (_active) {
             _webserver.setScreenshotProvider(provider);
         }
@@ -71,11 +73,37 @@ public:
 
     bool init() override {
 #if defined(ENABLE_WEBSERVER)
-        // Check WiFi state via registry
-        auto* wifi_svc = ServiceRegistry::getAs<WifiService>("wifi");
-        if (!wifi_svc) return false;
-        if (!wifi_svc->isConnected() && !wifi_svc->isAPMode()) return false;
+        // Don't block — WiFi may still be connecting asynchronously.
+        // Actual server startup is deferred to tick() once WiFi is ready.
+        _pending = true;
+        return true;
+#else
+        return false;
+#endif
+    }
 
+    void tick() override {
+#if defined(ENABLE_WEBSERVER)
+        if (_active) {
+            _webserver.process();
+            return;
+        }
+        if (!_pending) return;
+
+        // Check WiFi state — start server once connected or in AP mode
+        auto* wifi_svc = ServiceRegistry::getAs<WifiService>("wifi");
+        if (!wifi_svc) return;
+        if (!wifi_svc->isConnected() && !wifi_svc->isAPMode()) return;
+
+        // WiFi is ready — start the web server now
+        _pending = false;
+        startServer(wifi_svc);
+#endif
+    }
+
+private:
+    bool startServer([[maybe_unused]] WifiService* wifi_svc) {
+#if defined(ENABLE_WEBSERVER)
         // Mount LittleFS via ESP-IDF VFS
         esp_vfs_littlefs_conf_t lfs_conf = {};
         lfs_conf.base_path = "/littlefs";
@@ -176,6 +204,11 @@ public:
                 printf("[tritium] Web server: http://%s:%u/ (mDNS: %s.local)\n",
                        wifi_svc->getIP(), web_port, hostname);
             }
+            // Apply any screenshot provider that was set before server started
+            if (_pendingScreenshotProvider) {
+                _webserver.setScreenshotProvider(_pendingScreenshotProvider);
+            }
+
             _active = true;
             return true;
         }
@@ -183,15 +216,10 @@ public:
         return false;
     }
 
-    void tick() override {
-#if defined(ENABLE_WEBSERVER)
-        if (_active) _webserver.process();
-#endif
-    }
-
-private:
 #if defined(ENABLE_WEBSERVER)
     WebServerHAL _webserver;
+    WebServerHAL::ScreenshotProvider _pendingScreenshotProvider = nullptr;
 #endif
     bool _active = false;
+    bool _pending = false;
 };
