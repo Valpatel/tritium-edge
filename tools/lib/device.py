@@ -25,6 +25,15 @@ class TritiumDevice:
         self.request_count = 0
         self.error_count = 0
         self.session = requests.Session()
+        # Disable keep-alive — ESP32 httpd has limited sockets and
+        # stale keep-alive connections poison the session pool.
+        self.session.headers["Connection"] = "close"
+
+    def _reset_session(self):
+        """Close all pooled connections to clear stale/broken sockets."""
+        self.session.close()
+        self.session = requests.Session()
+        self.session.headers["Connection"] = "close"
 
     def _get(self, path: str, retries: int = 1) -> dict | list | None:
         for attempt in range(1 + retries):
@@ -36,7 +45,8 @@ class TritiumDevice:
             except Exception as e:
                 self.error_count += 1
                 if attempt < retries:
-                    time.sleep(1.0)  # Brief backoff before retry
+                    self._reset_session()
+                    time.sleep(1.0)
                     continue
                 return {"_error": str(e)}
 
@@ -50,6 +60,7 @@ class TritiumDevice:
             except Exception as e:
                 self.error_count += 1
                 if attempt < retries:
+                    self._reset_session()
                     time.sleep(1.0)
                     continue
                 return {"_error": str(e)}

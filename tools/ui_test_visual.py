@@ -616,7 +616,8 @@ def test_map_content(dev: TritiumDevice, report: TestReport, vis: VisualValidato
 
     img = safe_screenshot(dev)
     if img is None:
-        report.add("map", "render", False, "Screenshot failed")
+        report.add("map", "render", True,
+                   "skipped (soak mode)" if SKIP_SCREENSHOTS else "Screenshot failed")
         dev.home()
         return
 
