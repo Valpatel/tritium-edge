@@ -486,6 +486,25 @@ class TestReport:
         else:
             mem_js_data = "var heapData=[];var psramData=[];"
 
+        # Per-run pass rate data from SQLite
+        run_rate_data = "var runRateData=[];"
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            rows = conn.execute("""
+                SELECT run_number,
+                       ROUND(100.0 * SUM(CASE WHEN passed THEN 1 ELSE 0 END) / COUNT(*), 1)
+                FROM test_results
+                WHERE run_number > 0
+                GROUP BY run_number
+                ORDER BY run_number
+            """).fetchall()
+            conn.close()
+            if rows:
+                pts = ",".join(f"[{r[0]},{r[1]}]" for r in rows)
+                run_rate_data = f"var runRateData=[{pts}];"
+        except Exception:
+            pass
+
         # Category breakdown
         categories = {}
         for r in self.results:
@@ -620,37 +639,73 @@ canvas{{width:100%;height:200px;border:1px solid #1a1a2e;border-radius:4px;margi
 {warn_html}
 
 <div class="card">
+    <h2>Pass Rate Per Run</h2>
+    <canvas id="rateChart"></canvas>
+</div>
+
+<div class="card">
     <h2>Memory Over Time</h2>
     <canvas id="memChart"></canvas>
 </div>
 
 <script>
 {mem_js_data}
+{run_rate_data}
 (function(){{
+    // Pass rate chart
+    var rc=document.getElementById('rateChart');
+    if(rc&&runRateData.length>1){{
+        var ctx=rc.getContext('2d');
+        rc.width=rc.offsetWidth*2;rc.height=300;
+        ctx.fillStyle='#0e0e14';ctx.fillRect(0,0,rc.width,rc.height);
+        var pad=40;var w=rc.width-pad*2;var h=rc.height-pad*2;
+        // Y axis: 70-100%
+        var yMin=70,yMax=100;
+        // Grid lines
+        ctx.strokeStyle='#1a1a2e';ctx.lineWidth=1;
+        for(var y=75;y<=100;y+=5){{
+            var py=pad+h-(y-yMin)/(yMax-yMin)*h;
+            ctx.beginPath();ctx.moveTo(pad,py);ctx.lineTo(pad+w,py);ctx.stroke();
+            ctx.fillStyle='#666';ctx.font='10px monospace';ctx.fillText(y+'%',2,py+4);
+        }}
+        // Plot bars
+        var barW=Math.min(20,w/runRateData.length*0.8);
+        for(var i=0;i<runRateData.length;i++){{
+            var run=runRateData[i][0],rate=runRateData[i][1];
+            var x=pad+(i/(runRateData.length-1||1))*w-barW/2;
+            var barH=(Math.max(rate,yMin)-yMin)/(yMax-yMin)*h;
+            var color=rate>=99?'#05ffa1':rate>=95?'#00f0ff':rate>=85?'#fcee0a':'#ff2a6d';
+            ctx.fillStyle=color+'88';ctx.fillRect(x,pad+h-barH,barW,barH);
+            ctx.fillStyle=color;ctx.fillRect(x,pad+h-barH,barW,2);
+        }}
+        ctx.fillStyle='#666';ctx.font='10px monospace';ctx.fillText('Run #',pad+w/2-15,rc.height-5);
+    }}
+
+    // Memory chart
     var c=document.getElementById('memChart');
     if(!c||!heapData.length)return;
-    var ctx=c.getContext('2d');
+    var ctx2=c.getContext('2d');
     c.width=c.offsetWidth*2;c.height=400;
-    ctx.fillStyle='#0e0e14';ctx.fillRect(0,0,c.width,c.height);
+    ctx2.fillStyle='#0e0e14';ctx2.fillRect(0,0,c.width,c.height);
     function plot(data,color){{
         if(!data.length)return;
         var xMin=data[0][0],xMax=data[data.length-1][0];
         var yMin=Math.min(...data.map(d=>d[1]))*0.95;
         var yMax=Math.max(...data.map(d=>d[1]))*1.05;
         if(xMax===xMin)xMax=xMin+1;if(yMax===yMin)yMax=yMin+1;
-        ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();
+        ctx2.strokeStyle=color;ctx2.lineWidth=2;ctx2.beginPath();
         for(var i=0;i<data.length;i++){{
             var x=(data[i][0]-xMin)/(xMax-xMin)*c.width;
             var y=c.height-(data[i][1]-yMin)/(yMax-yMin)*c.height;
-            if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+            if(i===0)ctx2.moveTo(x,y);else ctx2.lineTo(x,y);
         }}
-        ctx.stroke();
+        ctx2.stroke();
     }}
     plot(heapData,'#00f0ff');
     plot(psramData,'#05ffa1');
-    ctx.fillStyle='#00f0ff';ctx.font='11px monospace';ctx.fillText('Heap (KB)',10,15);
-    ctx.fillStyle='#05ffa1';ctx.fillText('PSRAM (KB)',10,30);
-    ctx.fillStyle='#666';ctx.fillText('Time (min)',c.width-80,c.height-5);
+    ctx2.fillStyle='#00f0ff';ctx2.font='11px monospace';ctx2.fillText('Heap (KB)',10,15);
+    ctx2.fillStyle='#05ffa1';ctx2.fillText('PSRAM (KB)',10,30);
+    ctx2.fillStyle='#666';ctx2.fillText('Time (min)',c.width-80,c.height-5);
 }})();
 </script>
 
