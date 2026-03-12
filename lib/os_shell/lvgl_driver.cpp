@@ -159,9 +159,9 @@ lv_display_t* init(esp_lcd_panel_handle_t panel, int width, int height) {
         // copying. This swap is synchronized to vsync = zero tearing.
         void* fb0 = nullptr;
         void* fb1 = nullptr;
-        esp_err_t err = display_get_rgb_framebuffers(&fb0, &fb1);
+        bool got_fbs = display_get_rgb_framebuffers(&fb0, &fb1);
 
-        if (err == ESP_OK && fb0 && fb1) {
+        if (got_fbs && fb0 && fb1) {
             buf_size = (size_t)width * height * sizeof(uint16_t);
             mode = LV_DISPLAY_RENDER_MODE_DIRECT;
             s_buf1 = (uint8_t*)fb0;

@@ -71,6 +71,10 @@ static bool s_initialized = false;
 /* DMA completion semaphore — signaled by on_color_trans_done callback */
 static SemaphoreHandle_t s_flush_done = NULL;
 
+/* RGB panel vsync semaphores (Espressif two-semaphore handshake pattern) */
+static SemaphoreHandle_t s_sem_gui_ready = NULL;
+static SemaphoreHandle_t s_sem_vsync_end = NULL;
+
 static bool on_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
                                 esp_lcd_panel_io_event_data_t *edata,
                                 void *user_ctx)
@@ -200,6 +204,20 @@ static esp_err_t init_qspi_display(void)
 
 #if defined(DISPLAY_DRIVER_RGB)
 
+// Vsync callback — Espressif two-semaphore handshake pattern.
+// Called from ISR when the RGB panel reaches vsync. Only signals
+// sem_vsync_end if sem_gui_ready was given (rendering is done).
+static bool IRAM_ATTR on_vsync(esp_lcd_panel_handle_t panel,
+                                const esp_lcd_rgb_panel_event_data_t *edata,
+                                void *user_ctx)
+{
+    BaseType_t woken = pdFALSE;
+    if (s_sem_gui_ready && xSemaphoreTakeFromISR(s_sem_gui_ready, &woken) == pdTRUE) {
+        xSemaphoreGiveFromISR(s_sem_vsync_end, &woken);
+    }
+    return woken == pdTRUE;
+}
+
 static esp_err_t init_rgb_display(void)
 {
     esp_lcd_rgb_panel_config_t rgb_cfg = board_display_43c_get_rgb_config();
@@ -207,13 +225,21 @@ static esp_err_t init_rgb_display(void)
     esp_err_t ret = esp_lcd_new_rgb_panel(&rgb_cfg, &s_panel);
     ESP_RETURN_ON_ERROR(ret, TAG, "RGB panel create failed");
 
+    // Set up vsync semaphores for tear-free double-buffered rendering
+    s_sem_gui_ready = xSemaphoreCreateBinary();
+    s_sem_vsync_end = xSemaphoreCreateBinary();
+
+    esp_lcd_rgb_panel_event_callbacks_t cbs = {};
+    cbs.on_vsync = on_vsync;
+    esp_lcd_rgb_panel_register_event_callbacks(s_panel, &cbs, NULL);
+
     ret = esp_lcd_panel_reset(s_panel);
     ESP_RETURN_ON_ERROR(ret, TAG, "RGB panel reset failed");
 
     ret = esp_lcd_panel_init(s_panel);
     ESP_RETURN_ON_ERROR(ret, TAG, "RGB panel init failed");
 
-    ESP_LOGI(TAG, "RGB display initialized: %dx%d", BOARD_LCD_H_RES, BOARD_LCD_V_RES);
+    ESP_LOGI(TAG, "RGB display initialized: %dx%d (vsync sync enabled)", BOARD_LCD_H_RES, BOARD_LCD_V_RES);
     return ESP_OK;
 }
 
@@ -336,12 +362,12 @@ bool display_get_rgb_framebuffers(void** fb0, void** fb1)
 
 void* display_get_sem_gui_ready(void)
 {
-    return nullptr;
+    return s_sem_gui_ready;
 }
 
 void* display_get_sem_vsync_end(void)
 {
-    return nullptr;
+    return s_sem_vsync_end;
 }
 
 void display_set_brightness(uint8_t brightness)
