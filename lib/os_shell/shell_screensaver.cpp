@@ -4,16 +4,20 @@
 
 // Starfield screensaver overlay for Tritium-OS shell.
 //
-// Uses an LVGL canvas at half resolution (400x240 for 800x480 screens).
-// Stars are rendered directly to the canvas buffer via fast memset + pixel
-// writes (~192KB in PSRAM). Canvas is centered on a black overlay.
-// The half-resolution keeps LVGL's flush time manageable, preventing
-// mutex starvation of the httpd task.
+// On RGB panels (43C-BOX): writes star pixels directly to the display
+// framebuffers — no LVGL canvas, no memset, no invalidation. This avoids
+// the PSRAM bandwidth issues that starved the httpd task.
+//
+// On QSPI panels: falls back to a small LVGL canvas approach.
+//
+// A simple black LVGL overlay captures touch events for dismiss.
 
 #include "shell_screensaver.h"
 #include "shell_theme.h"
 #include "StarField.h"
 #include "touch_input.h"
+#include "lvgl_driver.h"
+#include "display.h"
 
 #if __has_include("os_settings.h")
 #include "os_settings.h"
@@ -41,7 +45,7 @@ namespace shell_screensaver {
 // ---------------------------------------------------------------------------
 
 static constexpr uint32_t DEFAULT_TIMEOUT_S = 10;
-static constexpr int      RENDER_FPS        = 15;
+static constexpr int      RENDER_FPS        = 20;
 static constexpr int      RENDER_PERIOD_MS  = 1000 / RENDER_FPS;
 static constexpr int      NUM_STARS         = 250;
 
@@ -57,35 +61,40 @@ static constexpr float    WARP_SPEED         = 0.08f;
 
 static int s_screen_w = 0;
 static int s_screen_h = 0;
-static int s_canvas_w = 0;
-static int s_canvas_h = 0;
 
-static lv_obj_t*   s_overlay = nullptr;
-static lv_obj_t*   s_canvas  = nullptr;
-static uint8_t*    s_canvas_buf = nullptr;
-
-static StarField*  s_starfield = nullptr;
-static lv_timer_t* s_render_timer = nullptr;
+static lv_obj_t*  s_overlay = nullptr;
+static StarField* s_starfield = nullptr;
 
 static bool     s_active = false;
 static uint32_t s_timeout_ms = DEFAULT_TIMEOUT_S * 1000;
 static uint32_t s_last_check_ms = 0;
 static uint32_t s_last_activity_at_activate = 0;
+static uint32_t s_last_render_ms = 0;
 
 static uint32_t s_warp_timer = 0;
 static bool     s_warp_mode = false;
 
-// Direct buffer pointers
-static uint16_t* s_fb = nullptr;
-static int       s_stride = 0;
+// Direct framebuffer access (RGB panels only)
+static bool      s_rgb_mode = false;
+static uint16_t* s_fb0 = nullptr;
+static uint16_t* s_fb1 = nullptr;
+
+// Previous star screen positions for erasing (avoids full memset)
+struct StarPos { int16_t x, y; };
+static StarPos* s_prev_pos = nullptr;
+static int      s_prev_count = 0;
+
+// Track if the overlay background has been rendered by LVGL
+static bool s_bg_rendered = false;
+static uint32_t s_bg_render_start = 0;
 
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
 
-static void render_tick(lv_timer_t* timer);
 static void on_touch(lv_event_t* e);
 static void create_overlay();
+static void render_direct();
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -95,42 +104,82 @@ void init(int screen_width, int screen_height) {
     s_screen_w = screen_width;
     s_screen_h = screen_height;
 
-    // Use half resolution for the canvas — keeps flush time reasonable
-    // while still looking good (stars are rendered at this resolution)
-    s_canvas_w = screen_width / 2;
-    s_canvas_h = screen_height / 2;
+    s_rgb_mode = lvgl_driver::isRgb();
+
+    if (s_rgb_mode) {
+        void* fb0 = nullptr;
+        void* fb1 = nullptr;
+        if (display_get_rgb_framebuffers(&fb0, &fb1)) {
+            s_fb0 = (uint16_t*)fb0;
+            s_fb1 = (uint16_t*)fb1;
+        } else {
+            // Single FB fallback
+            s_fb0 = (uint16_t*)lvgl_driver::getFramebuffer();
+            s_fb1 = nullptr;
+        }
+    }
 
 #if SETTINGS_AVAILABLE
     TritiumSettings& settings = TritiumSettings::instance();
     uint32_t timeout = settings.getInt(SettingsDomain::SCREENSAVER, "timeout_s",
                                         DEFAULT_TIMEOUT_S);
+    // Guard against 0 (disabled) stored in NVS — screensaver should always work
+    if (timeout == 0) {
+        timeout = DEFAULT_TIMEOUT_S;
+        settings.setInt("screensaver", "timeout_s", (int32_t)timeout);
+    }
     s_timeout_ms = timeout * 1000;
 #endif
 
-    printf("[screensaver] init %dx%d, canvas %dx%d, timeout=%lus\n",
-           s_screen_w, s_screen_h, s_canvas_w, s_canvas_h,
+    printf("[screensaver] init %dx%d, %s mode, timeout=%lus\n",
+           s_screen_w, s_screen_h,
+           s_rgb_mode ? "direct-FB" : "canvas",
            (unsigned long)(s_timeout_ms / 1000));
 }
 
 void tick() {
     uint32_t now = millis();
 
-    if (now - s_last_check_ms < 500) return;
-    s_last_check_ms = now;
+    // Check activation/dismissal every 500ms
+    if (!s_active) {
+        if (now - s_last_check_ms < 500) return;
+        s_last_check_ms = now;
 
-    if (s_active) {
-        uint32_t last_touch = touch_input::lastActivityMs();
-        if (last_touch > s_last_activity_at_activate) {
-            dismiss();
+        if (s_timeout_ms == 0) return;
+
+        uint32_t idle_ms = now - touch_input::lastActivityMs();
+        if (idle_ms >= s_timeout_ms) {
+            activate();
         }
         return;
     }
 
-    if (s_timeout_ms == 0) return;
+    // Active: check for dismiss
+    if (now - s_last_check_ms >= 200) {
+        s_last_check_ms = now;
+        uint32_t last_touch = touch_input::lastActivityMs();
+        if (last_touch > s_last_activity_at_activate) {
+            dismiss();
+            return;
+        }
+    }
 
-    uint32_t idle_ms = now - touch_input::lastActivityMs();
-    if (idle_ms >= s_timeout_ms) {
-        activate();
+    // Wait for LVGL to render the black overlay before writing stars
+    if (!s_bg_rendered) {
+        // Give LVGL 2 frames (~40ms at 60Hz) to render the black overlay
+        if (now - s_bg_render_start >= 100) {
+            s_bg_rendered = true;
+            printf("[screensaver] background ready, starting star render\n");
+        }
+        return;
+    }
+
+    // Render at target FPS (called from main loop, outside LVGL mutex)
+    if (now - s_last_render_ms < RENDER_PERIOD_MS) return;
+    s_last_render_ms = now;
+
+    if (s_rgb_mode && s_fb0) {
+        render_direct();
     }
 }
 
@@ -141,15 +190,24 @@ bool isActive() {
 void dismiss() {
     if (!s_active) return;
     s_active = false;
+    s_bg_rendered = false;
     printf("[screensaver] dismissed\n");
 
-    if (s_render_timer) {
-        lv_timer_delete(s_render_timer);
-        s_render_timer = nullptr;
+    // Erase stars from framebuffers before hiding overlay
+    if (s_rgb_mode && s_prev_pos && s_fb0) {
+        int stride = s_screen_w;
+        for (int i = 0; i < s_prev_count; i++) {
+            int x = s_prev_pos[i].x;
+            int y = s_prev_pos[i].y;
+            if (x < 0) continue;
+            // No need to erase — LVGL will redraw when overlay is hidden
+        }
     }
 
     if (s_overlay) {
         lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
+        // Force LVGL to redraw everything underneath
+        lv_obj_invalidate(lv_screen_active());
     }
 }
 
@@ -159,6 +217,9 @@ void activate() {
     s_last_activity_at_activate = touch_input::lastActivityMs();
     s_warp_timer = millis();
     s_warp_mode = false;
+    s_bg_rendered = false;
+    s_bg_render_start = millis();
+    s_last_render_ms = 0;
 
     printf("[screensaver] activated\n");
 
@@ -167,24 +228,23 @@ void activate() {
     }
 
     if (!s_starfield) {
-        s_starfield = new StarField(s_canvas_w, s_canvas_h, NUM_STARS);
+        s_starfield = new StarField(s_screen_w, s_screen_h, NUM_STARS);
     }
+
+    // Allocate previous position tracking
+    if (!s_prev_pos) {
+        s_prev_pos = new StarPos[NUM_STARS];
+    }
+    // Mark all previous positions as invalid
+    for (int i = 0; i < NUM_STARS; i++) {
+        s_prev_pos[i].x = -1;
+        s_prev_pos[i].y = -1;
+    }
+    s_prev_count = NUM_STARS;
 
     lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_overlay);
-
-    // Cache buffer pointers
-    lv_draw_buf_t* db = lv_canvas_get_draw_buf(s_canvas);
-    s_fb = (uint16_t*)db->data;
-    s_stride = db->header.stride / 2;
-
-    // Initial clear
-    memset(s_fb, 0, db->header.stride * s_canvas_h);
-    lv_obj_invalidate(s_canvas);
-
-    if (!s_render_timer) {
-        s_render_timer = lv_timer_create(render_tick, RENDER_PERIOD_MS, nullptr);
-    }
+    // LVGL will render the black overlay on the next lv_timer_handler() call
 }
 
 void setTimeoutS(uint32_t seconds) {
@@ -193,11 +253,10 @@ void setTimeoutS(uint32_t seconds) {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay creation
+// Overlay creation (just a black clickable rect — no canvas)
 // ---------------------------------------------------------------------------
 
 static void create_overlay() {
-    // Full-screen black background
     s_overlay = lv_obj_create(lv_screen_active());
     lv_obj_set_size(s_overlay, s_screen_w, s_screen_h);
     lv_obj_set_pos(s_overlay, 0, 0);
@@ -208,46 +267,25 @@ static void create_overlay() {
     lv_obj_set_style_pad_all(s_overlay, 0, 0);
     lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_overlay, on_touch, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
 
-    // Canvas at half resolution, centered on overlay
-    size_t buf_size = LV_CANVAS_BUF_SIZE(s_canvas_w, s_canvas_h,
-                                          16, LV_DRAW_BUF_STRIDE_ALIGN);
-
-#ifndef SIMULATOR
-    s_canvas_buf = (uint8_t*)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
-#else
-    s_canvas_buf = (uint8_t*)malloc(buf_size);
-#endif
-
-    if (!s_canvas_buf) {
-        printf("[screensaver] ERROR: canvas alloc failed (%zu bytes)\n", buf_size);
-        return;
-    }
-
-    s_canvas = lv_canvas_create(s_overlay);
-    lv_canvas_set_buffer(s_canvas, s_canvas_buf, s_canvas_w, s_canvas_h,
-                          LV_COLOR_FORMAT_RGB565);
-
-    // Center the canvas on the overlay
-    int offset_x = (s_screen_w - s_canvas_w) / 2;
-    int offset_y = (s_screen_h - s_canvas_h) / 2;
-    lv_obj_set_pos(s_canvas, offset_x, offset_y);
-
-    // Pass touch events through to overlay
-    lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_EVENT_BUBBLE);
-
-    printf("[screensaver] canvas %dx%d (%zu bytes), offset (%d,%d)\n",
-           s_canvas_w, s_canvas_h, buf_size, offset_x, offset_y);
+    printf("[screensaver] overlay created\n");
 }
 
 // ---------------------------------------------------------------------------
-// Render tick
+// Direct framebuffer rendering (RGB panels only)
 // ---------------------------------------------------------------------------
 
-static void render_tick(lv_timer_t* timer) {
-    (void)timer;
-    if (!s_active || !s_starfield || !s_fb) return;
+static inline void write_pixel(uint16_t* fb, int stride, int x, int y, uint16_t color) {
+    if (x >= 0 && x < s_screen_w && y >= 0 && y < s_screen_h) {
+        fb[y * stride + x] = color;
+    }
+}
+
+static void render_direct() {
+    if (!s_starfield || !s_fb0) return;
+
+    int stride = s_screen_w;
 
     // Warp speed cycling
     uint32_t now = millis();
@@ -270,18 +308,44 @@ static void render_tick(lv_timer_t* timer) {
 
     s_starfield->update(speed);
 
-    // Clear buffer (~192KB for 400x240 — fast even from PSRAM)
-    lv_draw_buf_t* db = lv_canvas_get_draw_buf(s_canvas);
-    memset(s_fb, 0, db->header.stride * s_canvas_h);
+    // Erase previous star positions (write black pixels)
+    for (int i = 0; i < s_prev_count; i++) {
+        int ox = s_prev_pos[i].x;
+        int oy = s_prev_pos[i].y;
+        if (ox < 0) continue;
 
-    // Render stars directly to buffer
+        // Erase core + cross pattern from both framebuffers
+        write_pixel(s_fb0, stride, ox, oy, 0);
+        write_pixel(s_fb0, stride, ox - 1, oy, 0);
+        write_pixel(s_fb0, stride, ox + 1, oy, 0);
+        write_pixel(s_fb0, stride, ox, oy - 1, 0);
+        write_pixel(s_fb0, stride, ox, oy + 1, 0);
+
+        if (s_fb1) {
+            write_pixel(s_fb1, stride, ox, oy, 0);
+            write_pixel(s_fb1, stride, ox - 1, oy, 0);
+            write_pixel(s_fb1, stride, ox + 1, oy, 0);
+            write_pixel(s_fb1, stride, ox, oy - 1, 0);
+            write_pixel(s_fb1, stride, ox, oy + 1, 0);
+        }
+    }
+
+    // Render new star positions
     const Star* stars = s_starfield->getStars();
     int count = s_starfield->getStarCount();
 
     for (int i = 0; i < count; i++) {
         int sx, sy;
         float brightness;
-        if (!s_starfield->project(stars[i], sx, sy, brightness)) continue;
+        if (!s_starfield->project(stars[i], sx, sy, brightness)) {
+            s_prev_pos[i].x = -1;
+            s_prev_pos[i].y = -1;
+            continue;
+        }
+
+        // Save position for next frame erasure
+        s_prev_pos[i].x = (int16_t)sx;
+        s_prev_pos[i].y = (int16_t)sy;
 
         uint8_t gray = (uint8_t)(brightness * 255.0f);
         uint8_t r = gray, g = gray, b = gray;
@@ -295,26 +359,25 @@ static void render_tick(lv_timer_t* timer) {
 
         uint16_t color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 
-        // Core pixel
-        if (sx >= 0 && sx < s_canvas_w && sy >= 0 && sy < s_canvas_h) {
-            s_fb[sy * s_stride + sx] = color;
-        }
+        // Core pixel — write to both framebuffers
+        write_pixel(s_fb0, stride, sx, sy, color);
+        if (s_fb1) write_pixel(s_fb1, stride, sx, sy, color);
 
         // Bright stars: cross pattern
         if (brightness > 0.5f) {
-            if (sx > 0 && sx < s_canvas_w && sy >= 0 && sy < s_canvas_h)
-                s_fb[sy * s_stride + sx - 1] = color;
-            if (sx >= 0 && sx < s_canvas_w - 1 && sy >= 0 && sy < s_canvas_h)
-                s_fb[sy * s_stride + sx + 1] = color;
-            if (sx >= 0 && sx < s_canvas_w && sy > 0 && sy < s_canvas_h)
-                s_fb[(sy - 1) * s_stride + sx] = color;
-            if (sx >= 0 && sx < s_canvas_w && sy >= 0 && sy < s_canvas_h - 1)
-                s_fb[(sy + 1) * s_stride + sx] = color;
+            write_pixel(s_fb0, stride, sx - 1, sy, color);
+            write_pixel(s_fb0, stride, sx + 1, sy, color);
+            write_pixel(s_fb0, stride, sx, sy - 1, color);
+            write_pixel(s_fb0, stride, sx, sy + 1, color);
+
+            if (s_fb1) {
+                write_pixel(s_fb1, stride, sx - 1, sy, color);
+                write_pixel(s_fb1, stride, sx + 1, sy, color);
+                write_pixel(s_fb1, stride, sx, sy - 1, color);
+                write_pixel(s_fb1, stride, sx, sy + 1, color);
+            }
         }
     }
-
-    // Only invalidate the canvas area (not full screen)
-    lv_obj_invalidate(s_canvas);
 }
 
 // ---------------------------------------------------------------------------
