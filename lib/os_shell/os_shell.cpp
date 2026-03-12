@@ -31,6 +31,7 @@
 #include "os_shell.h"
 #include "shell_theme.h"
 #include "shell_apps.h"
+#include "shell_screensaver.h"
 #include "tritium_splash.h"  // TRITIUM_VERSION
 #include <cmath>
 #include <cstdio>
@@ -729,6 +730,9 @@ bool init(esp_lcd_panel_handle_t panel, int width, int height) {
     registerApp({"Settings", "System settings", LV_SYMBOL_SETTINGS, true,
                   shell_apps::settings_create});
 
+    // Initialize screensaver (inactivity-triggered starfield overlay)
+    shell_screensaver::init(width, height);
+
     // Don't show launcher yet — caller registers additional apps first,
     // then calls showLauncher() to build the grid with all apps visible.
     return true;
@@ -751,6 +755,8 @@ void tick() {
         }
     }
 
+    // Screensaver tick (checks inactivity, manages activation)
+    shell_screensaver::tick();
     // Clock colon blink — toggles ":" visibility every second for alive feel.
     // Only modifies the text, LVGL handles the minimal redraw internally.
     if (s_clock_label && (now - s_clock_blink_time >= CLOCK_BLINK_MS)) {

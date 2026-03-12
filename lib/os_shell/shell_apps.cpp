@@ -6,6 +6,7 @@
 
 #include "shell_apps.h"
 #include "shell_theme.h"
+#include "shell_screensaver.h"
 #include "display.h"
 #include "tritium_splash.h"  // TRITIUM_VERSION
 #include "os_settings.h"     // TritiumSettings, SettingsDomain
@@ -824,6 +825,7 @@ static void ss_timeout_cb(lv_event_t* e) {
     lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
     int val = lv_slider_get_value(slider);
     TritiumSettings::instance().setInt(SettingsDomain::SCREENSAVER, "timeout_s", val);
+    shell_screensaver::setTimeoutS(val);
     lv_obj_t* lbl = (lv_obj_t*)lv_event_get_user_data(e);
     if (lbl) {
         char buf[16];

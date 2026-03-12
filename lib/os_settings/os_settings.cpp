@@ -117,7 +117,7 @@ const SettingsDefault FACTORY_DEFAULTS[] = {
 
     // screensaver
     defStr("screensaver",  "type",           "starfield"),
-    defInt("screensaver",  "timeout_s",      120),
+    defInt("screensaver",  "timeout_s",      10),
     defBool("screensaver", "sf_reverse",     false),
     defBool("screensaver", "sf_colors",      true),
     defInt("screensaver",  "sf_star_size",   2),
