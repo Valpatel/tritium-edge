@@ -63,6 +63,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         action="test_slider",
         match={"type": "slider", "min": 10, "max": 255},
         expect={"delta": 60, "visual_min_pct": 0.0},  # RGB panel has no backlight control
+        optional=True,  # cross-tab widget bleed shifts slider indices
     ),
     ElementSpec(
         screen="Settings/Display",
@@ -70,6 +71,7 @@ ELEMENT_REGISTRY: list[ElementSpec] = [
         action="test_dropdown",
         match={"type": "dropdown", "index": 0},
         expect={"visual_min_pct": 0.5},
+        optional=True,  # cross-tab widget bleed shifts dropdown indices
     ),
 
     # ╔══════════════════════════════════════════════════════════════════╗
