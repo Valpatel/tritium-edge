@@ -81,6 +81,23 @@ static char* api_buf() {
 #define WEB_HAS_DIAGLOG 0
 #endif
 
+// Touch injection for remote control
+#if __has_include("touch_input.h")
+#include "touch_input.h"
+#define WEB_HAS_TOUCH 1
+#else
+#define WEB_HAS_TOUCH 0
+#endif
+
+// Display framebuffer access for remote screenshot
+#if __has_include("lvgl_driver.h")
+#include "lvgl_driver.h"
+#include "display.h"
+#define WEB_HAS_DISPLAY 1
+#else
+#define WEB_HAS_DISPLAY 0
+#endif
+
 static WebServer* _server = nullptr;
 static WebServerHAL* _instance = nullptr;
 static DNSServer* _dnsServer = nullptr;
@@ -1075,6 +1092,91 @@ void WebServerHAL::addApiEndpoints() {
             _server->send(200, "application/json", "{\"lines\":[]}");
         }
     });
+
+    // ── Remote Control Endpoints ──────────────────────────────────────────
+
+#if WEB_HAS_DISPLAY
+    // GET /api/remote/screenshot — raw RGB565 framebuffer
+    _server->on("/api/remote/screenshot", HTTP_GET, [self]() {
+        self->_requestCount++;
+        int w = lvgl_driver::getWidth();
+        int h = lvgl_driver::getHeight();
+        const uint8_t* fb = lvgl_driver::getFramebuffer();
+
+        if (!fb || w <= 0 || h <= 0) {
+            _server->send(500, "application/json",
+                "{\"error\":\"no framebuffer\"}");
+            return;
+        }
+
+        size_t fb_size = (size_t)w * h * 2;  // RGB565
+
+        char wStr[8], hStr[8];
+        snprintf(wStr, sizeof(wStr), "%d", w);
+        snprintf(hStr, sizeof(hStr), "%d", h);
+        _server->sendHeader("X-Width", wStr);
+        _server->sendHeader("X-Height", hStr);
+        _server->sendHeader("Access-Control-Allow-Origin", "*");
+        _server->setContentLength(fb_size);
+        _server->send(200, "application/octet-stream", "");
+
+        // Stream in 4KB chunks to avoid large stack allocations
+        const size_t CHUNK = 4096;
+        for (size_t offset = 0; offset < fb_size; offset += CHUNK) {
+            size_t len = CHUNK;
+            if (offset + len > fb_size) len = fb_size - offset;
+            _server->sendContent((const char*)(fb + offset), len);
+        }
+    });
+
+    // GET /api/remote/info — display info for remote viewer
+    _server->on("/api/remote/info", HTTP_GET, [self]() {
+        self->_requestCount++;
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+            "{\"width\":%d,\"height\":%d,\"format\":\"rgb565\",\"rgb\":%s}",
+            lvgl_driver::getWidth(), lvgl_driver::getHeight(),
+            lvgl_driver::isRgb() ? "true" : "false");
+        _server->send(200, "application/json", buf);
+    });
+#endif
+
+#if WEB_HAS_TOUCH
+    // POST /api/remote/touch — inject touch event
+    _server->on("/api/remote/touch", HTTP_POST, [self]() {
+        self->_requestCount++;
+        String body = _server->arg("plain");
+        // Parse x, y, pressed from JSON (minimal parser)
+        int x = 0, y = 0;
+        bool pressed = true;
+        // Look for "x":N, "y":N, "pressed":true/false
+        const char* s = body.c_str();
+        const char* xp = strstr(s, "\"x\"");
+        const char* yp = strstr(s, "\"y\"");
+        const char* pp = strstr(s, "\"pressed\"");
+        if (xp) x = atoi(xp + 4);
+        if (yp) y = atoi(yp + 4);
+        if (pp) pressed = (strstr(pp, "true") != nullptr);
+
+        touch_input::inject((uint16_t)x, (uint16_t)y, pressed);
+        _server->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // POST /api/remote/tap — inject press + release
+    _server->on("/api/remote/tap", HTTP_POST, [self]() {
+        self->_requestCount++;
+        String body = _server->arg("plain");
+        int x = 0, y = 0;
+        const char* s = body.c_str();
+        const char* xp = strstr(s, "\"x\"");
+        const char* yp = strstr(s, "\"y\"");
+        if (xp) x = atoi(xp + 4);
+        if (yp) y = atoi(yp + 4);
+
+        touch_input::inject((uint16_t)x, (uint16_t)y, true);
+        _server->send(200, "application/json", "{\"ok\":true}");
+    });
+#endif
 
     DBG_INFO("web", "API endpoints added at /api/*");
 }
