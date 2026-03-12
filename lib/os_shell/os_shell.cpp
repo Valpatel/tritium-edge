@@ -741,6 +741,13 @@ bool init(esp_lcd_panel_handle_t panel, int width, int height) {
 void tick() {
     uint32_t now = millis();
 
+    // Screensaver tick (checks inactivity, manages activation)
+    shell_screensaver::tick();
+
+    // Skip ALL UI updates while screensaver is active — any LVGL widget
+    // changes cause re-rendering that overwrites stars in the framebuffer.
+    if (shell_screensaver::isActive()) return;
+
     // Auto-hide nav bar after timeout (only if not persistent — i.e., on launcher)
     if (s_nav_visible && !s_nav_persistent &&
         (now - s_nav_show_time > NAV_AUTO_HIDE_MS)) {
@@ -755,8 +762,6 @@ void tick() {
         }
     }
 
-    // Screensaver tick (checks inactivity, manages activation)
-    shell_screensaver::tick();
     // Clock colon blink — toggles ":" visibility every second for alive feel.
     // Only modifies the text, LVGL handles the minimal redraw internally.
     if (s_clock_label && (now - s_clock_blink_time >= CLOCK_BLINK_MS)) {

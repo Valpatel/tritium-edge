@@ -8,6 +8,7 @@
 // Tritium-OS Shell — LVGL window manager with status bar, launcher, touch
 #if defined(ENABLE_SHELL) && __has_include("os_shell.h")
 #include "os_shell.h"
+#include "shell_screensaver.h"
 #include "lvgl_driver.h"
 #include "touch_input.h"
 #include "shell_apps.h"
@@ -1009,6 +1010,10 @@ static void updateShellStatus() {
     static uint32_t last_update = 0;
     if (millis() - last_update < 1000) return;
     last_update = millis();
+
+    // Skip LVGL widget updates while screensaver is active — any dirty
+    // rects cause LVGL to re-render, overwriting stars in the framebuffer.
+    if (shell_screensaver::isActive()) return;
 
 #if defined(ENABLE_WIFI)
     tritium_shell::setWifiStatus(wifi.isConnected(),
