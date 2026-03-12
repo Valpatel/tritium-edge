@@ -41,7 +41,7 @@ static uint32_t millis() { return SDL_GetTicks(); }
 namespace shell_screensaver {
 
 // ---------------------------------------------------------------------------
-// Configuration
+// Configuration defaults
 // ---------------------------------------------------------------------------
 
 static constexpr uint32_t DEFAULT_TIMEOUT_S = 10;
@@ -49,11 +49,19 @@ static constexpr int      RENDER_FPS        = 20;
 static constexpr int      RENDER_PERIOD_MS  = 1000 / RENDER_FPS;
 static constexpr int      NUM_STARS         = 250;
 
-// Warp speed cycling
+// Warp speed cycling defaults
 static constexpr uint32_t CRUISE_DURATION_MS = 10000;
 static constexpr uint32_t WARP_DURATION_MS   = 3000;
-static constexpr float    CRUISE_SPEED       = 0.012f;
-static constexpr float    WARP_SPEED         = 0.08f;
+
+// ---------------------------------------------------------------------------
+// Runtime settings (loaded from NVS)
+// ---------------------------------------------------------------------------
+
+static bool     s_cfg_reverse   = false;   // travel direction: false=forward, true=backward
+static bool     s_cfg_colors    = true;    // colored star tints
+static int      s_cfg_star_size = 2;       // 1=dot only, 2+=cross pattern for bright stars
+static bool     s_cfg_warp      = false;   // periodic warp speed bursts
+static float    s_cfg_speed     = 0.012f;  // cruise travel speed (0.001..0.1)
 
 // ---------------------------------------------------------------------------
 // State
@@ -95,6 +103,36 @@ static uint32_t s_bg_render_start = 0;
 static void on_touch(lv_event_t* e);
 static void create_overlay();
 static void render_direct();
+static void load_settings();
+
+// ---------------------------------------------------------------------------
+// Settings loader
+// ---------------------------------------------------------------------------
+
+static void load_settings() {
+#if SETTINGS_AVAILABLE
+    TritiumSettings& settings = TritiumSettings::instance();
+
+    uint32_t timeout = settings.getInt(SettingsDomain::SCREENSAVER, "timeout_s",
+                                        DEFAULT_TIMEOUT_S);
+    if (timeout == 0) {
+        timeout = DEFAULT_TIMEOUT_S;
+        settings.setInt("screensaver", "timeout_s", (int32_t)timeout);
+    }
+    s_timeout_ms = timeout * 1000;
+
+    s_cfg_reverse   = settings.getBool(SettingsDomain::SCREENSAVER, "sf_reverse", false);
+    s_cfg_colors    = settings.getBool(SettingsDomain::SCREENSAVER, "sf_colors", true);
+    s_cfg_star_size = settings.getInt(SettingsDomain::SCREENSAVER, "sf_star_size", 2);
+    s_cfg_warp      = settings.getBool(SettingsDomain::SCREENSAVER, "sf_warp", false);
+
+    // Speed stored as int 1..100 (thousandths), map to 0.001..0.100
+    int speed_raw = settings.getInt(SettingsDomain::SCREENSAVER, "sf_speed", 12);
+    if (speed_raw < 1) speed_raw = 1;
+    if (speed_raw > 100) speed_raw = 100;
+    s_cfg_speed = (float)speed_raw * 0.001f;
+#endif
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -119,22 +157,19 @@ void init(int screen_width, int screen_height) {
         }
     }
 
-#if SETTINGS_AVAILABLE
-    TritiumSettings& settings = TritiumSettings::instance();
-    uint32_t timeout = settings.getInt(SettingsDomain::SCREENSAVER, "timeout_s",
-                                        DEFAULT_TIMEOUT_S);
-    // Guard against 0 (disabled) stored in NVS — screensaver should always work
-    if (timeout == 0) {
-        timeout = DEFAULT_TIMEOUT_S;
-        settings.setInt("screensaver", "timeout_s", (int32_t)timeout);
-    }
-    s_timeout_ms = timeout * 1000;
-#endif
+    load_settings();
 
-    printf("[screensaver] init %dx%d, %s mode, timeout=%lus\n",
+    printf("[screensaver] init %dx%d, %s mode, timeout=%lus, speed=%.3f, reverse=%d, warp=%d, size=%d\n",
            s_screen_w, s_screen_h,
            s_rgb_mode ? "direct-FB" : "canvas",
-           (unsigned long)(s_timeout_ms / 1000));
+           (unsigned long)(s_timeout_ms / 1000),
+           s_cfg_speed, s_cfg_reverse, s_cfg_warp, s_cfg_star_size);
+}
+
+void reloadSettings() {
+    load_settings();
+    printf("[screensaver] settings reloaded: speed=%.3f, reverse=%d, warp=%d, size=%d, colors=%d\n",
+           s_cfg_speed, s_cfg_reverse, s_cfg_warp, s_cfg_star_size, s_cfg_colors);
 }
 
 void tick() {
@@ -193,17 +228,6 @@ void dismiss() {
     s_bg_rendered = false;
     printf("[screensaver] dismissed\n");
 
-    // Erase stars from framebuffers before hiding overlay
-    if (s_rgb_mode && s_prev_pos && s_fb0) {
-        int stride = s_screen_w;
-        for (int i = 0; i < s_prev_count; i++) {
-            int x = s_prev_pos[i].x;
-            int y = s_prev_pos[i].y;
-            if (x < 0) continue;
-            // No need to erase — LVGL will redraw when overlay is hidden
-        }
-    }
-
     if (s_overlay) {
         lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
         // Force LVGL to redraw everything underneath
@@ -220,6 +244,9 @@ void activate() {
     s_bg_rendered = false;
     s_bg_render_start = millis();
     s_last_render_ms = 0;
+
+    // Reload settings on each activation so changes take effect immediately
+    load_settings();
 
     printf("[screensaver] activated\n");
 
@@ -282,29 +309,131 @@ static inline void write_pixel(uint16_t* fb, int stride, int x, int y, uint16_t 
     }
 }
 
+// Erase a star's pixels from both framebuffers
+static inline void erase_star(int ox, int oy, int stride, int size) {
+    write_pixel(s_fb0, stride, ox, oy, 0);
+    if (s_fb1) write_pixel(s_fb1, stride, ox, oy, 0);
+
+    if (size >= 2) {
+        // Cross pattern
+        write_pixel(s_fb0, stride, ox - 1, oy, 0);
+        write_pixel(s_fb0, stride, ox + 1, oy, 0);
+        write_pixel(s_fb0, stride, ox, oy - 1, 0);
+        write_pixel(s_fb0, stride, ox, oy + 1, 0);
+        if (s_fb1) {
+            write_pixel(s_fb1, stride, ox - 1, oy, 0);
+            write_pixel(s_fb1, stride, ox + 1, oy, 0);
+            write_pixel(s_fb1, stride, ox, oy - 1, 0);
+            write_pixel(s_fb1, stride, ox, oy + 1, 0);
+        }
+    }
+    if (size >= 3) {
+        // Larger cross
+        write_pixel(s_fb0, stride, ox - 2, oy, 0);
+        write_pixel(s_fb0, stride, ox + 2, oy, 0);
+        write_pixel(s_fb0, stride, ox, oy - 2, 0);
+        write_pixel(s_fb0, stride, ox, oy + 2, 0);
+        if (s_fb1) {
+            write_pixel(s_fb1, stride, ox - 2, oy, 0);
+            write_pixel(s_fb1, stride, ox + 2, oy, 0);
+            write_pixel(s_fb1, stride, ox, oy - 2, 0);
+            write_pixel(s_fb1, stride, ox, oy + 2, 0);
+        }
+    }
+    if (size >= 4) {
+        // 3x3 block center ring
+        write_pixel(s_fb0, stride, ox - 1, oy - 1, 0);
+        write_pixel(s_fb0, stride, ox + 1, oy - 1, 0);
+        write_pixel(s_fb0, stride, ox - 1, oy + 1, 0);
+        write_pixel(s_fb0, stride, ox + 1, oy + 1, 0);
+        if (s_fb1) {
+            write_pixel(s_fb1, stride, ox - 1, oy - 1, 0);
+            write_pixel(s_fb1, stride, ox + 1, oy - 1, 0);
+            write_pixel(s_fb1, stride, ox - 1, oy + 1, 0);
+            write_pixel(s_fb1, stride, ox + 1, oy + 1, 0);
+        }
+    }
+}
+
+// Draw a star's pixels to both framebuffers
+static inline void draw_star(int sx, int sy, int stride, uint16_t color,
+                              float brightness, int size) {
+    // Core pixel
+    write_pixel(s_fb0, stride, sx, sy, color);
+    if (s_fb1) write_pixel(s_fb1, stride, sx, sy, color);
+
+    // Cross pattern for bright stars at size >= 2
+    if (size >= 2 && brightness > 0.5f) {
+        write_pixel(s_fb0, stride, sx - 1, sy, color);
+        write_pixel(s_fb0, stride, sx + 1, sy, color);
+        write_pixel(s_fb0, stride, sx, sy - 1, color);
+        write_pixel(s_fb0, stride, sx, sy + 1, color);
+        if (s_fb1) {
+            write_pixel(s_fb1, stride, sx - 1, sy, color);
+            write_pixel(s_fb1, stride, sx + 1, sy, color);
+            write_pixel(s_fb1, stride, sx, sy - 1, color);
+            write_pixel(s_fb1, stride, sx, sy + 1, color);
+        }
+    }
+
+    // Larger cross for size >= 3
+    if (size >= 3 && brightness > 0.4f) {
+        write_pixel(s_fb0, stride, sx - 2, sy, color);
+        write_pixel(s_fb0, stride, sx + 2, sy, color);
+        write_pixel(s_fb0, stride, sx, sy - 2, color);
+        write_pixel(s_fb0, stride, sx, sy + 2, color);
+        if (s_fb1) {
+            write_pixel(s_fb1, stride, sx - 2, sy, color);
+            write_pixel(s_fb1, stride, sx + 2, sy, color);
+            write_pixel(s_fb1, stride, sx, sy - 2, color);
+            write_pixel(s_fb1, stride, sx, sy + 2, color);
+        }
+    }
+
+    // 3x3 block for size >= 4
+    if (size >= 4 && brightness > 0.6f) {
+        write_pixel(s_fb0, stride, sx - 1, sy - 1, color);
+        write_pixel(s_fb0, stride, sx + 1, sy - 1, color);
+        write_pixel(s_fb0, stride, sx - 1, sy + 1, color);
+        write_pixel(s_fb0, stride, sx + 1, sy + 1, color);
+        if (s_fb1) {
+            write_pixel(s_fb1, stride, sx - 1, sy - 1, color);
+            write_pixel(s_fb1, stride, sx + 1, sy - 1, color);
+            write_pixel(s_fb1, stride, sx - 1, sy + 1, color);
+            write_pixel(s_fb1, stride, sx + 1, sy + 1, color);
+        }
+    }
+}
+
 static void render_direct() {
     if (!s_starfield || !s_fb0) return;
 
     int stride = s_screen_w;
 
-    // Warp speed cycling
-    uint32_t now = millis();
-    uint32_t elapsed = now - s_warp_timer;
-    float speed;
+    // Determine speed for this frame
+    float speed = s_cfg_speed;
 
-    if (s_warp_mode) {
-        speed = WARP_SPEED;
-        if (elapsed >= WARP_DURATION_MS) {
-            s_warp_mode = false;
-            s_warp_timer = now;
-        }
-    } else {
-        speed = CRUISE_SPEED;
-        if (elapsed >= CRUISE_DURATION_MS) {
-            s_warp_mode = true;
-            s_warp_timer = now;
+    if (s_cfg_warp) {
+        // Warp speed cycling
+        uint32_t now = millis();
+        uint32_t elapsed = now - s_warp_timer;
+
+        if (s_warp_mode) {
+            speed = s_cfg_speed * 6.5f;  // warp = ~6.5x cruise speed
+            if (elapsed >= WARP_DURATION_MS) {
+                s_warp_mode = false;
+                s_warp_timer = now;
+            }
+        } else {
+            if (elapsed >= CRUISE_DURATION_MS) {
+                s_warp_mode = true;
+                s_warp_timer = now;
+            }
         }
     }
+
+    // Apply direction (negative speed = backward/receding stars)
+    if (s_cfg_reverse) speed = -speed;
 
     s_starfield->update(speed);
 
@@ -313,21 +442,7 @@ static void render_direct() {
         int ox = s_prev_pos[i].x;
         int oy = s_prev_pos[i].y;
         if (ox < 0) continue;
-
-        // Erase core + cross pattern from both framebuffers
-        write_pixel(s_fb0, stride, ox, oy, 0);
-        write_pixel(s_fb0, stride, ox - 1, oy, 0);
-        write_pixel(s_fb0, stride, ox + 1, oy, 0);
-        write_pixel(s_fb0, stride, ox, oy - 1, 0);
-        write_pixel(s_fb0, stride, ox, oy + 1, 0);
-
-        if (s_fb1) {
-            write_pixel(s_fb1, stride, ox, oy, 0);
-            write_pixel(s_fb1, stride, ox - 1, oy, 0);
-            write_pixel(s_fb1, stride, ox + 1, oy, 0);
-            write_pixel(s_fb1, stride, ox, oy - 1, 0);
-            write_pixel(s_fb1, stride, ox, oy + 1, 0);
-        }
+        erase_star(ox, oy, stride, s_cfg_star_size);
     }
 
     // Render new star positions
@@ -350,33 +465,17 @@ static void render_direct() {
         uint8_t gray = (uint8_t)(brightness * 255.0f);
         uint8_t r = gray, g = gray, b = gray;
 
-        switch (stars[i].tint) {
-            case TINT_BLUE:   r = gray / 3; g = gray / 2; break;
-            case TINT_YELLOW: b = gray / 3; break;
-            case TINT_RED:    g = gray / 4; b = gray / 4; break;
-            default: break;
+        if (s_cfg_colors) {
+            switch (stars[i].tint) {
+                case TINT_BLUE:   r = gray / 3; g = gray / 2; break;
+                case TINT_YELLOW: b = gray / 3; break;
+                case TINT_RED:    g = gray / 4; b = gray / 4; break;
+                default: break;
+            }
         }
 
         uint16_t color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-
-        // Core pixel — write to both framebuffers
-        write_pixel(s_fb0, stride, sx, sy, color);
-        if (s_fb1) write_pixel(s_fb1, stride, sx, sy, color);
-
-        // Bright stars: cross pattern
-        if (brightness > 0.5f) {
-            write_pixel(s_fb0, stride, sx - 1, sy, color);
-            write_pixel(s_fb0, stride, sx + 1, sy, color);
-            write_pixel(s_fb0, stride, sx, sy - 1, color);
-            write_pixel(s_fb0, stride, sx, sy + 1, color);
-
-            if (s_fb1) {
-                write_pixel(s_fb1, stride, sx - 1, sy, color);
-                write_pixel(s_fb1, stride, sx + 1, sy, color);
-                write_pixel(s_fb1, stride, sx, sy - 1, color);
-                write_pixel(s_fb1, stride, sx, sy + 1, color);
-            }
-        }
+        draw_star(sx, sy, stride, color, brightness, s_cfg_star_size);
     }
 }
 

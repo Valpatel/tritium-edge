@@ -801,22 +801,45 @@ static void ss_reverse_cb(lv_event_t* e) {
     lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
     bool checked = lv_obj_has_state(sw, LV_STATE_CHECKED);
     TritiumSettings::instance().setBool(SettingsDomain::SCREENSAVER, "sf_reverse", checked);
+    shell_screensaver::reloadSettings();
 }
 
 static void ss_colors_cb(lv_event_t* e) {
     lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
     bool checked = lv_obj_has_state(sw, LV_STATE_CHECKED);
     TritiumSettings::instance().setBool(SettingsDomain::SCREENSAVER, "sf_colors", checked);
+    shell_screensaver::reloadSettings();
+}
+
+static void ss_warp_cb(lv_event_t* e) {
+    lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
+    bool checked = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    TritiumSettings::instance().setBool(SettingsDomain::SCREENSAVER, "sf_warp", checked);
+    shell_screensaver::reloadSettings();
 }
 
 static void ss_starsize_cb(lv_event_t* e) {
     lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
     int val = lv_slider_get_value(slider);
     TritiumSettings::instance().setInt(SettingsDomain::SCREENSAVER, "sf_star_size", val);
+    shell_screensaver::reloadSettings();
     lv_obj_t* lbl = (lv_obj_t*)lv_event_get_user_data(e);
     if (lbl) {
         char buf[8];
         snprintf(buf, sizeof(buf), "%dpx", val);
+        lv_label_set_text(lbl, buf);
+    }
+}
+
+static void ss_speed_cb(lv_event_t* e) {
+    lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
+    int val = lv_slider_get_value(slider);
+    TritiumSettings::instance().setInt(SettingsDomain::SCREENSAVER, "sf_speed", val);
+    shell_screensaver::reloadSettings();
+    lv_obj_t* lbl = (lv_obj_t*)lv_event_get_user_data(e);
+    if (lbl) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%.3f", (float)val * 0.001f);
         lv_label_set_text(lbl, buf);
     }
 }
@@ -940,6 +963,42 @@ static void settings_build_screensaver(lv_obj_t* cont) {
     lv_obj_t* size_slider = tritium_theme::createSlider(sf_panel, 1, 6, sf_size);
     lv_obj_set_width(size_slider, lv_pct(95));
     lv_obj_add_event_cb(size_slider, ss_starsize_cb, LV_EVENT_VALUE_CHANGED, size_val);
+
+    // Speed slider (1..100 maps to 0.001..0.100)
+    lv_obj_t* spd_row = lv_obj_create(sf_panel);
+    lv_obj_set_size(spd_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(spd_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(spd_row, 0, 0);
+    lv_obj_set_style_pad_all(spd_row, 0, 0);
+    lv_obj_set_flex_flow(spd_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(spd_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(spd_row, LV_OBJ_FLAG_SCROLLABLE);
+    tritium_theme::createLabel(spd_row, "Travel Speed");
+
+    int sf_speed = cfg.getInt(SettingsDomain::SCREENSAVER, "sf_speed", 12);
+    char spd_str[16];
+    snprintf(spd_str, sizeof(spd_str), "%.3f", (float)sf_speed * 0.001f);
+    lv_obj_t* spd_val = tritium_theme::createLabel(spd_row, spd_str, true);
+
+    lv_obj_t* spd_slider = tritium_theme::createSlider(sf_panel, 1, 100, sf_speed);
+    lv_obj_set_width(spd_slider, lv_pct(95));
+    lv_obj_add_event_cb(spd_slider, ss_speed_cb, LV_EVENT_VALUE_CHANGED, spd_val);
+
+    // Warp cycle toggle
+    lv_obj_t* warp_row = lv_obj_create(sf_panel);
+    lv_obj_set_size(warp_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(warp_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(warp_row, 0, 0);
+    lv_obj_set_style_pad_all(warp_row, 0, 0);
+    lv_obj_set_flex_flow(warp_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(warp_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(warp_row, LV_OBJ_FLAG_SCROLLABLE);
+    tritium_theme::createLabel(warp_row, "Warp Speed Bursts");
+    bool sf_warp = cfg.getBool(SettingsDomain::SCREENSAVER, "sf_warp", false);
+    lv_obj_t* warp_sw = tritium_theme::createSwitch(warp_row, sf_warp);
+    lv_obj_add_event_cb(warp_sw, ss_warp_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 }
 
 // ---------------------------------------------------------------------------

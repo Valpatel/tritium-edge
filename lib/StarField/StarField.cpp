@@ -51,14 +51,21 @@ void StarField::resetStar(Star& s, bool randomize_z) {
 }
 
 void StarField::update(float speed) {
+    bool reverse = speed < 0.0f;
     for (int i = 0; i < _num_stars; i++) {
         Star& s = _stars[i];
         s.prev_z = s.z;
         s.z -= speed;
 
-        // Reset if past the camera or off-screen
+        // Reset if past the camera (forward) or receded past max depth (reverse)
         if (s.z <= 0.001f) {
             resetStar(s, false);
+            if (reverse) s.z = 0.01f;  // spawn close when going backward
+            continue;
+        }
+        if (s.z > 1.5f) {
+            resetStar(s, false);
+            if (!reverse) s.z = 1.0f;  // spawn far when going forward
             continue;
         }
 
@@ -68,6 +75,7 @@ void StarField::update(float speed) {
         float sy = _cy + s.y * _cy * inv_z;
         if (sx < -2 || sx >= _w + 2 || sy < -2 || sy >= _h + 2) {
             resetStar(s, false);
+            if (reverse) s.z = 0.01f;
         }
     }
 }

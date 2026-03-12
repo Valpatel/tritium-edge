@@ -29,4 +29,7 @@ void activate();
 /// Update timeout from settings (called when user changes slider).
 void setTimeoutS(uint32_t seconds);
 
+/// Reload all screensaver settings from NVS (call after any setting change).
+void reloadSettings();
+
 }  // namespace shell_screensaver

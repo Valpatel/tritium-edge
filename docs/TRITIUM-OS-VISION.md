@@ -830,7 +830,7 @@ Page load:
 - [ ] Real WebSocket support (needs ESPAsyncWebServer or custom impl) — TODO
 
 ### Sprint 4: Communication — PARTIALLY COMPLETE
-- [ ] BLE serial port (NUS) — BLOCKED (NimBLE esp_bt.h not found)
+- [ ] BLE serial port (NUS) — TODO (NimBLE works, needs NUS implementation)
 - [x] Enhanced mesh (addressed messages, shared state, hop routing) — `mesh_manager.cpp`
 - [x] Mesh protocol (discovery, topology, encrypted channels) — `mesh_protocol.h`
 - [x] Terminal app (web) — `web/terminal.html`
