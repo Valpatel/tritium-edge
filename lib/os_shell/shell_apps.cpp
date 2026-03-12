@@ -999,6 +999,14 @@ static void settings_build_screensaver(lv_obj_t* cont) {
     bool sf_warp = cfg.getBool(SettingsDomain::SCREENSAVER, "sf_warp", false);
     lv_obj_t* warp_sw = tritium_theme::createSwitch(warp_row, sf_warp);
     lv_obj_add_event_cb(warp_sw, ss_warp_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    // Test / Preview button
+    lv_obj_t* test_btn = tritium_theme::createButton(sf_panel, LV_SYMBOL_PLAY " TEST");
+    lv_obj_set_width(test_btn, lv_pct(95));
+    lv_obj_add_event_cb(test_btn, [](lv_event_t* e) {
+        (void)e;
+        shell_screensaver::activate();
+    }, LV_EVENT_CLICKED, nullptr);
 }
 
 // ---------------------------------------------------------------------------
