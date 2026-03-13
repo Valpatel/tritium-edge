@@ -82,11 +82,12 @@ static NtpHAL _ntp;
 #define NTP_AVAILABLE 0
 #endif
 
-#if defined(ENABLE_DIAG) && __has_include("hal_diag.h")
-#include "hal_diag.h"
 #if HAS_PMIC && __has_include("hal_power.h")
 #include "hal_power.h"
+static PowerHAL* _g_power = nullptr;
 #endif
+#if defined(ENABLE_DIAG) && __has_include("hal_diag.h")
+#include "hal_diag.h"
 #if HAS_CAMERA && __has_include("hal_camera.h")
 #include "hal_camera.h"
 #endif
@@ -587,18 +588,22 @@ static void services_init() {
             // Wire power HAL into diagnostics on boards with PMIC
 #if HAS_PMIC && __has_include("hal_power.h")
             {
-                static PowerHAL _diag_power;
-                _diag_power.initLgfx(0, 0x34);
-                hal_diag::set_power_provider([](hal_diag::PowerInfo& out) -> bool {
-                    auto info = _diag_power.getInfo();
-                    out.battery_voltage = info.voltage;
-                    out.battery_percent = (info.percentage >= 0) ? (float)info.percentage : 0.0f;
-                    out.charge_current_ma = 0.0f;  // Not exposed by PowerHAL yet
-                    out.power_source = info.is_usb_powered ? 1 : (info.has_battery ? 2 : 0);
-                    out.pmic_temp_c = 0.0f;  // TODO: add PMIC temp read to PowerHAL
-                    return true;
-                });
-                Serial.printf("[tritium] Diagnostics: power provider wired\n");
+                if (!_g_power) {
+                    _g_power = new PowerHAL();
+                    if (_g_power) _g_power->initLgfx(0, 0x34);
+                }
+                if (_g_power) {
+                    hal_diag::set_power_provider([](hal_diag::PowerInfo& out) -> bool {
+                        auto info = _g_power->getInfo();
+                        out.battery_voltage = info.voltage;
+                        out.battery_percent = (info.percentage >= 0) ? (float)info.percentage : 0.0f;
+                        out.charge_current_ma = 0.0f;
+                        out.power_source = info.is_usb_powered ? 1 : (info.has_battery ? 2 : 0);
+                        out.pmic_temp_c = 0.0f;
+                        return true;
+                    });
+                    Serial.printf("[tritium] Diagnostics: power provider wired\n");
+                }
             }
 #endif
 
@@ -1041,11 +1046,11 @@ static void updateShellStatus() {
 
     // Power status — boards with PMIC report battery, others show USB
 #if HAS_PMIC && __has_include("hal_power.h")
-    {
-        // Power provider is already wired into diag — read from there or direct
-        // For now, use the diag touch provider pattern: call PowerHAL directly
-        // TODO: wire PowerHAL instance into shell status updates
-        tritium_shell::setBatteryStatus(50, false);  // placeholder
+    if (_g_power) {
+        auto info = _g_power->getInfo();
+        tritium_shell::setBatteryStatus(info.percentage, info.is_charging);
+    } else {
+        tritium_shell::setBatteryStatus(-1, false);
     }
 #else
     tritium_shell::setBatteryStatus(-1, false);  // USB powered, no battery

@@ -523,6 +523,10 @@ bool WebServerHAL::init(uint16_t port) {
 
     _port = port;
     _server = new WebServer(port);
+    if (!_server) {
+        DBG_ERROR("web", "Failed to allocate WebServer");
+        return false;
+    }
     _instance = this;
 
     _server->begin();
