@@ -1,6 +1,7 @@
 #include "StarField.h"
 #include <cstdlib>
 #include <cmath>
+#include <new>
 
 static float randf() {
     return (float)rand() / (float)RAND_MAX;
@@ -27,7 +28,8 @@ StarField::StarField(int screen_width, int screen_height, int num_stars)
     }
     _num_stars = num_stars;
 
-    _stars = new Star[_num_stars];
+    _stars = new (std::nothrow) Star[_num_stars];
+    if (!_stars) { _num_stars = 0; return; }
     for (int i = 0; i < _num_stars; i++) {
         spawnStar(_stars[i], true);
     }

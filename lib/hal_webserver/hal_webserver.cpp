@@ -77,13 +77,19 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 // Safe because WebServer is single-threaded (one request at a time).
 static const size_t API_BUF_SIZE = 8192;
 static char* _apiBuf = nullptr;
+// Small static fallback so api_buf() never returns null
+static char _apiBufFallback[256];
+static size_t _apiBufActualSize = sizeof(_apiBufFallback);
 static char* api_buf() {
     if (!_apiBuf) {
         _apiBuf = (char*)heap_caps_malloc(API_BUF_SIZE, MALLOC_CAP_SPIRAM);
         if (!_apiBuf) _apiBuf = (char*)malloc(API_BUF_SIZE);
-        if (!_apiBuf) {
-            DBG_ERROR("web", "Failed to allocate API buffer");
-            return nullptr;
+        if (_apiBuf) {
+            _apiBufActualSize = API_BUF_SIZE;
+        } else {
+            DBG_ERROR("web", "Failed to allocate API buffer, using fallback");
+            _apiBuf = _apiBufFallback;
+            _apiBufActualSize = sizeof(_apiBufFallback);
         }
     }
     return _apiBuf;
@@ -856,7 +862,7 @@ void WebServerHAL::addOtaPage() {
     // GET /api/ota/status — current OTA state
     _server->on("/api/ota/status", HTTP_GET, [self]() {
         self->_requestCount++;
-        const auto& st = ota_manager::getStatus();
+        const auto st = ota_manager::getStatus();  // copy to avoid race
         char* buf = api_buf();
         snprintf(buf, API_BUF_SIZE,
             "{\"st\":%u,\"pp\":%u,\"bw\":%u,\"tb\":%u,"
