@@ -251,61 +251,150 @@ setInterval(function(){
 </body></html>
 )rawliteral";
 
-// ── OTA Update page (/update) ───────────────────────────────────────────────
+// ── OTA Update page (/update and /ota) ──────────────────────────────────────
+// Uses ota_manager for proper ESP-IDF OTA with rollback, history, and validation.
 
-static const char OTA_HTML[] PROGMEM = R"rawliteral(
-<!DOCTYPE html><html><head><meta charset="utf-8">
+#if __has_include("ota_manager.h")
+#include "ota_manager.h"
+#define OTA_MANAGER_AVAILABLE 1
+#else
+#define OTA_MANAGER_AVAILABLE 0
+#endif
+
+static const char OTA_HTML_MODERN[] PROGMEM = R"rawliteral(<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OTA Update</title>
-%THEME%
-</head><body>
-%NAV%
-<h1>// Firmware Update</h1>
-<div class="card">
-<form method="POST" action="/update" enctype="multipart/form-data" id="otaform">
-  <p class="label">Select firmware.bin:</p>
-  <input type="file" name="update" accept=".bin">
-  <br><br>
-  <input type="submit" value="Upload &amp; Flash">
-</form>
-<div id="progress">
-  <p class="label">Uploading...</p>
-  <div class="bar-bg"><div class="bar-fill" id="pbar" style="width:0%"></div></div>
-  <p id="ptxt" style="margin-top:4px;color:#00ffd0">0%</p>
+<title>Tritium-OS // Firmware Update</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--cyan:#00f0ff;--mag:#ff2a6d;--green:#05ffa1;--yellow:#fcee0a;
+--void:#0a0a0f;--s1:#0e0e14;--s2:#12121a;--s3:#1a1a2e;
+--ghost:#8888aa;--text:#c8d0dc;--bright:#e0e0ff}
+body{background:var(--void);color:var(--text);font-family:'Courier New',monospace;
+font-size:13px;padding:16px;max-width:720px;margin:0 auto}
+h1{color:var(--cyan);font-size:16px;letter-spacing:0.15em;text-transform:uppercase;
+padding:12px 0;border-bottom:1px solid rgba(0,240,255,0.15);margin-bottom:16px}
+.panel{background:var(--s2);border:1px solid rgba(0,240,255,0.08);border-radius:4px;
+padding:14px;margin-bottom:12px}
+.panel-title{color:var(--bright);font-size:11px;letter-spacing:0.12em;
+text-transform:uppercase;margin-bottom:10px}
+.info-grid{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:12px}
+.info-grid .k{color:var(--ghost)}.info-grid .v{color:var(--cyan)}
+.btn{padding:7px 16px;border:1px solid rgba(0,240,255,0.3);background:transparent;
+color:var(--cyan);font-family:inherit;font-size:11px;cursor:pointer;border-radius:3px}
+.btn:disabled{opacity:0.4;cursor:not-allowed}
+.btn.danger{border-color:rgba(255,42,109,0.3);color:var(--mag)}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.progress-wrap{margin:12px 0;display:none}.progress-wrap.show{display:block}
+.progress-bar{height:20px;background:var(--s3);border-radius:3px;overflow:hidden}
+.progress-fill{height:100%;width:0%;background:var(--cyan);transition:width 0.3s}
+.progress-text{text-align:center;font-size:12px;margin-top:4px;color:var(--cyan)}
+.status-msg{padding:8px 12px;border-radius:3px;font-size:12px;margin:8px 0;display:none}
+.status-msg.show{display:block}
+.status-msg.ok{background:rgba(5,255,161,0.08);color:var(--green)}
+.status-msg.err{background:rgba(255,42,109,0.08);color:var(--mag)}
+table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
+th{text-align:left;color:var(--ghost);font-size:10px;padding:4px 8px;border-bottom:1px solid rgba(0,240,255,0.08)}
+td{padding:5px 8px;border-bottom:1px solid rgba(255,255,255,0.03)}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px}
+.dot.ok{background:var(--green)}.dot.fail{background:var(--mag)}
+.state-label{display:inline-block;padding:2px 8px;border-radius:2px;font-size:10px;text-transform:uppercase}
+.state-idle{background:rgba(136,136,170,0.15);color:var(--ghost)}
+.state-active{background:rgba(0,240,255,0.15);color:var(--cyan)}
+.state-ok{background:rgba(5,255,161,0.15);color:var(--green)}
+.state-err{background:rgba(255,42,109,0.15);color:var(--mag)}
+.danger-zone{border-color:rgba(255,42,109,0.15)}
+.drop-zone{border:2px dashed rgba(0,240,255,0.2);border-radius:6px;padding:32px 16px;
+text-align:center;position:relative;background:var(--s1)}
+.drop-zone input{position:absolute;inset:0;opacity:0;cursor:pointer}
+</style></head><body>
+<h1>// Tritium-OS Firmware Update</h1>
+<div class="panel"><div class="panel-title">System Info</div>
+<div class="info-grid">
+<span class="k">Current</span><span class="v" id="cur-ver">---</span>
+<span class="k">Partition</span><span class="v" id="cur-part">---</span>
+<span class="k">Next</span><span class="v" id="next-part">---</span>
+<span class="k">Max Size</span><span class="v" id="part-size">---</span>
+<span class="k">State</span><span class="v" id="ota-state"><span class="state-label state-idle">IDLE</span></span>
+<span class="k">Uptime</span><span class="v" id="uptime">---</span>
+</div></div>
+
+<div class="panel"><div class="panel-title">Firmware Upload</div>
+<div class="drop-zone">
+<input type="file" id="fw-file" accept=".bin,.ota">
+<div style="color:var(--ghost)">Drop <span style="color:var(--cyan)">firmware.bin</span> here or click</div>
 </div>
-<div id="result"></div>
+<div id="file-info" style="display:none;margin-top:8px;font-size:11px;color:var(--ghost)">
+<span id="file-name"></span> — <span id="file-size"></span></div>
+<div class="progress-wrap" id="progress-wrap">
+<div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+<div class="progress-text" id="progress-text">0%</div></div>
+<div id="upload-msg" class="status-msg"></div>
+<div class="btn-row"><button class="btn" id="btn-upload" disabled>Upload &amp; Flash</button></div>
 </div>
+
+<div class="panel"><div class="panel-title">URL Update</div>
+<input type="text" style="width:100%;padding:7px;background:var(--s1);border:1px solid rgba(0,240,255,0.15);color:var(--cyan);font-family:inherit;font-size:12px;border-radius:3px;margin-bottom:8px"
+id="url-input" placeholder="https://example.com/firmware.bin">
+<div class="btn-row"><button class="btn" id="btn-url">Pull Update</button></div></div>
+
+<div class="panel"><div class="panel-title">History</div>
+<table><thead><tr><th>Version</th><th>Source</th><th>Status</th></tr></thead>
+<tbody id="history-body"><tr><td colspan="3" style="color:var(--ghost)">Loading...</td></tr></tbody></table></div>
+
+<div class="panel danger-zone"><div class="panel-title" style="color:var(--mag)">Danger Zone</div>
+<div class="btn-row"><button class="btn danger" id="btn-rollback">Rollback</button>
+<button class="btn danger" id="btn-reboot">Reboot</button></div></div>
+
 <script>
-document.getElementById('otaform').addEventListener('submit',function(e){
-  e.preventDefault();
-  var form=e.target;
-  var data=new FormData(form);
-  var xhr=new XMLHttpRequest();
-  document.getElementById('progress').style.display='block';
-  xhr.upload.addEventListener('progress',function(ev){
-    if(ev.lengthComputable){
-      var pct=Math.round((ev.loaded/ev.total)*100);
-      document.getElementById('pbar').style.width=pct+'%';
-      document.getElementById('ptxt').textContent=pct+'%';
-    }
-  });
-  xhr.onreadystatechange=function(){
-    if(xhr.readyState==4){
-      var r=document.getElementById('result');
-      if(xhr.status==200){
-        r.innerHTML='<div class="msg ok">Update successful! Rebooting...</div>';
-        setTimeout(function(){location.href='/';},5000);
-      }else{
-        r.innerHTML='<div class="msg err">Update failed: '+xhr.responseText+'</div>';
-      }
-    }
-  };
-  xhr.open('POST','/update');
-  xhr.send(data);
-});
-</script>
-</body></html>
-)rawliteral";
+(function(){
+var $=function(s){return document.getElementById(s)};
+var STATES=['IDLE','CHECKING','DOWNLOADING','WRITING','VERIFYING','READY_REBOOT','FAILED'];
+var SC=['state-idle','state-active','state-active','state-active','state-active','state-ok','state-err'];
+function fb(b){return b>=1048576?(b/1048576).toFixed(1)+'MB':b>=1024?(b/1024).toFixed(1)+'KB':b+'B';}
+function ft(s){return s<60?s+'s':s<3600?Math.floor(s/60)+'m '+s%60+'s':Math.floor(s/3600)+'h';}
+function sm(c,m){var e=$('upload-msg');e.className='status-msg show '+c;e.textContent=m;}
+function rs(){fetch('/api/ota/status').then(function(r){return r.json()}).then(function(d){
+$('cur-ver').textContent=d.cv||'?';$('cur-part').textContent=d.ap||'?';
+$('next-part').textContent=d.np||'?';$('part-size').textContent=fb(d.ps||0);
+$('uptime').textContent=ft(d.up||0);var si=d.st||0;
+$('ota-state').innerHTML='<span class="state-label '+(SC[si]||'state-idle')+'">'+(STATES[si]||'?')+'</span>';
+if(si>=3&&si<=4){$('progress-wrap').classList.add('show');$('progress-fill').style.width=d.pp+'%';$('progress-text').textContent=d.pp+'%';}
+}).catch(function(){});}
+var sf=null;
+$('fw-file').onchange=function(){if(this.files.length){sf=this.files[0];
+$('file-name').textContent=sf.name;$('file-size').textContent=fb(sf.size);
+$('file-info').style.display='block';$('btn-upload').disabled=false;}};
+$('btn-upload').onclick=function(){if(!sf)return;this.disabled=true;
+$('progress-wrap').classList.add('show');
+var fd=new FormData();fd.append('firmware',sf,sf.name);
+var xhr=new XMLHttpRequest();xhr.open('POST','/api/ota/upload',true);
+xhr.upload.onprogress=function(e){if(e.lengthComputable){var p=Math.round(e.loaded/e.total*100);
+$('progress-fill').style.width=p+'%';$('progress-text').textContent='Uploading: '+p+'%';}};
+xhr.onload=function(){try{var d=JSON.parse(xhr.responseText);
+if(d.ok){sm('ok',d.msg||'Done');$('progress-text').textContent='Complete!';}
+else sm('err',d.msg||'Failed');}catch(x){sm('err','Failed');}
+$('btn-upload').disabled=false;rs();};
+xhr.onerror=function(){sm('err','Connection error');$('btn-upload').disabled=false;};
+xhr.send(fd);};
+$('btn-url').onclick=function(){var u=$('url-input').value.trim();if(!u)return;this.disabled=true;
+fetch('/api/ota/url',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({url:u})}).then(function(r){return r.json()}).then(function(d){
+sm(d.ok?'ok':'err',d.msg||'Failed');$('btn-url').disabled=false;rs();
+}).catch(function(){sm('err','Failed');$('btn-url').disabled=false;});};
+$('btn-rollback').onclick=function(){if(!confirm('Rollback to previous firmware?'))return;
+fetch('/api/ota/rollback',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+sm(d.ok?'ok':'err',d.msg);rs();});};
+$('btn-reboot').onclick=function(){if(!confirm('Reboot device now?'))return;
+fetch('/api/ota/reboot',{method:'POST'}).then(function(){sm('ok','Rebooting...');
+setTimeout(function(){location.reload()},10000);});};
+fetch('/api/ota/history').then(function(r){return r.json()}).then(function(es){
+var tb=$('history-body');if(!es.length){tb.innerHTML='<tr><td colspan="3" style="color:var(--ghost)">No history</td></tr>';return;}
+var h='';es.forEach(function(e){h+='<tr><td style="color:var(--cyan)">'+e.version+'</td><td>'+
+e.source+'</td><td><span class="dot '+(e.success?'ok':'fail')+'"></span>'+
+(e.success?'OK':'FAIL')+'</td></tr>';});tb.innerHTML=h;}).catch(function(){});
+rs();setInterval(rs,5000);})();
+</script></body></html>)rawliteral";
 
 // ── Config Editor page (/config) ────────────────────────────────────────────
 
@@ -635,63 +724,171 @@ void WebServerHAL::addDashboard() {
 void WebServerHAL::addOtaPage() {
     if (!_server) return;
 
+#if OTA_MANAGER_AVAILABLE
+    ota_manager::init();
+    ota_manager::markValid();  // Confirm current firmware is good (prevents rollback)
+
     WebServerHAL* self = this;
 
-    // Serve the upload form
+    // Serve the modern OTA page
+    _server->on("/ota", HTTP_GET, [self]() {
+        self->_requestCount++;
+        _server->send(200, "text/html", FPSTR(OTA_HTML_MODERN));
+    });
     _server->on("/update", HTTP_GET, [self]() {
         self->_requestCount++;
-        String html(FPSTR(OTA_HTML));
-        html.replace("%THEME%", FPSTR(THEME_CSS));
-        html.replace("%NAV%",   FPSTR(NAV_HTML));
-        _server->send(200, "text/html", html);
+        _server->send(200, "text/html", FPSTR(OTA_HTML_MODERN));
     });
 
-    // Handle firmware upload
-    _server->on("/update", HTTP_POST,
-        // Response after upload completes
+    // GET /api/ota/status — current OTA state
+    _server->on("/api/ota/status", HTTP_GET, [self]() {
+        self->_requestCount++;
+        const auto& st = ota_manager::getStatus();
+        char* buf = api_buf();
+        snprintf(buf, API_BUF_SIZE,
+            "{\"st\":%u,\"pp\":%u,\"bw\":%u,\"tb\":%u,"
+            "\"cv\":\"%s\",\"nv\":\"%s\",\"err\":\"%s\","
+            "\"ap\":\"%s\",\"np\":\"%s\",\"ps\":%u,\"up\":%lu}",
+            (unsigned)st.state, (unsigned)st.progress_pct,
+            st.bytes_written, st.total_bytes,
+            st.current_version, st.new_version, st.error_msg,
+            st.active_partition ? st.active_partition : "?",
+            st.next_partition ? st.next_partition : "?",
+            st.partition_size,
+            (unsigned long)(millis() / 1000));
+        _server->send(200, "application/json", buf);
+    });
+
+    // POST /api/ota/upload — firmware upload (raw binary or multipart)
+    _server->on("/api/ota/upload", HTTP_POST,
+        // Response handler
         [self]() {
             self->_requestCount++;
-            _server->sendHeader("Connection", "close");
-            if (Update.hasError()) {
-                _server->send(500, "text/plain", "Update FAILED");
+            const auto& st = ota_manager::getStatus();
+            if (st.state == ota_manager::OTA_READY_REBOOT) {
+                _server->send(200, "application/json",
+                    "{\"ok\":true,\"msg\":\"Upload complete, ready to reboot\"}");
             } else {
-                _server->send(200, "text/plain", "Update OK — rebooting...");
-                delay(500);
-                ESP.restart();
+                char buf[128];
+                snprintf(buf, sizeof(buf), "{\"ok\":false,\"msg\":\"%s\"}", st.error_msg);
+                _server->send(500, "application/json", buf);
             }
         },
-        // Handle upload data
+        // Multipart upload handler (for form-based uploads)
         [self]() {
             HTTPUpload& upload = _server->upload();
             if (upload.status == UPLOAD_FILE_START) {
-                DBG_INFO("web", "OTA upload start: %s", upload.filename.c_str());
-                if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-                    DBG_ERROR("web", "OTA begin failed");
-                }
+                DBG_INFO("web", "OTA multipart start: %s", upload.filename.c_str());
             } else if (upload.status == UPLOAD_FILE_WRITE) {
-                if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-                    DBG_ERROR("web", "OTA write failed");
-                }
+                ota_manager::updateFromUpload(upload.buf, upload.currentSize, false);
             } else if (upload.status == UPLOAD_FILE_END) {
-                if (Update.end(true)) {
-                    DBG_INFO("web", "OTA success: %u bytes", upload.totalSize);
-                } else {
-                    DBG_ERROR("web", "OTA end failed");
-                }
+                ota_manager::updateFromUpload(nullptr, 0, true);
+                DBG_INFO("web", "OTA multipart end: %u bytes", upload.totalSize);
             }
         }
     );
 
-    // Also serve on /ota as an alias
-    _server->on("/ota", HTTP_GET, [self]() {
+    // Also handle the legacy /update endpoint for backwards compatibility
+    _server->on("/update", HTTP_POST,
+        [self]() {
+            self->_requestCount++;
+            const auto& st = ota_manager::getStatus();
+            _server->sendHeader("Connection", "close");
+            if (st.state == ota_manager::OTA_READY_REBOOT) {
+                _server->send(200, "text/plain", "Update OK — rebooting...");
+                delay(500);
+                ota_manager::reboot();
+            } else {
+                _server->send(500, "text/plain", st.error_msg);
+            }
+        },
+        [self]() {
+            HTTPUpload& upload = _server->upload();
+            if (upload.status == UPLOAD_FILE_START) {
+                DBG_INFO("web", "OTA legacy start: %s", upload.filename.c_str());
+            } else if (upload.status == UPLOAD_FILE_WRITE) {
+                ota_manager::updateFromUpload(upload.buf, upload.currentSize, false);
+            } else if (upload.status == UPLOAD_FILE_END) {
+                ota_manager::updateFromUpload(nullptr, 0, true);
+            }
+        }
+    );
+
+    // POST /api/ota/url — pull firmware from URL
+    _server->on("/api/ota/url", HTTP_POST, [self]() {
         self->_requestCount++;
-        String html(FPSTR(OTA_HTML));
-        html.replace("%THEME%", FPSTR(THEME_CSS));
-        html.replace("%NAV%",   FPSTR(NAV_HTML));
-        _server->send(200, "text/html", html);
+        String body = _server->arg("plain");
+        // Extract URL from JSON
+        const char* s = body.c_str();
+        const char* up = strstr(s, "\"url\":\"");
+        if (!up) {
+            _server->send(400, "application/json",
+                "{\"ok\":false,\"msg\":\"Missing url field\"}");
+            return;
+        }
+        up += 7;  // skip "url":"
+        char url[256];
+        int i = 0;
+        while (up[i] && up[i] != '"' && i < 255) { url[i] = up[i]; i++; }
+        url[i] = '\0';
+
+        bool ok = ota_manager::updateFromUrl(url);
+        if (ok) {
+            _server->send(200, "application/json",
+                "{\"ok\":true,\"msg\":\"URL update complete\"}");
+        } else {
+            const auto& st = ota_manager::getStatus();
+            char buf[128];
+            snprintf(buf, sizeof(buf), "{\"ok\":false,\"msg\":\"%s\"}", st.error_msg);
+            _server->send(500, "application/json", buf);
+        }
     });
 
-    DBG_INFO("web", "OTA page added at /update and /ota");
+    // POST /api/ota/rollback
+    _server->on("/api/ota/rollback", HTTP_POST, [self]() {
+        self->_requestCount++;
+        bool ok = ota_manager::rollback();
+        if (ok) {
+            _server->send(200, "application/json",
+                "{\"ok\":true,\"msg\":\"Rollback set, reboot to apply\"}");
+        } else {
+            const auto& st = ota_manager::getStatus();
+            char buf[128];
+            snprintf(buf, sizeof(buf), "{\"ok\":false,\"msg\":\"%s\"}", st.error_msg);
+            _server->send(500, "application/json", buf);
+        }
+    });
+
+    // POST /api/ota/reboot
+    _server->on("/api/ota/reboot", HTTP_POST, [self]() {
+        self->_requestCount++;
+        _server->send(200, "application/json", "{\"ok\":true,\"msg\":\"Rebooting...\"}");
+        delay(500);
+        ota_manager::reboot();
+    });
+
+    // GET /api/ota/history
+    _server->on("/api/ota/history", HTTP_GET, [self]() {
+        self->_requestCount++;
+        ota_manager::OtaHistoryEntry entries[5];
+        int count = ota_manager::getHistory(entries, 5);
+        char* buf = api_buf();
+        int pos = snprintf(buf, API_BUF_SIZE, "[");
+        for (int i = 0; i < count; i++) {
+            if (i > 0) pos += snprintf(buf + pos, API_BUF_SIZE - pos, ",");
+            pos += snprintf(buf + pos, API_BUF_SIZE - pos,
+                "{\"version\":\"%s\",\"timestamp\":%u,\"success\":%s,\"source\":\"%s\"}",
+                entries[i].version, entries[i].timestamp,
+                entries[i].success ? "true" : "false", entries[i].source);
+        }
+        snprintf(buf + pos, API_BUF_SIZE - pos, "]");
+        _server->send(200, "application/json", buf);
+    });
+
+    DBG_INFO("web", "OTA page + API added (ota_manager)");
+#else
+    DBG_WARN("web", "OTA manager not available");
+#endif
 }
 
 // ── addConfigEditor() ───────────────────────────────────────────────────────

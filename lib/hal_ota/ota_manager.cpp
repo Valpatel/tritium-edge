@@ -198,9 +198,12 @@ bool updateFromUpload(const uint8_t* data, size_t len, bool final_chunk) {
         _uploadStarted = true;
     }
 
-    // Write chunk
-    mbedtls_md5_update(&_md5_ctx, data, len);
-    esp_err_t err = esp_ota_write(_ota_handle, data, len);
+    // Write chunk (skip if len=0, e.g. final-only call)
+    esp_err_t err = ESP_OK;
+    if (len > 0) {
+        mbedtls_md5_update(&_md5_ctx, data, len);
+        err = esp_ota_write(_ota_handle, data, len);
+    }
     if (err != ESP_OK) {
         char errbuf[64];
         snprintf(errbuf, sizeof(errbuf), "esp_ota_write failed: 0x%x", err);
