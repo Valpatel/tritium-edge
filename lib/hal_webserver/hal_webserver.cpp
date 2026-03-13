@@ -1305,10 +1305,17 @@ void WebServerHAL::addApiEndpoints() {
 #if OTA_MANAGER_AVAILABLE
         fwVer = ota_manager::getStatus().current_version;
 #endif
+        // Format temp as number or null if NaN (ESP32-S3 has no internal sensor)
+        char temp_str[16];
+        if (isnan(tempC)) {
+            strcpy(temp_str, "null");
+        } else {
+            snprintf(temp_str, sizeof(temp_str), "%.1f", tempC);
+        }
         snprintf(buf, API_BUF_SIZE,
             "{\"uptime_s\":%lu,\"free_heap\":%lu,\"psram_free\":%lu,"
             "\"rssi\":%d,\"ip\":\"%s\",\"requests\":%lu,"
-            "\"ssid\":\"%s\",\"temp_c\":%.1f,"
+            "\"ssid\":\"%s\",\"temp_c\":%s,"
             "\"fw_version\":\"%s\",\"cpu_freq\":%lu}",
             (unsigned long)(millis() / 1000),
             (unsigned long)ESP.getFreeHeap(),
@@ -1317,7 +1324,7 @@ void WebServerHAL::addApiEndpoints() {
             WiFi.localIP().toString().c_str(),
             (unsigned long)self->_requestCount,
             WiFi.SSID().c_str(),
-            tempC,
+            temp_str,
             fwVer,
             (unsigned long)ESP.getCpuFreqMHz());
         _server->send(200, "application/json", buf);
