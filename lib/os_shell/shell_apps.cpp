@@ -815,6 +815,13 @@ static void ss_warp_cb(lv_event_t* e) {
     shell_screensaver::reloadSettings();
 }
 
+static void ss_clock_cb(lv_event_t* e) {
+    lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
+    bool checked = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    TritiumSettings::instance().setBool(SettingsDomain::SCREENSAVER, "sf_clock", checked);
+    shell_screensaver::reloadSettings();
+}
+
 static void ss_starsize_cb(lv_event_t* e) {
     lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
     int val = lv_slider_get_value(slider);
@@ -937,6 +944,12 @@ static void settings_build_screensaver(lv_obj_t* cont) {
     bool sf_warp = cfg.getBool(SettingsDomain::SCREENSAVER, "sf_warp", false);
     lv_obj_t* warp_sw = tritium_theme::createSwitch(warp_row, sf_warp);
     lv_obj_add_event_cb(warp_sw, ss_warp_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    // Clock overlay
+    lv_obj_t* clock_row = ss_make_row(left, "Clock");
+    bool sf_clock = cfg.getBool(SettingsDomain::SCREENSAVER, "sf_clock", false);
+    lv_obj_t* clock_sw = tritium_theme::createSwitch(clock_row, sf_clock);
+    lv_obj_add_event_cb(clock_sw, ss_clock_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 
     // --- RIGHT COLUMN: Sliders ---
     lv_obj_t* right = ss_make_col(cols, 48);

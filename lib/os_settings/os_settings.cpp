@@ -123,6 +123,7 @@ const SettingsDefault FACTORY_DEFAULTS[] = {
     defInt("screensaver",  "sf_star_size",   2),
     defInt("screensaver",  "sf_direction",   3),  // DIR_RIGHT
     defBool("screensaver", "sf_warp",        false),
+    defBool("screensaver", "sf_clock",       false),
     defInt("screensaver",  "sf_speed",       12),
     defInt("screensaver",  "sf_brightness",  100),
 };

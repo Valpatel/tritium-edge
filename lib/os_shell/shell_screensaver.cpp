@@ -64,6 +64,7 @@ static int      s_cfg_star_size  = 2;       // 1=dot only, 2+=cross pattern for 
 static bool     s_cfg_warp       = false;   // periodic warp speed bursts
 static float    s_cfg_speed      = 0.012f;  // cruise travel speed (0.001..0.1)
 static float    s_cfg_brightness = 1.0f;    // overall brightness multiplier (0.1..1.0)
+static bool     s_cfg_clock      = false;   // show clock overlay
 
 // ---------------------------------------------------------------------------
 // State
@@ -132,6 +133,7 @@ static void load_settings() {
     if (s_cfg_star_size < 1) s_cfg_star_size = 1;
     if (s_cfg_star_size > 4) s_cfg_star_size = 4;
     s_cfg_warp      = settings.getBool(SettingsDomain::SCREENSAVER, "sf_warp", false);
+    s_cfg_clock     = settings.getBool(SettingsDomain::SCREENSAVER, "sf_clock", false);
 
     // Speed stored as int 1..100 (thousandths), map to 0.001..0.100
     int speed_raw = settings.getInt(SettingsDomain::SCREENSAVER, "sf_speed", 12);
@@ -507,7 +509,7 @@ static void render_direct() {
     }
 
     // Clock overlay on top of stars
-    render_clock();
+    if (s_cfg_clock) render_clock();
 }
 
 // ---------------------------------------------------------------------------
