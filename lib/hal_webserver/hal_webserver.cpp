@@ -73,6 +73,13 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #endif
 #include "service_registry.h"
 
+#if __has_include("os_shell.h")
+#include "os_shell.h"
+#define HAS_SHELL 1
+#else
+#define HAS_SHELL 0
+#endif
+
 // Shared API response buffer — allocated in PSRAM on first use.
 // Safe because WebServer is single-threaded (one request at a time).
 static const size_t API_BUF_SIZE = 8192;
@@ -1359,6 +1366,63 @@ void WebServerHAL::addApiEndpoints() {
         _server->send(200, "application/json", buf);
     });
 
+    // GET /api/shell/apps — list registered shell apps
+    _server->on("/api/shell/apps", HTTP_GET, [self]() {
+        self->_requestCount++;
+        char* buf = api_buf();
+#if HAS_SHELL
+        int count = tritium_shell::getAppCount();
+        int active = tritium_shell::getActiveApp();
+        int pos = snprintf(buf, API_BUF_SIZE,
+            "{\"count\":%d,\"active\":%d,\"apps\":[", count, active);
+        for (int i = 0; i < count && pos < (int)API_BUF_SIZE - 128; i++) {
+            const auto* app = tritium_shell::getApp(i);
+            if (!app) continue;
+            if (i > 0) buf[pos++] = ',';
+            pos += snprintf(buf + pos, API_BUF_SIZE - pos,
+                "{\"index\":%d,\"name\":\"%s\",\"description\":\"%s\",\"system\":%s}",
+                i,
+                app->name ? app->name : "",
+                app->description ? app->description : "",
+                app->is_system ? "true" : "false");
+        }
+        snprintf(buf + pos, API_BUF_SIZE - pos, "]}");
+#else
+        snprintf(buf, API_BUF_SIZE, "{\"count\":0,\"active\":-1,\"apps\":[]}");
+#endif
+        _server->send(200, "application/json", buf);
+    });
+
+    // POST /api/shell/launch — launch an app by index
+    _server->on("/api/shell/launch", HTTP_POST, [self]() {
+        self->_requestCount++;
+#if HAS_SHELL
+        String body = _server->arg("plain");
+        const char* s = body.c_str();
+        int idx = json_int(s, "index", -1);
+        int count = tritium_shell::getAppCount();
+        if (idx < 0 || idx >= count) {
+            _server->send(400, "application/json", "{\"error\":\"invalid index\"}");
+            return;
+        }
+        tritium_shell::showApp(idx);
+        _server->send(200, "application/json", "{\"ok\":true}");
+#else
+        _server->send(501, "application/json", "{\"error\":\"no shell\"}");
+#endif
+    });
+
+    // POST /api/shell/home — return to launcher
+    _server->on("/api/shell/home", HTTP_POST, [self]() {
+        self->_requestCount++;
+#if HAS_SHELL
+        tritium_shell::showLauncher();
+        _server->send(200, "application/json", "{\"ok\":true}");
+#else
+        _server->send(501, "application/json", "{\"error\":\"no shell\"}");
+#endif
+    });
+
     // POST /api/reboot
     _server->on("/api/reboot", HTTP_POST, [self]() {
         self->_requestCount++;
@@ -1652,7 +1716,8 @@ void WebServerHAL::addApiEndpoints() {
     // POST /api/remote/touch — inject touch event
     _server->on("/api/remote/touch", HTTP_POST, [self]() {
         self->_requestCount++;
-        const char* s = _server->arg("plain").c_str();
+        String _body = _server->arg("plain");
+        const char* s = _body.c_str();
         int x = json_int(s, "x");
         int y = json_int(s, "y");
         bool pressed = (strstr(s, "\"pressed\"") && strstr(s, "true"));
@@ -1669,7 +1734,8 @@ void WebServerHAL::addApiEndpoints() {
     // POST /api/remote/tap — inject press + release
     _server->on("/api/remote/tap", HTTP_POST, [self]() {
         self->_requestCount++;
-        const char* s = _server->arg("plain").c_str();
+        String _body = _server->arg("plain");
+        const char* s = _body.c_str();
         int x = json_int(s, "x");
         int y = json_int(s, "y");
         int w = lvgl_driver::getWidth();
@@ -1679,6 +1745,60 @@ void WebServerHAL::addApiEndpoints() {
 
         touch_input::inject((uint16_t)x, (uint16_t)y, true);
         _server->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // POST /api/remote/swipe — inject a swipe gesture (series of touch points)
+    _server->on("/api/remote/swipe", HTTP_POST, [self]() {
+        self->_requestCount++;
+        String _body = _server->arg("plain");
+        const char* s = _body.c_str();
+        int x1 = json_int(s, "x1");
+        int y1 = json_int(s, "y1");
+        int x2 = json_int(s, "x2");
+        int y2 = json_int(s, "y2");
+        int steps = json_int(s, "steps", 10);
+        int delay_ms = json_int(s, "delay_ms", 15);
+        int w = lvgl_driver::getWidth();
+        int h = lvgl_driver::getHeight();
+        if (x1 < 0) x1 = 0; if (x1 >= w) x1 = w - 1;
+        if (y1 < 0) y1 = 0; if (y1 >= h) y1 = h - 1;
+        if (x2 < 0) x2 = 0; if (x2 >= w) x2 = w - 1;
+        if (y2 < 0) y2 = 0; if (y2 >= h) y2 = h - 1;
+        if (steps < 2) steps = 2;
+        if (steps > 50) steps = 50;
+        if (delay_ms < 5) delay_ms = 5;
+        if (delay_ms > 100) delay_ms = 100;
+
+        for (int i = 0; i <= steps; i++) {
+            float t = (float)i / (float)steps;
+            int px = x1 + (int)((x2 - x1) * t);
+            int py = y1 + (int)((y2 - y1) * t);
+            touch_input::inject((uint16_t)px, (uint16_t)py, true);
+            delay(delay_ms);
+        }
+        touch_input::injectRelease();
+        _server->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // GET /api/debug/touch — touch input debug info
+    _server->on("/api/debug/touch", HTTP_GET, [self]() {
+        self->_requestCount++;
+        auto di = touch_input::getDebugInfo();
+        char buf[320];
+        snprintf(buf, sizeof(buf),
+            "{\"read_cb_calls\":%lu,\"hw_touch_count\":%lu,"
+            "\"inject_count\":%lu,\"last_x\":%d,\"last_y\":%d,"
+            "\"last_touch_ms\":%lu,\"hw_available\":%s,"
+            "\"currently_pressed\":%s,\"last_activity_ms\":%lu}",
+            (unsigned long)di.read_cb_calls,
+            (unsigned long)di.hw_touch_count,
+            (unsigned long)di.inject_count,
+            (int)di.last_raw_x, (int)di.last_raw_y,
+            (unsigned long)di.last_touch_ms,
+            di.hw_available ? "true" : "false",
+            di.currently_pressed ? "true" : "false",
+            (unsigned long)touch_input::lastActivityMs());
+        _server->send(200, "application/json", buf);
     });
 #endif
 
