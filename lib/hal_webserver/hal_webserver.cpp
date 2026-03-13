@@ -71,9 +71,20 @@ static char* _apiBuf = nullptr;
 static char* api_buf() {
     if (!_apiBuf) {
         _apiBuf = (char*)heap_caps_malloc(API_BUF_SIZE, MALLOC_CAP_SPIRAM);
-        if (!_apiBuf) _apiBuf = (char*)malloc(API_BUF_SIZE);  // fallback
+        if (!_apiBuf) _apiBuf = (char*)malloc(API_BUF_SIZE);
+        if (!_apiBuf) {
+            DBG_ERROR("web", "Failed to allocate API buffer");
+            return nullptr;
+        }
     }
     return _apiBuf;
+}
+
+// Validate SD card path — reject path traversal attempts
+static bool sd_path_is_safe(const char* path) {
+    if (!path || path[0] == '\0') return false;
+    if (strstr(path, "..")) return false;
+    return true;
 }
 
 // Persistent diagnostic log — optional
@@ -1036,6 +1047,11 @@ void WebServerHAL::addFileManager() {
                     uploadFile.close();
                     DBG_INFO("web", "File uploaded: %u bytes", upload.totalSize);
                 }
+            } else if (upload.status == UPLOAD_FILE_ABORTED) {
+                if (uploadFile) {
+                    uploadFile.close();
+                    DBG_WARN("web", "File upload aborted");
+                }
             }
         }
     );
@@ -1613,6 +1629,11 @@ void WebServerHAL::addApiEndpoints() {
         if (_server->hasArg("path")) {
             String p = _server->arg("path");
             if (p.length() > 0 && p != "/") {
+                if (!sd_path_is_safe(p.c_str())) {
+                    _server->send(400, "application/json",
+                        "{\"error\":\"Invalid path\"}");
+                    return;
+                }
                 dirPath += p;
             }
         }
@@ -1693,6 +1714,11 @@ void WebServerHAL::addApiEndpoints() {
             return;
         }
         String relPath = _server->arg("path");
+        if (!sd_path_is_safe(relPath.c_str())) {
+            _server->send(400, "application/json",
+                "{\"error\":\"Invalid path\"}");
+            return;
+        }
         char fullPath[256];
         snprintf(fullPath, sizeof(fullPath), "/sdcard%s", relPath.c_str());
 
@@ -1750,6 +1776,12 @@ void WebServerHAL::addApiEndpoints() {
         while (pp[i] && pp[i] != '"' && i < 255) { path[i] = pp[i]; i++; }
         path[i] = '\0';
 
+        if (!sd_path_is_safe(path)) {
+            _server->send(400, "application/json",
+                "{\"ok\":false,\"error\":\"Invalid path\"}");
+            return;
+        }
+
         char fullPath[280];
         snprintf(fullPath, sizeof(fullPath), "/sdcard%s", path);
 
@@ -1779,6 +1811,12 @@ void WebServerHAL::addApiEndpoints() {
         while (pp[i] && pp[i] != '"' && i < 255) { path[i] = pp[i]; i++; }
         path[i] = '\0';
 
+        if (!sd_path_is_safe(path)) {
+            _server->send(400, "application/json",
+                "{\"ok\":false,\"error\":\"Invalid path\"}");
+            return;
+        }
+
         char fullPath[280];
         snprintf(fullPath, sizeof(fullPath), "/sdcard%s", path);
 
@@ -1806,7 +1844,12 @@ void WebServerHAL::addApiEndpoints() {
                 // Build full path: /sdcard/<dirpath>/<filename>
                 String dirPath = "/sdcard";
                 if (_server->hasArg("path")) {
-                    dirPath += _server->arg("path");
+                    String p = _server->arg("path");
+                    if (!sd_path_is_safe(p.c_str())) {
+                        DBG_WARN("web", "SD upload: rejected unsafe path");
+                        return;
+                    }
+                    dirPath += p;
                 }
                 // Ensure directory exists
                 struct stat st;
@@ -1827,6 +1870,12 @@ void WebServerHAL::addApiEndpoints() {
                     sdFile = nullptr;
                     DBG_INFO("web", "SD upload complete: %u bytes",
                              upload.totalSize);
+                }
+            } else if (upload.status == UPLOAD_FILE_ABORTED) {
+                if (sdFile) {
+                    fclose(sdFile);
+                    sdFile = nullptr;
+                    DBG_WARN("web", "SD upload aborted");
                 }
             }
         }

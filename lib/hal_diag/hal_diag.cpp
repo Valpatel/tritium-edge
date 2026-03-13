@@ -730,6 +730,8 @@ bool init(const DiagConfig& cfg) {
 
         if (!_events || !_snapshots) {
             DBG_ERROR("diag", "Memory allocation failed");
+            if (_events) { free(_events); _events = nullptr; }
+            if (_snapshots) { free(_snapshots); _snapshots = nullptr; }
             return false;
         }
     }
