@@ -502,6 +502,16 @@ def run_all_tests(host: str, serial_port: str) -> list[TestResult]:
         serial_mon.stop()
         return [TestResult("connectivity", False, details=f"Cannot reach {host}")]
 
+    # Disable screensaver during testing to prevent it from interfering
+    if api.disable_screensaver():
+        print("  Screensaver disabled for testing.")
+    else:
+        print("  Warning: could not disable screensaver.")
+
+    # Return to launcher as starting state
+    api.home()
+    time.sleep(0.5)
+
     print(f"  Device online. Starting tests...\n")
 
     tests = [
@@ -544,6 +554,9 @@ def run_all_tests(host: str, serial_port: str) -> list[TestResult]:
         print()
 
     serial_mon.stop()
+
+    # Re-enable screensaver
+    api.enable_screensaver()
 
     passed = sum(1 for r in results if r.passed)
     total = len(results)
