@@ -58,7 +58,7 @@ static constexpr uint32_t WARP_DURATION_MS   = 3000;
 // Runtime settings (loaded from NVS)
 // ---------------------------------------------------------------------------
 
-static bool     s_cfg_reverse    = false;   // travel direction: false=forward, true=backward
+static StarDirection s_cfg_direction = DIR_RIGHT;  // movement direction
 static bool     s_cfg_colors     = true;    // colored star tints
 static int      s_cfg_star_size  = 2;       // 1=dot only, 2+=cross pattern for bright stars
 static bool     s_cfg_warp       = false;   // periodic warp speed bursts
@@ -83,6 +83,7 @@ static uint32_t s_last_render_ms = 0;
 
 static uint32_t s_warp_timer = 0;
 static bool     s_warp_mode = false;
+static uint32_t s_frame = 0;
 
 // Direct framebuffer access (RGB panels only)
 static bool      s_rgb_mode = false;
@@ -123,7 +124,9 @@ static void load_settings() {
     }
     s_timeout_ms = timeout * 1000;
 
-    s_cfg_reverse   = settings.getBool(SettingsDomain::SCREENSAVER, "sf_reverse", false);
+    int dir_raw = settings.getInt(SettingsDomain::SCREENSAVER, "sf_direction", (int)DIR_RIGHT);
+    if (dir_raw < 0 || dir_raw >= DIR_COUNT) dir_raw = (int)DIR_RIGHT;
+    s_cfg_direction = (StarDirection)dir_raw;
     s_cfg_colors    = settings.getBool(SettingsDomain::SCREENSAVER, "sf_colors", true);
     s_cfg_star_size = settings.getInt(SettingsDomain::SCREENSAVER, "sf_star_size", 2);
     if (s_cfg_star_size < 1) s_cfg_star_size = 1;
@@ -169,17 +172,19 @@ void init(int screen_width, int screen_height) {
 
     load_settings();
 
-    printf("[screensaver] init %dx%d, %s mode, timeout=%lus, speed=%.3f, reverse=%d, warp=%d, size=%d\n",
+    static const char* dir_names[] = {"out","in","left","right","up","down"};
+    printf("[screensaver] init %dx%d, %s mode, timeout=%lus, speed=%.3f, dir=%s, warp=%d, size=%d\n",
            s_screen_w, s_screen_h,
            s_rgb_mode ? "direct-FB" : "canvas",
            (unsigned long)(s_timeout_ms / 1000),
-           s_cfg_speed, s_cfg_reverse, s_cfg_warp, s_cfg_star_size);
+           s_cfg_speed, dir_names[s_cfg_direction], s_cfg_warp, s_cfg_star_size);
 }
 
 void reloadSettings() {
     load_settings();
-    printf("[screensaver] settings reloaded: speed=%.3f, reverse=%d, warp=%d, size=%d, colors=%d\n",
-           s_cfg_speed, s_cfg_reverse, s_cfg_warp, s_cfg_star_size, s_cfg_colors);
+    static const char* dir_names[] = {"out","in","left","right","up","down"};
+    printf("[screensaver] settings reloaded: speed=%.3f, dir=%s, warp=%d, size=%d, colors=%d\n",
+           s_cfg_speed, dir_names[s_cfg_direction], s_cfg_warp, s_cfg_star_size, s_cfg_colors);
 }
 
 void tick() {
@@ -445,10 +450,8 @@ static void render_direct() {
         }
     }
 
-    // Apply direction (negative speed = backward/receding stars)
-    if (s_cfg_reverse) speed = -speed;
-
-    s_starfield->update(speed);
+    s_starfield->update(speed, s_cfg_direction);
+    s_frame++;
 
     // Erase previous star positions using their actual drawn size
     for (int i = 0; i < s_prev_count; i++) {
@@ -483,14 +486,18 @@ static void render_direct() {
         s_prev_pos[i].y = (int16_t)sy;
         s_prev_pos[i].drawn_size = (uint8_t)effective_size;
 
-        uint8_t gray = (uint8_t)(brightness * s_cfg_brightness * 255.0f);
+        // Twinkle: subtle per-star brightness variation using cheap hash
+        uint32_t twinkle_seed = (uint32_t)i * 2654435761u + s_frame * 17;
+        float twinkle = 0.85f + 0.15f * ((float)(twinkle_seed & 0xFF) / 255.0f);
+
+        uint8_t gray = (uint8_t)(brightness * s_cfg_brightness * twinkle * 255.0f);
         uint8_t r = gray, g = gray, b = gray;
 
         if (s_cfg_colors) {
             switch (stars[i].tint) {
-                case TINT_BLUE:   r = gray / 3; g = gray / 2; break;
-                case TINT_YELLOW: b = gray / 3; break;
-                case TINT_RED:    g = gray / 4; b = gray / 4; break;
+                case TINT_BLUE:   r = gray / 4; g = (uint8_t)(gray * 0.6f); break;
+                case TINT_YELLOW: r = gray; g = (uint8_t)(gray * 0.9f); b = gray / 4; break;
+                case TINT_RED:    g = gray / 5; b = gray / 5; break;
                 default: break;
             }
         }

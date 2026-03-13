@@ -794,10 +794,10 @@ static void settings_build_power(lv_obj_t* cont) {
 // Settings Tab: SCREENSAVER
 // ---------------------------------------------------------------------------
 
-static void ss_reverse_cb(lv_event_t* e) {
-    lv_obj_t* sw = (lv_obj_t*)lv_event_get_target(e);
-    bool checked = lv_obj_has_state(sw, LV_STATE_CHECKED);
-    TritiumSettings::instance().setBool(SettingsDomain::SCREENSAVER, "sf_reverse", checked);
+static void ss_direction_cb(lv_event_t* e) {
+    lv_obj_t* dd = (lv_obj_t*)lv_event_get_target(e);
+    int sel = lv_dropdown_get_selected(dd);
+    TritiumSettings::instance().setInt(SettingsDomain::SCREENSAVER, "sf_direction", sel);
     shell_screensaver::reloadSettings();
 }
 
@@ -912,11 +912,19 @@ static void settings_build_screensaver(lv_obj_t* cont) {
     lv_obj_set_width(timeout_slider, lv_pct(100));
     lv_obj_add_event_cb(timeout_slider, ss_timeout_cb, LV_EVENT_VALUE_CHANGED, timeout_val);
 
-    // Reverse direction
-    lv_obj_t* rev_row = ss_make_row(left, "Reverse");
-    bool sf_reverse = cfg.getBool(SettingsDomain::SCREENSAVER, "sf_reverse", false);
-    lv_obj_t* rev_sw = tritium_theme::createSwitch(rev_row, sf_reverse);
-    lv_obj_add_event_cb(rev_sw, ss_reverse_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+    // Direction
+    lv_obj_t* dir_row = ss_make_row(left, "Direction");
+    (void)dir_row;
+    int sf_dir = cfg.getInt(SettingsDomain::SCREENSAVER, "sf_direction", 3); // default RIGHT
+    lv_obj_t* dir_dd = lv_dropdown_create(left);
+    lv_dropdown_set_options(dir_dd, "Outward\nInward\nLeft\nRight\nUp\nDown");
+    lv_dropdown_set_selected(dir_dd, sf_dir);
+    lv_obj_set_width(dir_dd, lv_pct(100));
+    lv_obj_set_style_bg_color(dir_dd, T_SURFACE3, 0);
+    lv_obj_set_style_text_color(dir_dd, T_TEXT, 0);
+    lv_obj_set_style_border_color(dir_dd, T_CYAN, 0);
+    lv_obj_set_style_border_opa(dir_dd, LV_OPA_20, 0);
+    lv_obj_add_event_cb(dir_dd, ss_direction_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 
     // Colored stars
     lv_obj_t* col_row = ss_make_row(left, "Colors");

@@ -121,6 +121,7 @@ const SettingsDefault FACTORY_DEFAULTS[] = {
     defBool("screensaver", "sf_reverse",     false),
     defBool("screensaver", "sf_colors",      true),
     defInt("screensaver",  "sf_star_size",   2),
+    defInt("screensaver",  "sf_direction",   3),  // DIR_RIGHT
     defBool("screensaver", "sf_warp",        false),
     defInt("screensaver",  "sf_speed",       12),
     defInt("screensaver",  "sf_brightness",  100),
