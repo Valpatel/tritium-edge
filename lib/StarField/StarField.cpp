@@ -39,14 +39,7 @@ StarField::~StarField() {
     delete[] _stars;
 }
 
-void StarField::spawnStar(Star& s, bool full_depth) {
-    // Spread stars across a wide 3D volume so perspective projection fills screen
-    // x,y range: [-spread, +spread] where spread scales with aspect ratio
-    float spread = 1.5f;
-    s.x = randf_range(-spread, spread);
-    s.y = randf_range(-spread, spread);
-    s.z = full_depth ? randf_range(MIN_Z + 0.5f, MAX_Z) : randf_range(MAX_Z * 0.6f, MAX_Z);
-
+static void assignTint(Star& s) {
     float r = randf();
     if (r < 0.75f)      s.tint = TINT_WHITE;
     else if (r < 0.85f) s.tint = TINT_BLUE;
@@ -54,38 +47,53 @@ void StarField::spawnStar(Star& s, bool full_depth) {
     else                 s.tint = TINT_RED;
 }
 
+void StarField::spawnStar(Star& s, bool full_depth) {
+    // Pick z depth first
+    s.z = full_depth ? randf_range(MIN_Z + 0.3f, MAX_Z) : randf_range(MAX_Z * 0.6f, MAX_Z);
+
+    // Pick a random SCREEN position, then back-project to 3D at that z.
+    // This ensures uniform screen distribution regardless of depth.
+    // Use slight overshoot (margin) so stars at edges look natural.
+    float margin = 0.05f;
+    float sx = randf_range(-margin, 1.0f + margin) * _w;
+    float sy = randf_range(-margin, 1.0f + margin) * _h;
+    s.x = (sx - _cx) * s.z / _focal;
+    s.y = (sy - _cy) * s.z / _focal;
+
+    assignTint(s);
+}
+
 void StarField::spawnAtEdge(Star& s, StarDirection dir) {
-    float spread = 1.5f;
-    s.z = randf_range(0.5f, MAX_Z);
+    s.z = randf_range(0.3f, MAX_Z);
+    assignTint(s);
 
-    float r = randf();
-    if (r < 0.75f)      s.tint = TINT_WHITE;
-    else if (r < 0.85f) s.tint = TINT_BLUE;
-    else if (r < 0.95f) s.tint = TINT_YELLOW;
-    else                 s.tint = TINT_RED;
-
+    // Pick screen edge position, then back-project to 3D
+    float sx, sy;
+    float margin = 4.0f;  // pixels past the edge
     switch (dir) {
         case DIR_LEFT:
-            s.x = spread;
-            s.y = randf_range(-spread, spread);
+            sx = (float)_w + margin;
+            sy = randf() * _h;
             break;
         case DIR_RIGHT:
-            s.x = -spread;
-            s.y = randf_range(-spread, spread);
+            sx = -margin;
+            sy = randf() * _h;
             break;
         case DIR_UP:
-            s.y = spread;
-            s.x = randf_range(-spread, spread);
+            sy = (float)_h + margin;
+            sx = randf() * _w;
             break;
         case DIR_DOWN:
-            s.y = -spread;
-            s.x = randf_range(-spread, spread);
+            sy = -margin;
+            sx = randf() * _w;
             break;
         default:
-            s.x = randf_range(-spread, spread);
-            s.y = randf_range(-spread, spread);
+            sx = randf() * _w;
+            sy = randf() * _h;
             break;
     }
+    s.x = (sx - _cx) * s.z / _focal;
+    s.y = (sy - _cy) * s.z / _focal;
 }
 
 void StarField::update(float speed, StarDirection dir) {
@@ -108,6 +116,11 @@ void StarField::update(float speed, StarDirection dir) {
                     // Respawn close to viewer
                     spawnStar(s, false);
                     s.z = randf_range(MIN_Z + 0.1f, MIN_Z + 1.0f);
+                    // Back-project x,y to new z
+                    float sx = randf() * _w;
+                    float sy = randf() * _h;
+                    s.x = (sx - _cx) * s.z / _focal;
+                    s.y = (sy - _cy) * s.z / _focal;
                 }
                 break;
 
@@ -122,10 +135,10 @@ void StarField::update(float speed, StarDirection dir) {
                 else if (dir == DIR_DOWN) s.y -= parallax;
                 else if (dir == DIR_UP) s.y += parallax;
 
-                // Check if projected position is off-screen — if so, respawn at opposite edge
-                int sx, sy;
+                // Check if projected position is off-screen — respawn at opposite edge
+                int px, py;
                 float br;
-                if (!project(s, sx, sy, br)) {
+                if (!project(s, px, py, br)) {
                     spawnAtEdge(s, dir);
                 }
                 break;
