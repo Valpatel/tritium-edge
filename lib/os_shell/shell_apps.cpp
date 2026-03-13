@@ -946,6 +946,8 @@ static void settings_build_screensaver(lv_obj_t* cont) {
     // Star size
     lv_obj_t* size_row = ss_make_row(right, "Size");
     int sf_size = cfg.getInt(SettingsDomain::SCREENSAVER, "sf_star_size", 2);
+    if (sf_size < 1) sf_size = 1;
+    if (sf_size > 4) sf_size = 4;
     char size_str[8];
     snprintf(size_str, sizeof(size_str), "%dpx", sf_size);
     lv_obj_t* size_val = tritium_theme::createLabel(size_row, size_str, true);
