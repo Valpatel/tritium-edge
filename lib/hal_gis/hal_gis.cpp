@@ -908,9 +908,9 @@ uint8_t* GisHAL::getTile(const char* layer, uint8_t z, uint32_t x, uint32_t y,
     if (!data) {
         // Try .jpg fallback
         size_t pathLen = strlen(path);
-        if (pathLen > 4) {
+        if (pathLen > 4 && pathLen < sizeof(path) - 1) {
             path[pathLen - 4] = '\0';
-            strcat(path, ".jpg");
+            strncat(path, ".jpg", sizeof(path) - strlen(path) - 1);
             data = readTileFromSD(path, outLen);
         }
     }

@@ -131,6 +131,11 @@ static bool _cot_enabled = true;
 static bool _cot_enabled = false;
 #endif
 
+// Debug log SD flushing
+#if __has_include("debug_log.h")
+#include "debug_log.h"
+#endif
+
 // Acoustic modem over audio codec (speaker/mic FSK)
 #if defined(HAS_AUDIO_CODEC) && HAS_AUDIO_CODEC && __has_include("hal_acoustic_modem.h")
 #include "hal_audio.h"
@@ -930,6 +935,8 @@ static void services_tick() {
 #if defined(ENABLE_COT)
     hal_cot::tick();
 #endif
+    // Periodically flush debug logs to SD card
+    DebugLog::flushSDLog();
 }
 
 void setup() {
