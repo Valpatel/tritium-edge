@@ -1193,16 +1193,27 @@ void WebServerHAL::addApiEndpoints() {
     // GET /api/status
     _server->on("/api/status", HTTP_GET, [self]() {
         self->_requestCount++;
-        char buf[384];
-        snprintf(buf, sizeof(buf),
+        float tempC = temperatureRead();  // Internal ESP32 temp sensor
+        char* buf = api_buf();
+        const char* fwVer = "unknown";
+#if OTA_MANAGER_AVAILABLE
+        fwVer = ota_manager::getStatus().current_version;
+#endif
+        snprintf(buf, API_BUF_SIZE,
             "{\"uptime_s\":%lu,\"free_heap\":%lu,\"psram_free\":%lu,"
-            "\"rssi\":%d,\"ip\":\"%s\",\"requests\":%lu}",
+            "\"rssi\":%d,\"ip\":\"%s\",\"requests\":%lu,"
+            "\"ssid\":\"%s\",\"temp_c\":%.1f,"
+            "\"fw_version\":\"%s\",\"cpu_freq\":%lu}",
             (unsigned long)(millis() / 1000),
             (unsigned long)ESP.getFreeHeap(),
             (unsigned long)ESP.getFreePsram(),
             WiFi.RSSI(),
             WiFi.localIP().toString().c_str(),
-            (unsigned long)self->_requestCount);
+            (unsigned long)self->_requestCount,
+            WiFi.SSID().c_str(),
+            tempC,
+            fwVer,
+            (unsigned long)ESP.getCpuFreqMHz());
         _server->send(200, "application/json", buf);
     });
 
