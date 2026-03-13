@@ -37,6 +37,7 @@ static uint32_t millis() { return SDL_GetTicks(); }
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 
 namespace shell_screensaver {
 
@@ -415,6 +416,8 @@ static inline void draw_star(int sx, int sy, int stride, uint16_t color, int siz
     }
 }
 
+static void render_clock();  // forward declaration
+
 static void render_direct() {
     if (!s_starfield || !s_fb0) return;
 
@@ -494,6 +497,88 @@ static void render_direct() {
 
         uint16_t color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
         draw_star(sx, sy, stride, color, effective_size);
+    }
+
+    // Clock overlay on top of stars
+    render_clock();
+}
+
+// ---------------------------------------------------------------------------
+// Clock overlay (5x7 bitmap font, digits + colon only)
+// ---------------------------------------------------------------------------
+
+static const uint8_t s_clock_font[][5] = {
+    {0x3E,0x51,0x49,0x45,0x3E}, // 0
+    {0x00,0x42,0x7F,0x40,0x00}, // 1
+    {0x42,0x61,0x51,0x49,0x46}, // 2
+    {0x21,0x41,0x45,0x4B,0x31}, // 3
+    {0x18,0x14,0x12,0x7F,0x10}, // 4
+    {0x27,0x45,0x45,0x45,0x39}, // 5
+    {0x3C,0x4A,0x49,0x49,0x30}, // 6
+    {0x01,0x71,0x09,0x05,0x03}, // 7
+    {0x36,0x49,0x49,0x49,0x36}, // 8
+    {0x06,0x49,0x49,0x29,0x1E}, // 9
+    {0x00,0x36,0x36,0x00,0x00}, // : (index 10)
+};
+
+// Erase + draw one character into both framebuffers
+static void clock_char(int x, int y, int idx, uint16_t color, int scale) {
+    if (idx < 0 || idx > 10) return;
+    int stride = s_screen_w;
+    const uint8_t* glyph = s_clock_font[idx];
+    for (int col = 0; col < 5; col++) {
+        uint8_t bits = glyph[col];
+        for (int row = 0; row < 7; row++) {
+            uint16_t c = (bits & (1 << row)) ? color : 0;
+            for (int sy = 0; sy < scale; sy++) {
+                for (int sx = 0; sx < scale; sx++) {
+                    int px = x + col * scale + sx;
+                    int py = y + row * scale + sy;
+                    write_pixel(s_fb0, stride, px, py, c);
+                    if (s_fb1) write_pixel(s_fb1, stride, px, py, c);
+                }
+            }
+        }
+    }
+}
+
+static void render_clock() {
+    if (!s_fb0) return;
+
+    int h, m, sec;
+    struct tm timeinfo;
+    time_t now = time(nullptr);
+    if (localtime_r(&now, &timeinfo) && timeinfo.tm_year > 100) {
+        h = timeinfo.tm_hour;
+        m = timeinfo.tm_min;
+        sec = timeinfo.tm_sec;
+    } else {
+        // Fallback: show uptime
+        uint32_t up = millis() / 1000;
+        h = (int)((up / 3600) % 24);
+        m = (int)((up / 60) % 60);
+        sec = (int)(up % 60);
+    }
+
+    int digits[5] = { h / 10, h % 10, 10, m / 10, m % 10 };  // 10 = colon
+
+    // Render at bottom-right
+    int scale = (s_screen_w >= 600) ? 3 : 2;
+    int char_w = 5 * scale + scale;  // char width + 1-char gap
+    int total_w = 5 * char_w - scale;
+    int x = s_screen_w - total_w - 16;
+    int y = s_screen_h - 7 * scale - 14;
+
+    // Soft cyan glow: R=0, G=160, B=200
+    uint16_t color = ((0 >> 3) << 11) | ((160 >> 2) << 5) | (200 >> 3);
+
+    // Blink colon every second
+    bool colon_on = (sec % 2 == 0);
+
+    for (int i = 0; i < 5; i++) {
+        int d = digits[i];
+        uint16_t c = (d == 10 && !colon_on) ? 0 : color;
+        clock_char(x + i * char_w, y, d, c, scale);
     }
 }
 
