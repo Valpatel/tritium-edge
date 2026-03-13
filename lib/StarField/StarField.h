@@ -10,21 +10,20 @@ enum StarTint : uint8_t {
 };
 
 enum StarDirection : uint8_t {
-    DIR_OUT   = 0,  // radial outward from center
-    DIR_IN    = 1,  // radial inward toward center
-    DIR_LEFT  = 2,
-    DIR_RIGHT = 3,
-    DIR_UP    = 4,
-    DIR_DOWN  = 5,
+    DIR_FORWARD = 0,  // classic warp — stars fly toward viewer
+    DIR_REVERSE = 1,  // stars recede into distance
+    DIR_LEFT    = 2,
+    DIR_RIGHT   = 3,
+    DIR_UP      = 4,
+    DIR_DOWN    = 5,
     DIR_COUNT
 };
 
 struct Star {
-    float x;        // screen-space position [0, 1]
-    float y;        // screen-space position [0, 1]
-    float z;        // depth [0.1 = close, 1.0 = far]
-    float prev_z;   // previous z for trail effect
-    StarTint tint;   // color variation
+    float x;        // 3D position — spread across [-1, 1]
+    float y;        // 3D position — spread across [-1, 1]
+    float z;        // depth [0.01 = closest, MAX_Z = farthest]
+    StarTint tint;
 };
 
 class StarField {
@@ -32,23 +31,26 @@ public:
     StarField(int screen_width, int screen_height, int num_stars = 0);
     ~StarField();
 
-    // Advance simulation one frame with given speed and direction.
-    void update(float speed = 0.015f, StarDirection dir = DIR_RIGHT);
+    void update(float speed = 0.015f, StarDirection dir = DIR_FORWARD);
 
-    // Get star data for rendering
     int getStarCount() const { return _num_stars; }
     const Star* getStars() const { return _stars; }
 
-    // Project a star to screen coordinates. Returns false if off-screen.
+    // Project star to screen coords via perspective. Returns false if off-screen.
     bool project(const Star& s, int& sx, int& sy, float& brightness) const;
 
     int width() const { return _w; }
     int height() const { return _h; }
 
+    static constexpr float MAX_Z = 8.0f;
+    static constexpr float MIN_Z = 0.01f;
+
 private:
-    void resetStar(Star& s, bool randomize_z = false);
+    void spawnStar(Star& s, bool full_depth);
+    void spawnAtEdge(Star& s, StarDirection dir);
     Star* _stars;
     int _num_stars;
     int _w, _h;
-    float _cx, _cy; // screen center
+    float _cx, _cy;
+    float _focal;  // perspective focal length
 };

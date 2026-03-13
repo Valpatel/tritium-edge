@@ -922,9 +922,9 @@ static void settings_build_screensaver(lv_obj_t* cont) {
     // Direction
     lv_obj_t* dir_row = ss_make_row(left, "Direction");
     (void)dir_row;
-    int sf_dir = cfg.getInt(SettingsDomain::SCREENSAVER, "sf_direction", 3); // default RIGHT
+    int sf_dir = cfg.getInt(SettingsDomain::SCREENSAVER, "sf_direction", 0); // default FORWARD
     lv_obj_t* dir_dd = lv_dropdown_create(left);
-    lv_dropdown_set_options(dir_dd, "Outward\nInward\nLeft\nRight\nUp\nDown");
+    lv_dropdown_set_options(dir_dd, "Forward\nReverse\nLeft\nRight\nUp\nDown");
     lv_dropdown_set_selected(dir_dd, sf_dir);
     lv_obj_set_width(dir_dd, lv_pct(100));
     lv_obj_set_style_bg_color(dir_dd, T_SURFACE3, 0);

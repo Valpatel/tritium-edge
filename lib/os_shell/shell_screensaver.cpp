@@ -58,7 +58,7 @@ static constexpr uint32_t WARP_DURATION_MS   = 3000;
 // Runtime settings (loaded from NVS)
 // ---------------------------------------------------------------------------
 
-static StarDirection s_cfg_direction = DIR_RIGHT;  // movement direction
+static StarDirection s_cfg_direction = DIR_FORWARD;  // movement direction
 static bool     s_cfg_colors     = true;    // colored star tints
 static int      s_cfg_star_size  = 2;       // 1=dot only, 2+=cross pattern for bright stars
 static bool     s_cfg_warp       = false;   // periodic warp speed bursts
@@ -125,8 +125,8 @@ static void load_settings() {
     }
     s_timeout_ms = timeout * 1000;
 
-    int dir_raw = settings.getInt(SettingsDomain::SCREENSAVER, "sf_direction", (int)DIR_RIGHT);
-    if (dir_raw < 0 || dir_raw >= DIR_COUNT) dir_raw = (int)DIR_RIGHT;
+    int dir_raw = settings.getInt(SettingsDomain::SCREENSAVER, "sf_direction", (int)DIR_FORWARD);
+    if (dir_raw < 0 || dir_raw >= DIR_COUNT) dir_raw = (int)DIR_FORWARD;
     s_cfg_direction = (StarDirection)dir_raw;
     s_cfg_colors    = settings.getBool(SettingsDomain::SCREENSAVER, "sf_colors", true);
     s_cfg_star_size = settings.getInt(SettingsDomain::SCREENSAVER, "sf_star_size", 2);
@@ -174,7 +174,7 @@ void init(int screen_width, int screen_height) {
 
     load_settings();
 
-    static const char* dir_names[] = {"out","in","left","right","up","down"};
+    static const char* dir_names[] = {"forward","reverse","left","right","up","down"};
     printf("[screensaver] init %dx%d, %s mode, timeout=%lus, speed=%.3f, dir=%s, warp=%d, size=%d\n",
            s_screen_w, s_screen_h,
            s_rgb_mode ? "direct-FB" : "canvas",
@@ -184,7 +184,7 @@ void init(int screen_width, int screen_height) {
 
 void reloadSettings() {
     load_settings();
-    static const char* dir_names[] = {"out","in","left","right","up","down"};
+    static const char* dir_names[] = {"forward","reverse","left","right","up","down"};
     printf("[screensaver] settings reloaded: speed=%.3f, dir=%s, warp=%d, size=%d, colors=%d\n",
            s_cfg_speed, dir_names[s_cfg_direction], s_cfg_warp, s_cfg_star_size, s_cfg_colors);
 }

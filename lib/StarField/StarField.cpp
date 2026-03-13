@@ -15,6 +15,8 @@ StarField::StarField(int screen_width, int screen_height, int num_stars)
 {
     _cx = _w * 0.5f;
     _cy = _h * 0.5f;
+    // Focal length controls field-of-view. Larger = narrower FOV, less fisheye.
+    _focal = fminf((float)_w, (float)_h) * 0.5f;
 
     if (num_stars <= 0) {
         int area = _w * _h;
@@ -27,7 +29,7 @@ StarField::StarField(int screen_width, int screen_height, int num_stars)
 
     _stars = new Star[_num_stars];
     for (int i = 0; i < _num_stars; i++) {
-        resetStar(_stars[i], true);
+        spawnStar(_stars[i], true);
     }
 }
 
@@ -35,11 +37,13 @@ StarField::~StarField() {
     delete[] _stars;
 }
 
-void StarField::resetStar(Star& s, bool randomize_z) {
-    s.x = randf();
-    s.y = randf();
-    s.z = randomize_z ? randf_range(0.1f, 1.0f) : randf_range(0.7f, 1.0f);
-    s.prev_z = s.z;
+void StarField::spawnStar(Star& s, bool full_depth) {
+    // Spread stars across a wide 3D volume so perspective projection fills screen
+    // x,y range: [-spread, +spread] where spread scales with aspect ratio
+    float spread = 1.5f;
+    s.x = randf_range(-spread, spread);
+    s.y = randf_range(-spread, spread);
+    s.z = full_depth ? randf_range(MIN_Z + 0.5f, MAX_Z) : randf_range(MAX_Z * 0.6f, MAX_Z);
 
     float r = randf();
     if (r < 0.75f)      s.tint = TINT_WHITE;
@@ -48,115 +52,103 @@ void StarField::resetStar(Star& s, bool randomize_z) {
     else                 s.tint = TINT_RED;
 }
 
-void StarField::update(float speed, StarDirection dir) {
-    float abs_speed = fabsf(speed);
+void StarField::spawnAtEdge(Star& s, StarDirection dir) {
+    float spread = 1.5f;
+    s.z = randf_range(0.5f, MAX_Z);
 
+    float r = randf();
+    if (r < 0.75f)      s.tint = TINT_WHITE;
+    else if (r < 0.85f) s.tint = TINT_BLUE;
+    else if (r < 0.95f) s.tint = TINT_YELLOW;
+    else                 s.tint = TINT_RED;
+
+    switch (dir) {
+        case DIR_LEFT:
+            s.x = spread;
+            s.y = randf_range(-spread, spread);
+            break;
+        case DIR_RIGHT:
+            s.x = -spread;
+            s.y = randf_range(-spread, spread);
+            break;
+        case DIR_UP:
+            s.y = spread;
+            s.x = randf_range(-spread, spread);
+            break;
+        case DIR_DOWN:
+            s.y = -spread;
+            s.x = randf_range(-spread, spread);
+            break;
+        default:
+            s.x = randf_range(-spread, spread);
+            s.y = randf_range(-spread, spread);
+            break;
+    }
+}
+
+void StarField::update(float speed, StarDirection dir) {
     for (int i = 0; i < _num_stars; i++) {
         Star& s = _stars[i];
-        s.prev_z = s.z;
-
-        // Depth-based parallax: closer stars (small z) move faster
-        float depth_speed = abs_speed / fmaxf(s.z, 0.1f);
 
         switch (dir) {
-            case DIR_RIGHT:
-                s.x += depth_speed * 0.15f;
-                s.y += depth_speed * 0.02f;  // subtle drift
+            case DIR_FORWARD:
+                // Stars approach viewer — z decreases
+                s.z -= speed * 4.0f;
+                if (s.z <= MIN_Z) {
+                    spawnStar(s, false);
+                }
                 break;
+
+            case DIR_REVERSE:
+                // Stars recede — z increases
+                s.z += speed * 4.0f;
+                if (s.z >= MAX_Z) {
+                    // Respawn close to viewer
+                    spawnStar(s, false);
+                    s.z = randf_range(MIN_Z + 0.1f, MIN_Z + 1.0f);
+                }
+                break;
+
             case DIR_LEFT:
-                s.x -= depth_speed * 0.15f;
-                s.y -= depth_speed * 0.02f;
-                break;
-            case DIR_DOWN:
-                s.y += depth_speed * 0.15f;
-                s.x += depth_speed * 0.02f;
-                break;
+            case DIR_RIGHT:
             case DIR_UP:
-                s.y -= depth_speed * 0.15f;
-                s.x -= depth_speed * 0.02f;
-                break;
-            case DIR_OUT: {
-                // Radial outward from center
-                float dx = (s.x - 0.5f);
-                float dy = (s.y - 0.5f);
-                float dist = sqrtf(dx * dx + dy * dy);
-                if (dist > 0.001f) {
-                    float radial = depth_speed * 0.12f / dist;
-                    // Cap radial speed to prevent extreme center spawn
-                    if (radial > depth_speed * 2.0f) radial = depth_speed * 2.0f;
-                    s.x += dx * radial;
-                    s.y += dy * radial;
+            case DIR_DOWN: {
+                // Lateral movement with parallax (closer = faster)
+                float parallax = speed * 3.0f / fmaxf(s.z, 0.3f);
+                if (dir == DIR_RIGHT) s.x -= parallax;
+                else if (dir == DIR_LEFT) s.x += parallax;
+                else if (dir == DIR_DOWN) s.y -= parallax;
+                else if (dir == DIR_UP) s.y += parallax;
+
+                // Check if projected position is off-screen — if so, respawn at opposite edge
+                int sx, sy;
+                float br;
+                if (!project(s, sx, sy, br)) {
+                    spawnAtEdge(s, dir);
                 }
                 break;
             }
-            case DIR_IN: {
-                // Radial inward toward center
-                float dx = (s.x - 0.5f);
-                float dy = (s.y - 0.5f);
-                float dist = sqrtf(dx * dx + dy * dy);
-                if (dist > 0.001f) {
-                    float radial = depth_speed * 0.12f / dist;
-                    if (radial > depth_speed * 2.0f) radial = depth_speed * 2.0f;
-                    s.x -= dx * radial;
-                    s.y -= dy * radial;
-                }
-                break;
-            }
+
             default:
-                s.x += depth_speed * 0.15f;
+                s.z -= speed * 4.0f;
+                if (s.z <= MIN_Z) spawnStar(s, false);
                 break;
         }
-
-        // Slowly cycle z for brightness variation
-        s.z -= speed * 0.1f;
-
-        bool offscreen = (s.x < -0.05f || s.x > 1.05f || s.y < -0.05f || s.y > 1.05f);
-        bool at_center = false;
-
-        if (dir == DIR_IN) {
-            float cx = s.x - 0.5f;
-            float cy = s.y - 0.5f;
-            at_center = (cx * cx + cy * cy) < 0.002f;
-        }
-
-        if (dir == DIR_OUT && offscreen) {
-            // Respawn near center for warp-drive effect
-            float angle = randf() * 6.2832f;
-            float r = randf_range(0.01f, 0.08f);
-            s.x = 0.5f + cosf(angle) * r;
-            s.y = 0.5f + sinf(angle) * r;
-            s.z = randf_range(0.5f, 1.0f);
-            s.prev_z = s.z;
-        } else if (dir == DIR_IN && (offscreen || at_center)) {
-            // Respawn at edges for inward pull effect
-            int edge = rand() % 4;
-            if (edge == 0)      { s.x = randf(); s.y = -0.04f; }
-            else if (edge == 1) { s.x = randf(); s.y = 1.04f; }
-            else if (edge == 2) { s.x = -0.04f; s.y = randf(); }
-            else                { s.x = 1.04f; s.y = randf(); }
-            s.z = randf_range(0.3f, 1.0f);
-            s.prev_z = s.z;
-        } else {
-            // Lateral modes: seamless edge wrapping
-            if (s.x > 1.05f) s.x -= 1.1f;
-            if (s.x < -0.05f) s.x += 1.1f;
-            if (s.y > 1.05f) s.y -= 1.1f;
-            if (s.y < -0.05f) s.y += 1.1f;
-        }
-
-        // Cycle z for depth variation
-        if (s.z <= 0.05f) s.z = 1.0f;
-        if (s.z > 1.2f)   s.z = 0.1f;
     }
 }
 
 bool StarField::project(const Star& s, int& sx, int& sy, float& brightness) const {
-    sx = (int)(s.x * _w);
-    sy = (int)(s.y * _h);
+    if (s.z <= MIN_Z) return false;
+
+    // Perspective projection: screen = center + (pos * focal / z)
+    float inv_z = _focal / s.z;
+    sx = (int)(_cx + s.x * inv_z);
+    sy = (int)(_cy + s.y * inv_z);
 
     if (sx < 0 || sx >= _w || sy < 0 || sy >= _h) return false;
 
-    brightness = 1.0f - (s.z * 0.6f);
-    brightness = fmaxf(0.3f, fminf(1.0f, brightness));
+    // Brightness: closer stars are brighter
+    brightness = 1.0f - (s.z / MAX_Z);
+    brightness = fmaxf(0.15f, fminf(1.0f, brightness));
     return true;
 }
