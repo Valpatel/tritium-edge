@@ -421,6 +421,27 @@ bool send_now() {
 #endif
     pos += snprintf(body + pos, BODY_SIZE - pos, "]");
 
+    // Report OTA result if we just rebooted after a fleet OTA
+#if HAS_OTA_MANAGER
+    {
+        static bool _ota_result_reported = false;
+        if (!_ota_result_reported) {
+            // Check if we booted into a new partition (OTA just happened)
+            const esp_partition_t* boot_part = esp_ota_get_boot_partition();
+            if (boot_part && running && boot_part == running) {
+                // We're running from the expected partition — OTA succeeded
+                const auto& st = ota_manager::getStatus();
+                if (st.current_version[0]) {
+                    pos += snprintf(body + pos, BODY_SIZE - pos,
+                        ",\"ota_result\":{\"status\":\"success\","
+                        "\"version\":\"%s\"}", st.current_version);
+                }
+            }
+            _ota_result_reported = true;
+        }
+    }
+#endif
+
     // Close JSON object
     if (pos < (int)BODY_SIZE - 1) {
         body[pos++] = '}';
