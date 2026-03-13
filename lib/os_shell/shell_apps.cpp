@@ -1715,11 +1715,16 @@ static void sysmon_update(lv_timer_t* t) {
              (unsigned)hrs, (unsigned)mins, (unsigned)(secs % 60));
     lv_label_set_text(s_sysmon_uptime_lbl, buf);
 
-    // Heap watermark
+    // Heap watermark + fragmentation
     if (s_sysmon_heap_min) {
         uint32_t min_heap = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        snprintf(buf, sizeof(buf), "Min free: %uKB", (unsigned)(min_heap / 1024));
+        uint32_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        int frag_pct = (free_heap > 0) ? (int)(100 - (largest * 100 / free_heap)) : 0;
+        snprintf(buf, sizeof(buf), "Min: %uKB  Largest: %uKB  Frag: %d%%",
+                 (unsigned)(min_heap / 1024), (unsigned)(largest / 1024), frag_pct);
         lv_label_set_text(s_sysmon_heap_min, buf);
+        lv_obj_set_style_text_color(s_sysmon_heap_min,
+            frag_pct > 50 ? T_MAGENTA : frag_pct > 25 ? T_YELLOW : T_GHOST, 0);
     }
 
     // Task count

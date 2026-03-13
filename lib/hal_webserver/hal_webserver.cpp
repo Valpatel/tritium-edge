@@ -266,8 +266,9 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
 <div class="grid">
   <div class="metric"><div class="val" id="v_uptime">%UPTIME%</div><div class="lbl">Uptime</div></div>
   <div class="metric"><div class="val" id="v_heap">%HEAP%</div><div class="lbl">Free Heap</div></div>
+  <div class="metric"><div class="val" id="v_frag">--</div><div class="lbl">Heap Frag</div></div>
   <div class="metric"><div class="val" id="v_rssi">%RSSI%</div><div class="lbl">WiFi dBm</div></div>
-  <div class="metric"><div class="val" id="v_temp">--</div><div class="lbl">CPU Temp</div></div>
+  <div class="metric"><div class="val" id="v_tasks">--</div><div class="lbl">Tasks</div></div>
   <div class="metric"><div class="val" id="v_reqs">%REQCOUNT%</div><div class="lbl">Requests</div></div>
 </div>
 </div>
@@ -305,12 +306,18 @@ setInterval(function(){
     document.getElementById('v_uptime').textContent=uptimeFmt(d.uptime_s);
     document.getElementById('v_heap').textContent=fmt(d.free_heap);
     document.getElementById('v_rssi').textContent=d.rssi;
-    document.getElementById('v_temp').textContent=d.temp_c?d.temp_c.toFixed(1)+'°C':'--';
     document.getElementById('v_reqs').textContent=d.requests;
     document.getElementById('v_psram').textContent=fmt(d.psram_free);
     if(d.fw_version)document.getElementById('v_fw').textContent=d.fw_version;
     if(d.ssid)document.getElementById('v_ssid').textContent=d.ssid;
     if(d.cpu_freq)document.getElementById('v_cpu').textContent=d.cpu_freq;
+    if(d.tasks)document.getElementById('v_tasks').textContent=d.tasks;
+    if(d.largest_block&&d.free_heap){
+      var fp=Math.round(100-d.largest_block*100/d.free_heap);
+      var el=document.getElementById('v_frag');
+      el.textContent=fp+'%';
+      el.style.color=fp>50?'#ff2a6d':fp>25?'#fcee0a':'#05ffa1';
+    }
     var pct=Math.min(100,Math.max(0,2*(d.rssi+100)));
     document.getElementById('v_rssi_bar').style.width=pct+'%';
   });
@@ -1313,13 +1320,18 @@ void WebServerHAL::addApiEndpoints() {
         } else {
             snprintf(temp_str, sizeof(temp_str), "%.1f", tempC);
         }
+        uint32_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        uint32_t min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         snprintf(buf, API_BUF_SIZE,
-            "{\"uptime_s\":%lu,\"free_heap\":%lu,\"psram_free\":%lu,"
+            "{\"uptime_s\":%lu,\"free_heap\":%lu,\"min_free_heap\":%lu,"
+            "\"largest_block\":%lu,\"psram_free\":%lu,"
             "\"rssi\":%d,\"ip\":\"%s\",\"requests\":%lu,"
             "\"ssid\":\"%s\",\"temp_c\":%s,"
-            "\"fw_version\":\"%s\",\"cpu_freq\":%lu}",
+            "\"fw_version\":\"%s\",\"cpu_freq\":%lu,\"tasks\":%u}",
             (unsigned long)(millis() / 1000),
             (unsigned long)ESP.getFreeHeap(),
+            (unsigned long)min_free,
+            (unsigned long)largest_block,
             (unsigned long)ESP.getFreePsram(),
             WiFi.RSSI(),
             WiFi.localIP().toString().c_str(),
@@ -1327,7 +1339,8 @@ void WebServerHAL::addApiEndpoints() {
             WiFi.SSID().c_str(),
             temp_str,
             fwVer,
-            (unsigned long)ESP.getCpuFreqMHz());
+            (unsigned long)ESP.getCpuFreqMHz(),
+            (unsigned)uxTaskGetNumberOfTasks());
         _server->send(200, "application/json", buf);
     });
 
