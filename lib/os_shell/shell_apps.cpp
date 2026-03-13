@@ -17,6 +17,7 @@
 #include <esp_heap_caps.h>
 #include <esp_mac.h>
 #include <esp_system.h>
+#include <driver/i2c.h>
 #include <esp_chip_info.h>
 #include <esp_partition.h>
 #include <esp_app_desc.h>
@@ -423,7 +424,8 @@ static void power_off_slider_cb(lv_event_t* e) {
 // ---------------------------------------------------------------------------
 
 static lv_obj_t* s_settings_content = nullptr;
-static lv_obj_t* s_settings_tab_btns[6] = {};
+static const int SETTINGS_NUM_TABS = 7;
+static lv_obj_t* s_settings_tab_btns[SETTINGS_NUM_TABS] = {};
 static int s_settings_active_tab = 0;
 
 // Forward declarations for tab content builders
@@ -433,13 +435,14 @@ static void settings_build_power(lv_obj_t* cont);
 static void settings_build_screensaver(lv_obj_t* cont);
 static void settings_build_system(lv_obj_t* cont);
 static void settings_build_clock(lv_obj_t* cont);
+static void settings_build_developer(lv_obj_t* cont);
 
 static void settings_select_tab(int idx) {
     if (!s_settings_content) return;
     s_settings_active_tab = idx;
 
     // Update tab button styling
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < SETTINGS_NUM_TABS; i++) {
         if (!s_settings_tab_btns[i]) continue;
         bool active = (i == idx);
         lv_obj_set_style_border_color(s_settings_tab_btns[i],
@@ -463,6 +466,7 @@ static void settings_select_tab(int idx) {
         case 3: settings_build_screensaver(s_settings_content); break;
         case 4: settings_build_system(s_settings_content); break;
         case 5: settings_build_clock(s_settings_content); break;
+        case 6: settings_build_developer(s_settings_content); break;
     }
 }
 
@@ -499,9 +503,10 @@ void settings_create(lv_obj_t* viewport) {
         LV_SYMBOL_BATTERY_FULL,// Power
         LV_SYMBOL_IMAGE,       // Screensaver
         LV_SYMBOL_SETTINGS,    // System
-        LV_SYMBOL_BELL,        // Clock/Time (bell = closest to clock icon)
+        LV_SYMBOL_BELL,        // Clock/Time
+        LV_SYMBOL_LIST,        // Developer
     };
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < SETTINGS_NUM_TABS; i++) {
         lv_obj_t* btn = lv_btn_create(tab_bar);
         lv_obj_set_flex_grow(btn, 1);
         int tab_h = (tritium_shell::uiConfig().screen_height > 400) ? 48 : 36;
@@ -1435,6 +1440,208 @@ static void settings_build_clock(lv_obj_t* cont) {
     // Start 1-second update timer
     s_clock_timer = lv_timer_create(clock_timer_cb, 1000, nullptr);
     clock_timer_cb(nullptr);  // Immediate first update
+}
+
+// ---------------------------------------------------------------------------
+// Settings Tab: DEVELOPER
+// ---------------------------------------------------------------------------
+
+static lv_obj_t* s_dev_task_list = nullptr;
+static lv_obj_t* s_dev_i2c_list = nullptr;
+static lv_timer_t* s_dev_timer   = nullptr;
+
+static void dev_refresh_tasks(lv_timer_t* t) {
+    (void)t;
+    if (!s_dev_task_list) return;
+    lv_obj_clean(s_dev_task_list);
+
+#ifndef SIMULATOR
+    TaskStatus_t tasks[20];
+    UBaseType_t n = uxTaskGetSystemState(tasks, 20, nullptr);
+
+    // Sort by priority (highest first)
+    for (UBaseType_t i = 0; i < n; i++) {
+        for (UBaseType_t j = i + 1; j < n; j++) {
+            if (tasks[j].uxCurrentPriority > tasks[i].uxCurrentPriority) {
+                TaskStatus_t tmp = tasks[i];
+                tasks[i] = tasks[j];
+                tasks[j] = tmp;
+            }
+        }
+    }
+
+    const lv_font_t* font = tritium_shell::uiSmallFont();
+    for (UBaseType_t i = 0; i < n; i++) {
+        char buf[80];
+        const char* state_str = "?";
+        switch (tasks[i].eCurrentState) {
+            case eRunning:   state_str = "RUN"; break;
+            case eReady:     state_str = "RDY"; break;
+            case eBlocked:   state_str = "BLK"; break;
+            case eSuspended: state_str = "SUS"; break;
+            case eDeleted:   state_str = "DEL"; break;
+            default: break;
+        }
+        snprintf(buf, sizeof(buf), "%-16s P%d %s  stk:%lu",
+                 tasks[i].pcTaskName,
+                 (int)tasks[i].uxCurrentPriority,
+                 state_str,
+                 (unsigned long)tasks[i].usStackHighWaterMark);
+
+        lv_obj_t* lbl = lv_label_create(s_dev_task_list);
+        lv_label_set_text(lbl, buf);
+        lv_obj_set_style_text_font(lbl, font, 0);
+
+        // Color by state
+        lv_color_t c = T_TEXT;
+        if (tasks[i].eCurrentState == eRunning) c = T_GREEN;
+        else if (tasks[i].usStackHighWaterMark < 256) c = T_MAGENTA;
+        lv_obj_set_style_text_color(lbl, c, 0);
+    }
+#endif
+}
+
+static void dev_i2c_scan_cb(lv_event_t* e) {
+    (void)e;
+    if (!s_dev_i2c_list) return;
+    lv_obj_clean(s_dev_i2c_list);
+
+#ifndef SIMULATOR
+    const i2c_port_t port = I2C_NUM_0;
+    int found = 0;
+    char buf[48];
+    const lv_font_t* font = tritium_shell::uiSmallFont();
+
+    for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+        i2c_master_stop(cmd);
+        esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
+        i2c_cmd_link_delete(cmd);
+
+        if (ret == ESP_OK) {
+            snprintf(buf, sizeof(buf), "0x%02X  (%d)", addr, addr);
+            lv_obj_t* lbl = lv_label_create(s_dev_i2c_list);
+            lv_label_set_text(lbl, buf);
+            lv_obj_set_style_text_font(lbl, font, 0);
+            lv_obj_set_style_text_color(lbl, T_GREEN, 0);
+            found++;
+        }
+    }
+
+    if (found == 0) {
+        lv_obj_t* lbl = lv_label_create(s_dev_i2c_list);
+        lv_label_set_text(lbl, "No devices found");
+        lv_obj_set_style_text_font(lbl, font, 0);
+        lv_obj_set_style_text_color(lbl, T_GHOST, 0);
+    } else {
+        snprintf(buf, sizeof(buf), "%d device(s) found", found);
+        lv_obj_t* lbl = lv_label_create(s_dev_i2c_list);
+        lv_label_set_text(lbl, buf);
+        lv_obj_set_style_text_font(lbl, font, 0);
+        lv_obj_set_style_text_color(lbl, T_CYAN, 0);
+    }
+#endif
+}
+
+static void settings_build_developer(lv_obj_t* cont) {
+    s_dev_task_list = nullptr;
+    s_dev_i2c_list = nullptr;
+    if (s_dev_timer) { lv_timer_delete(s_dev_timer); s_dev_timer = nullptr; }
+
+#ifndef SIMULATOR
+    // --- Memory panel ---
+    lv_obj_t* mem_panel = tritium_theme::createPanel(cont, "MEMORY");
+    lv_obj_set_width(mem_panel, lv_pct(100));
+    lv_obj_set_height(mem_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(mem_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(mem_panel, 24, 0);
+    lv_obj_set_style_pad_gap(mem_panel, 3, 0);
+
+    {
+        char buf[80];
+        size_t free_h = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        size_t min_h = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        snprintf(buf, sizeof(buf), "Heap free: %uKB  min: %uKB",
+                 (unsigned)(free_h / 1024), (unsigned)(min_h / 1024));
+        lv_obj_t* lbl = tritium_theme::createLabel(mem_panel, buf, true);
+        lv_obj_set_style_text_color(lbl, min_h < 20480 ? T_MAGENTA : T_TEXT, 0);
+    }
+    {
+        char buf[80];
+        size_t free_ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        size_t total_ps = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+        snprintf(buf, sizeof(buf), "PSRAM free: %uKB / %uKB",
+                 (unsigned)(free_ps / 1024), (unsigned)(total_ps / 1024));
+        tritium_theme::createLabel(mem_panel, buf, true);
+    }
+    {
+        char buf[40];
+        snprintf(buf, sizeof(buf), "Uptime: %lus", (unsigned long)(millis() / 1000));
+        tritium_theme::createLabel(mem_panel, buf, true);
+    }
+
+    // --- FreeRTOS tasks panel ---
+    lv_obj_t* task_panel = tritium_theme::createPanel(cont, "FREERTOS TASKS");
+    lv_obj_set_width(task_panel, lv_pct(100));
+    lv_obj_set_height(task_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(task_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(task_panel, 24, 0);
+    lv_obj_set_style_pad_gap(task_panel, 1, 0);
+
+    s_dev_task_list = lv_obj_create(task_panel);
+    lv_obj_set_width(s_dev_task_list, lv_pct(100));
+    lv_obj_set_height(s_dev_task_list, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(s_dev_task_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_dev_task_list, 0, 0);
+    lv_obj_set_style_pad_all(s_dev_task_list, 0, 0);
+    lv_obj_set_flex_flow(s_dev_task_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(s_dev_task_list, 1, 0);
+
+    dev_refresh_tasks(nullptr);
+    s_dev_timer = lv_timer_create(dev_refresh_tasks, 3000, nullptr);
+
+    // --- I2C bus scan panel ---
+    lv_obj_t* i2c_panel = tritium_theme::createPanel(cont, "I2C BUS SCAN");
+    lv_obj_set_width(i2c_panel, lv_pct(100));
+    lv_obj_set_height(i2c_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(i2c_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(i2c_panel, 24, 0);
+    lv_obj_set_style_pad_gap(i2c_panel, 4, 0);
+
+    lv_obj_t* scan_btn = tritium_theme::createButton(i2c_panel, "SCAN I2C BUS", T_CYAN);
+    lv_obj_set_width(scan_btn, lv_pct(100));
+    lv_obj_add_event_cb(scan_btn, dev_i2c_scan_cb, LV_EVENT_CLICKED, nullptr);
+
+    s_dev_i2c_list = lv_obj_create(i2c_panel);
+    lv_obj_set_width(s_dev_i2c_list, lv_pct(100));
+    lv_obj_set_height(s_dev_i2c_list, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(s_dev_i2c_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_dev_i2c_list, 0, 0);
+    lv_obj_set_style_pad_all(s_dev_i2c_list, 0, 0);
+    lv_obj_set_flex_flow(s_dev_i2c_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(s_dev_i2c_list, 2, 0);
+
+    // --- System actions ---
+    lv_obj_t* act_panel = tritium_theme::createPanel(cont, "SYSTEM ACTIONS");
+    lv_obj_set_width(act_panel, lv_pct(100));
+    lv_obj_set_height(act_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(act_panel, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(act_panel, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_top(act_panel, 24, 0);
+
+    lv_obj_t* reboot_btn = tritium_theme::createButton(act_panel,
+        LV_SYMBOL_REFRESH " Reboot", T_MAGENTA);
+    lv_obj_add_event_cb(reboot_btn, [](lv_event_t* ev) {
+        (void)ev;
+        esp_restart();
+    }, LV_EVENT_CLICKED, nullptr);
+
+#else
+    tritium_theme::createLabel(cont, "Developer tools not available in simulator");
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -3816,6 +4023,7 @@ void cleanup_timers() {
     if (s_ble_timer)    { lv_timer_delete(s_ble_timer);    s_ble_timer    = nullptr; }
     if (s_term_timer)   { lv_timer_delete(s_term_timer);   s_term_timer   = nullptr; }
     if (s_clock_timer)  { lv_timer_delete(s_clock_timer);  s_clock_timer  = nullptr; }
+    if (s_dev_timer)    { lv_timer_delete(s_dev_timer);    s_dev_timer    = nullptr; }
 }
 
 //  Register all new apps
