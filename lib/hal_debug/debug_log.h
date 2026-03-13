@@ -30,6 +30,7 @@
 #define DBG_BACKEND_SERIAL  (1 << 0)
 #define DBG_BACKEND_TCP     (1 << 1)
 #define DBG_BACKEND_BLE     (1 << 2)
+#define DBG_BACKEND_SDCARD  (1 << 3)
 
 class DebugLog {
 public:
@@ -53,6 +54,9 @@ public:
 
     // Process pending TCP connections (call from loop or FreeRTOS task)
     static void poll();
+
+    // Flush SD card log buffer (call periodically or before reboot)
+    static void flushSDLog();
 
 private:
     static void output(const char* buf, size_t len);
