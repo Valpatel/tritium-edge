@@ -110,11 +110,39 @@ void StarField::update(float speed, StarDirection dir) {
         // Slowly cycle z for brightness variation
         s.z -= speed * 0.1f;
 
-        // Wrap at screen edges (seamless scrolling)
-        if (s.x > 1.05f) s.x -= 1.1f;
-        if (s.x < -0.05f) s.x += 1.1f;
-        if (s.y > 1.05f) s.y -= 1.1f;
-        if (s.y < -0.05f) s.y += 1.1f;
+        bool offscreen = (s.x < -0.05f || s.x > 1.05f || s.y < -0.05f || s.y > 1.05f);
+        bool at_center = false;
+
+        if (dir == DIR_IN) {
+            float cx = s.x - 0.5f;
+            float cy = s.y - 0.5f;
+            at_center = (cx * cx + cy * cy) < 0.002f;
+        }
+
+        if (dir == DIR_OUT && offscreen) {
+            // Respawn near center for warp-drive effect
+            float angle = randf() * 6.2832f;
+            float r = randf_range(0.01f, 0.08f);
+            s.x = 0.5f + cosf(angle) * r;
+            s.y = 0.5f + sinf(angle) * r;
+            s.z = randf_range(0.5f, 1.0f);
+            s.prev_z = s.z;
+        } else if (dir == DIR_IN && (offscreen || at_center)) {
+            // Respawn at edges for inward pull effect
+            int edge = rand() % 4;
+            if (edge == 0)      { s.x = randf(); s.y = -0.04f; }
+            else if (edge == 1) { s.x = randf(); s.y = 1.04f; }
+            else if (edge == 2) { s.x = -0.04f; s.y = randf(); }
+            else                { s.x = 1.04f; s.y = randf(); }
+            s.z = randf_range(0.3f, 1.0f);
+            s.prev_z = s.z;
+        } else {
+            // Lateral modes: seamless edge wrapping
+            if (s.x > 1.05f) s.x -= 1.1f;
+            if (s.x < -0.05f) s.x += 1.1f;
+            if (s.y > 1.05f) s.y -= 1.1f;
+            if (s.y < -0.05f) s.y += 1.1f;
+        }
 
         // Cycle z for depth variation
         if (s.z <= 0.05f) s.z = 1.0f;
