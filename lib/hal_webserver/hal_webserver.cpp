@@ -2788,15 +2788,30 @@ static const char LOGS_HTML[] PROGMEM = R"rawliteral(
 <h1>// System Logs</h1>
 <div class="card">
 <div class="log-controls">
+  <button onclick="setTab('live')" id="tab-live" style="background:#00ffd0;color:#0a0a0a">Live</button>
+  <button onclick="setTab('sd')" id="tab-sd">SD Card</button>
+  <span style="margin-left:8px">|</span>
   <button onclick="clearLog()">Clear</button>
   <button onclick="togglePause()"><span id="pause-btn">Pause</span></button>
   <label><input type="checkbox" id="autoscroll" checked> Auto-scroll</label>
   <span class="log-count" id="log-count">0 lines</span>
 </div>
+<div id="sd-controls" style="display:none;margin-bottom:8px">
+  <select id="sd-file" style="background:#111;color:#00ffd0;border:1px solid #00ffd044;padding:4px;font-family:inherit;font-size:12px"></select>
+  <button onclick="loadSdLog()">Load</button>
+  <a id="sd-dl" href="#" download style="margin-left:8px;color:#00ffd0;font-size:12px">Download</a>
+</div>
 <div id="log-container"></div>
 </div>
 <script>
-var paused=false,lastCount=0;
+var paused=false,lastCount=0,activeTab='live';
+function setTab(t){activeTab=t;
+document.getElementById('tab-live').style.background=t==='live'?'#00ffd0':'transparent';
+document.getElementById('tab-live').style.color=t==='live'?'#0a0a0a':'#00ffd0';
+document.getElementById('tab-sd').style.background=t==='sd'?'#00ffd0':'transparent';
+document.getElementById('tab-sd').style.color=t==='sd'?'#0a0a0a':'#00ffd0';
+document.getElementById('sd-controls').style.display=t==='sd'?'block':'none';
+if(t==='sd'){loadSdFileList();}else{clearLog();fetchLogs();}}
 function togglePause(){
   paused=!paused;
   document.getElementById('pause-btn').textContent=paused?'Resume':'Pause';
@@ -2806,7 +2821,7 @@ function clearLog(){
   lastCount=0;
 }
 function fetchLogs(){
-  if(paused)return;
+  if(paused||activeTab!=='live')return;
   fetch('/api/logs').then(r=>r.json()).then(d=>{
     var c=document.getElementById('log-container');
     if(d.count!==lastCount){
@@ -2827,6 +2842,28 @@ function fetchLogs(){
     }
   }).catch(()=>{});
 }
+function loadSdFileList(){
+fetch('/api/logs/sd/list').then(r=>r.json()).then(files=>{
+var sel=document.getElementById('sd-file');sel.innerHTML='';
+files.forEach(function(f){var o=document.createElement('option');
+o.value=f.name;o.textContent=f.name+' ('+(f.size/1024).toFixed(1)+' KB)';sel.appendChild(o);});
+if(files.length>0)loadSdLog();
+}).catch(()=>{document.getElementById('log-container').innerHTML='<div class="line" style="color:#666">No SD logs available</div>';});}
+function loadSdLog(){
+var fname=document.getElementById('sd-file').value;if(!fname)return;
+document.getElementById('sd-dl').href='/api/logs/sd?file='+encodeURIComponent(fname);
+document.getElementById('log-container').innerHTML='<div class="line" style="color:#666">Loading...</div>';
+fetch('/api/logs/sd').then(r=>r.text()).then(text=>{
+var c=document.getElementById('log-container');var lines=text.split('\n');
+var html='';lines.forEach(function(l){if(!l)return;
+var cls='';if(l.indexOf('ERROR')>=0)cls='color:#ff3366';
+else if(l.indexOf('WARN')>=0)cls='color:#ffaa00';
+else if(l.indexOf('INFO')>=0)cls='color:#00ffd0';
+else if(l.indexOf('DEBUG')>=0)cls='color:#66cccc';
+html+='<div class="line" style="'+cls+'">'+escHtml(l)+'</div>';});
+c.innerHTML=html;document.getElementById('log-count').textContent=lines.length+' lines';
+if(document.getElementById('autoscroll').checked)c.scrollTop=c.scrollHeight;
+}).catch(()=>{document.getElementById('log-container').innerHTML='<div class="line" style="color:#ff3366">Failed to load SD log</div>';});}
 function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 setInterval(fetchLogs,1500);
 fetchLogs();
