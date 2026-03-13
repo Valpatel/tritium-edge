@@ -165,6 +165,7 @@ static const char NAV_HTML[] PROGMEM = R"rawliteral(
   <a href="/config">Config</a>
   <a href="/files">Files</a>
   <a href="/storage">SD Card</a>
+  <a href="/remote">Remote</a>
   <a href="/commission">Commission</a>
   <a href="/map">Map</a>
   <a href="/api/status">API</a>
@@ -3183,6 +3184,116 @@ void WebServerHAL::addErrorPages() {
     DBG_INFO("web", "Error pages registered (404/500)");
 }
 
+// ── Remote Viewer page (/remote) ──────────────────────────────────────────
+
+static const char REMOTE_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tritium-OS // Remote Viewer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--cyan:#00f0ff;--mag:#ff2a6d;--green:#05ffa1;--void:#0a0a0f;--s2:#12121a;--ghost:#8888aa;--text:#c8d0dc}
+body{background:var(--void);color:var(--text);font-family:'Courier New',monospace;
+font-size:13px;display:flex;flex-direction:column;align-items:center;padding:12px}
+h1{color:var(--cyan);font-size:14px;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:10px}
+.controls{display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap}
+.btn{padding:5px 12px;border:1px solid rgba(0,240,255,0.3);background:transparent;
+color:var(--cyan);font-family:inherit;font-size:11px;cursor:pointer;border-radius:3px}
+.btn.active{background:rgba(0,240,255,0.15)}
+.info{font-size:11px;color:var(--ghost)}
+#viewer{border:1px solid rgba(0,240,255,0.15);border-radius:4px;cursor:crosshair;
+image-rendering:pixelated;max-width:100%}
+.status{margin-top:6px;font-size:11px}
+.status .on{color:var(--green)}.status .off{color:var(--mag)}
+</style></head><body>
+<h1>// Remote Viewer</h1>
+<div class="controls">
+<button class="btn active" id="btn-live" onclick="toggleLive()">Live</button>
+<button class="btn" onclick="capture()">Snapshot</button>
+<label style="color:var(--ghost);font-size:11px"><input type="checkbox" id="touch-enable" checked> Touch</label>
+<span class="info" id="fps-info">--</span>
+<span class="info" id="res-info">--</span>
+</div>
+<canvas id="viewer" width="800" height="480"></canvas>
+<div class="status"><span id="status">Connecting...</span></div>
+<script>
+(function(){
+var canvas=document.getElementById('viewer');
+var ctx=canvas.getContext('2d');
+var W=0,H=0,live=true,busy=false,frames=0,lastFps=Date.now();
+var isRgb=false;
+
+function fetchInfo(){
+fetch('/api/remote/info').then(function(r){return r.json()}).then(function(d){
+W=d.width;H=d.height;isRgb=d.rgb||false;
+canvas.width=W;canvas.height=H;
+document.getElementById('res-info').textContent=W+'x'+H+' '+d.format;
+document.getElementById('status').innerHTML='<span class="on">Connected</span>';
+capture();
+}).catch(function(){document.getElementById('status').innerHTML='<span class="off">No display</span>';});}
+
+function capture(){
+if(busy)return;busy=true;
+fetch('/api/remote/screenshot').then(function(r){
+return r.arrayBuffer();
+}).then(function(ab){
+var buf=new Uint16Array(ab);
+if(buf.length!==W*H){busy=false;return;}
+var img=ctx.createImageData(W,H);
+var d=img.data;
+for(var i=0;i<buf.length;i++){
+var px=buf[i];
+var r5,g6,b5;
+if(isRgb){r5=(px>>11)&0x1F;g6=(px>>5)&0x3F;b5=px&0x1F;}
+else{b5=(px>>11)&0x1F;g6=(px>>5)&0x3F;r5=px&0x1F;}
+d[i*4]=(r5*255/31)|0;d[i*4+1]=(g6*255/63)|0;d[i*4+2]=(b5*255/31)|0;d[i*4+3]=255;
+}
+ctx.putImageData(img,0,0);
+frames++;busy=false;
+var now=Date.now();if(now-lastFps>=2000){
+document.getElementById('fps-info').textContent=(frames*1000/(now-lastFps)).toFixed(1)+' fps';
+frames=0;lastFps=now;}
+}).catch(function(){busy=false;});}
+
+function toggleLive(){live=!live;
+document.getElementById('btn-live').className=live?'btn active':'btn';}
+
+setInterval(function(){if(live)capture();},250);
+
+canvas.addEventListener('click',function(e){
+if(!document.getElementById('touch-enable').checked)return;
+var r=canvas.getBoundingClientRect();
+var sx=W/r.width,sy=H/r.height;
+var x=Math.round((e.clientX-r.left)*sx);
+var y=Math.round((e.clientY-r.top)*sy);
+fetch('/api/remote/tap',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({x:x,y:y})});
+});
+
+canvas.addEventListener('mousedown',function(e){
+if(!document.getElementById('touch-enable').checked)return;
+var r=canvas.getBoundingClientRect();
+var sx=W/r.width,sy=H/r.height;
+var x=Math.round((e.clientX-r.left)*sx);
+var y=Math.round((e.clientY-r.top)*sy);
+fetch('/api/remote/touch',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({x:x,y:y,pressed:true})});
+});
+
+canvas.addEventListener('mouseup',function(e){
+if(!document.getElementById('touch-enable').checked)return;
+var r=canvas.getBoundingClientRect();
+var sx=W/r.width,sy=H/r.height;
+var x=Math.round((e.clientX-r.left)*sx);
+var y=Math.round((e.clientY-r.top)*sy);
+fetch('/api/remote/touch',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({x:x,y:y,pressed:false})});
+});
+
+fetchInfo();
+})();
+</script></body></html>)rawliteral";
+
 // ── addAllPages() ────────────────────────────────────────────────────────
 
 void WebServerHAL::addAllPages() {
@@ -3206,6 +3317,16 @@ void WebServerHAL::addAllPages() {
             _server->send(200, "text/html", FPSTR(STORAGE_HTML));
         });
         DBG_INFO("web", "SD storage page added at /storage");
+    }
+
+    // Remote Viewer page
+    if (_server) {
+        WebServerHAL* self = this;
+        _server->on("/remote", HTTP_GET, [self]() {
+            self->_requestCount++;
+            _server->send(200, "text/html", FPSTR(REMOTE_HTML));
+        });
+        DBG_INFO("web", "Remote viewer added at /remote");
     }
 
     addErrorPages();       // Must be last — registers onNotFound handler
