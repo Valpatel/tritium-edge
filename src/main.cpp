@@ -640,24 +640,20 @@ static void services_init() {
             }
 #endif
 
-            // Wire NTP diagnostics when WiFi is available
-#if __has_include("hal_ntp.h") && defined(ENABLE_WIFI)
-            {
-                static NtpHAL _diag_ntp;
-                _diag_ntp.init();
-                hal_diag::set_ntp_provider([](hal_diag::NtpInfo& out) -> bool {
-                    out.synced = _diag_ntp.isSynced();
-                    uint32_t last = _diag_ntp.getLastSyncEpoch();
-                    if (last > 0) {
-                        uint32_t now = _diag_ntp.getEpoch();
-                        out.last_sync_age_s = (now > last) ? (now - last) : 0;
-                    } else {
-                        out.last_sync_age_s = 0;
-                    }
-                    return true;
-                });
-                Serial.printf("[tritium] Diagnostics: NTP provider wired\n");
-            }
+            // Wire NTP diagnostics — uses global _ntp which inits after WiFi connects
+#if NTP_AVAILABLE
+            hal_diag::set_ntp_provider([](hal_diag::NtpInfo& out) -> bool {
+                out.synced = _ntp.isSynced();
+                uint32_t last = _ntp.getLastSyncEpoch();
+                if (last > 0) {
+                    uint32_t now = _ntp.getEpoch();
+                    out.last_sync_age_s = (now > last) ? (now - last) : 0;
+                } else {
+                    out.last_sync_age_s = 0;
+                }
+                return true;
+            });
+            Serial.printf("[tritium] Diagnostics: NTP provider wired (deferred to WiFi)\n");
 #endif
         } else {
             Serial.printf("[tritium] Diagnostics: init failed\n");
