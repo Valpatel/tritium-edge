@@ -123,6 +123,7 @@ const SettingsDefault FACTORY_DEFAULTS[] = {
     defInt("screensaver",  "sf_star_size",   2),
     defBool("screensaver", "sf_warp",        false),
     defInt("screensaver",  "sf_speed",       12),
+    defInt("screensaver",  "sf_brightness",  80),
 };
 const int FACTORY_DEFAULTS_COUNT =
     sizeof(FACTORY_DEFAULTS) / sizeof(FACTORY_DEFAULTS[0]);

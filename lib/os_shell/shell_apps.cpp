@@ -844,6 +844,19 @@ static void ss_speed_cb(lv_event_t* e) {
     }
 }
 
+static void ss_brightness_cb(lv_event_t* e) {
+    lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
+    int val = lv_slider_get_value(slider);
+    TritiumSettings::instance().setInt(SettingsDomain::SCREENSAVER, "sf_brightness", val);
+    shell_screensaver::reloadSettings();
+    lv_obj_t* lbl = (lv_obj_t*)lv_event_get_user_data(e);
+    if (lbl) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d%%", val);
+        lv_label_set_text(lbl, buf);
+    }
+}
+
 static void ss_timeout_cb(lv_event_t* e) {
     lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
     int val = lv_slider_get_value(slider);
@@ -862,147 +875,125 @@ static void ss_timeout_cb(lv_event_t* e) {
     }
 }
 
+// Helper: create a transparent row container with label + value, SPACE_BETWEEN
+static lv_obj_t* ss_make_row(lv_obj_t* parent, const char* label) {
+    lv_obj_t* row = lv_obj_create(parent);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    tritium_theme::createLabel(row, label);
+    return row;
+}
+
+// Helper: create a column container for two-column layout
+static lv_obj_t* ss_make_col(lv_obj_t* parent, int pct) {
+    lv_obj_t* col = lv_obj_create(parent);
+    lv_obj_set_width(col, lv_pct(pct));
+    lv_obj_set_height(col, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(col, 0, 0);
+    lv_obj_set_style_pad_all(col, 0, 0);
+    lv_obj_set_style_pad_gap(col, 4, 0);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+    return col;
+}
+
 static void settings_build_screensaver(lv_obj_t* cont) {
     auto& cfg = TritiumSettings::instance();
 
-    // --- General ---
-    lv_obj_t* gen_panel = tritium_theme::createPanel(cont, "SCREENSAVER");
-    lv_obj_set_width(gen_panel, lv_pct(100));
-    lv_obj_set_height(gen_panel, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(gen_panel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_top(gen_panel, 24, 0);
-    lv_obj_set_style_pad_gap(gen_panel, 6, 0);
+    // --- Two-column layout: toggles left, sliders right ---
+    lv_obj_t* panel = tritium_theme::createPanel(cont, "SCREENSAVER");
+    lv_obj_set_width(panel, lv_pct(100));
+    lv_obj_set_height(panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(panel, 24, 0);
+    lv_obj_set_style_pad_gap(panel, 6, 0);
 
-    // Type label (currently only starfield)
-    char type_buf[48];
-    snprintf(type_buf, sizeof(type_buf), "Type: %s",
-             cfg.getString(SettingsDomain::SCREENSAVER, "type", "starfield"));
-    tritium_theme::createLabel(gen_panel, type_buf, true);
+    // Two-column row container
+    lv_obj_t* cols = lv_obj_create(panel);
+    lv_obj_set_size(cols, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(cols, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(cols, 0, 0);
+    lv_obj_set_style_pad_all(cols, 0, 0);
+    lv_obj_set_style_pad_gap(cols, 8, 0);
+    lv_obj_set_flex_flow(cols, LV_FLEX_FLOW_ROW);
+    lv_obj_remove_flag(cols, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Timeout slider
-    lv_obj_t* timeout_row = lv_obj_create(gen_panel);
-    lv_obj_set_size(timeout_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(timeout_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(timeout_row, 0, 0);
-    lv_obj_set_style_pad_all(timeout_row, 0, 0);
-    lv_obj_set_flex_flow(timeout_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(timeout_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(timeout_row, LV_OBJ_FLAG_SCROLLABLE);
-    tritium_theme::createLabel(timeout_row, "Timeout");
+    // --- LEFT COLUMN: Toggles ---
+    lv_obj_t* left = ss_make_col(cols, 48);
 
-    int timeout_s = cfg.getInt(SettingsDomain::SCREENSAVER, "timeout_s", 120);
+    // Timeout
+    lv_obj_t* timeout_row = ss_make_row(left, "Timeout");
+    int timeout_s = cfg.getInt(SettingsDomain::SCREENSAVER, "timeout_s", 10);
     char timeout_str[16];
-    if (timeout_s == 0)
-        snprintf(timeout_str, sizeof(timeout_str), "Never");
-    else if (timeout_s < 60)
-        snprintf(timeout_str, sizeof(timeout_str), "%ds", timeout_s);
-    else
-        snprintf(timeout_str, sizeof(timeout_str), "%dm", timeout_s / 60);
+    if (timeout_s == 0) snprintf(timeout_str, sizeof(timeout_str), "Off");
+    else if (timeout_s < 60) snprintf(timeout_str, sizeof(timeout_str), "%ds", timeout_s);
+    else snprintf(timeout_str, sizeof(timeout_str), "%dm", timeout_s / 60);
     lv_obj_t* timeout_val = tritium_theme::createLabel(timeout_row, timeout_str, true);
-
-    lv_obj_t* timeout_slider = tritium_theme::createSlider(gen_panel, 0, 600, timeout_s);
-    lv_obj_set_width(timeout_slider, lv_pct(95));
+    lv_obj_t* timeout_slider = tritium_theme::createSlider(left, 0, 600, timeout_s);
+    lv_obj_set_width(timeout_slider, lv_pct(100));
     lv_obj_add_event_cb(timeout_slider, ss_timeout_cb, LV_EVENT_VALUE_CHANGED, timeout_val);
 
-    // --- Starfield options ---
-    lv_obj_t* sf_panel = tritium_theme::createPanel(cont, "STARFIELD OPTIONS");
-    lv_obj_set_width(sf_panel, lv_pct(100));
-    lv_obj_set_height(sf_panel, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(sf_panel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_top(sf_panel, 24, 0);
-    lv_obj_set_style_pad_gap(sf_panel, 6, 0);
-
-    // Reverse direction toggle
-    lv_obj_t* rev_row = lv_obj_create(sf_panel);
-    lv_obj_set_size(rev_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(rev_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(rev_row, 0, 0);
-    lv_obj_set_style_pad_all(rev_row, 0, 0);
-    lv_obj_set_flex_flow(rev_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(rev_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(rev_row, LV_OBJ_FLAG_SCROLLABLE);
-    tritium_theme::createLabel(rev_row, "Reverse Direction");
+    // Reverse direction
+    lv_obj_t* rev_row = ss_make_row(left, "Reverse");
     bool sf_reverse = cfg.getBool(SettingsDomain::SCREENSAVER, "sf_reverse", false);
     lv_obj_t* rev_sw = tritium_theme::createSwitch(rev_row, sf_reverse);
     lv_obj_add_event_cb(rev_sw, ss_reverse_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 
-    // Colors toggle
-    lv_obj_t* col_row = lv_obj_create(sf_panel);
-    lv_obj_set_size(col_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(col_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(col_row, 0, 0);
-    lv_obj_set_style_pad_all(col_row, 0, 0);
-    lv_obj_set_flex_flow(col_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(col_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(col_row, LV_OBJ_FLAG_SCROLLABLE);
-    tritium_theme::createLabel(col_row, "Colored Stars");
+    // Colored stars
+    lv_obj_t* col_row = ss_make_row(left, "Colors");
     bool sf_colors = cfg.getBool(SettingsDomain::SCREENSAVER, "sf_colors", true);
     lv_obj_t* col_sw = tritium_theme::createSwitch(col_row, sf_colors);
     lv_obj_add_event_cb(col_sw, ss_colors_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 
-    // Star size slider
-    lv_obj_t* size_row = lv_obj_create(sf_panel);
-    lv_obj_set_size(size_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(size_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(size_row, 0, 0);
-    lv_obj_set_style_pad_all(size_row, 0, 0);
-    lv_obj_set_flex_flow(size_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(size_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(size_row, LV_OBJ_FLAG_SCROLLABLE);
-    tritium_theme::createLabel(size_row, "Star Size");
-
-    int sf_size = cfg.getInt(SettingsDomain::SCREENSAVER, "sf_star_size", 2);
-    char size_str[8];
-    snprintf(size_str, sizeof(size_str), "%dpx", sf_size);
-    lv_obj_t* size_val = tritium_theme::createLabel(size_row, size_str, true);
-
-    lv_obj_t* size_slider = tritium_theme::createSlider(sf_panel, 1, 6, sf_size);
-    lv_obj_set_width(size_slider, lv_pct(95));
-    lv_obj_add_event_cb(size_slider, ss_starsize_cb, LV_EVENT_VALUE_CHANGED, size_val);
-
-    // Speed slider (1..100 maps to 0.001..0.100)
-    lv_obj_t* spd_row = lv_obj_create(sf_panel);
-    lv_obj_set_size(spd_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(spd_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(spd_row, 0, 0);
-    lv_obj_set_style_pad_all(spd_row, 0, 0);
-    lv_obj_set_flex_flow(spd_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(spd_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(spd_row, LV_OBJ_FLAG_SCROLLABLE);
-    tritium_theme::createLabel(spd_row, "Travel Speed");
-
-    int sf_speed = cfg.getInt(SettingsDomain::SCREENSAVER, "sf_speed", 12);
-    char spd_str[16];
-    snprintf(spd_str, sizeof(spd_str), "%.3f", (float)sf_speed * 0.001f);
-    lv_obj_t* spd_val = tritium_theme::createLabel(spd_row, spd_str, true);
-
-    lv_obj_t* spd_slider = tritium_theme::createSlider(sf_panel, 1, 100, sf_speed);
-    lv_obj_set_width(spd_slider, lv_pct(95));
-    lv_obj_add_event_cb(spd_slider, ss_speed_cb, LV_EVENT_VALUE_CHANGED, spd_val);
-
-    // Warp cycle toggle
-    lv_obj_t* warp_row = lv_obj_create(sf_panel);
-    lv_obj_set_size(warp_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(warp_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(warp_row, 0, 0);
-    lv_obj_set_style_pad_all(warp_row, 0, 0);
-    lv_obj_set_flex_flow(warp_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(warp_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(warp_row, LV_OBJ_FLAG_SCROLLABLE);
-    tritium_theme::createLabel(warp_row, "Warp Speed Bursts");
+    // Warp cycle
+    lv_obj_t* warp_row = ss_make_row(left, "Warp");
     bool sf_warp = cfg.getBool(SettingsDomain::SCREENSAVER, "sf_warp", false);
     lv_obj_t* warp_sw = tritium_theme::createSwitch(warp_row, sf_warp);
     lv_obj_add_event_cb(warp_sw, ss_warp_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 
-    // Test / Preview button
-    lv_obj_t* test_btn = tritium_theme::createButton(sf_panel, LV_SYMBOL_PLAY " TEST");
-    lv_obj_set_width(test_btn, lv_pct(95));
+    // --- RIGHT COLUMN: Sliders ---
+    lv_obj_t* right = ss_make_col(cols, 48);
+
+    // Brightness
+    lv_obj_t* brt_row = ss_make_row(right, "Brightness");
+    int sf_bright = cfg.getInt(SettingsDomain::SCREENSAVER, "sf_brightness", 80);
+    char brt_str[8];
+    snprintf(brt_str, sizeof(brt_str), "%d%%", sf_bright);
+    lv_obj_t* brt_val = tritium_theme::createLabel(brt_row, brt_str, true);
+    lv_obj_t* brt_slider = tritium_theme::createSlider(right, 10, 100, sf_bright);
+    lv_obj_set_width(brt_slider, lv_pct(100));
+    lv_obj_add_event_cb(brt_slider, ss_brightness_cb, LV_EVENT_VALUE_CHANGED, brt_val);
+
+    // Star size
+    lv_obj_t* size_row = ss_make_row(right, "Size");
+    int sf_size = cfg.getInt(SettingsDomain::SCREENSAVER, "sf_star_size", 2);
+    char size_str[8];
+    snprintf(size_str, sizeof(size_str), "%dpx", sf_size);
+    lv_obj_t* size_val = tritium_theme::createLabel(size_row, size_str, true);
+    lv_obj_t* size_slider = tritium_theme::createSlider(right, 1, 4, sf_size);
+    lv_obj_set_width(size_slider, lv_pct(100));
+    lv_obj_add_event_cb(size_slider, ss_starsize_cb, LV_EVENT_VALUE_CHANGED, size_val);
+
+    // Travel speed
+    lv_obj_t* spd_row = ss_make_row(right, "Speed");
+    int sf_speed = cfg.getInt(SettingsDomain::SCREENSAVER, "sf_speed", 12);
+    char spd_str[16];
+    snprintf(spd_str, sizeof(spd_str), "%.3f", (float)sf_speed * 0.001f);
+    lv_obj_t* spd_val = tritium_theme::createLabel(spd_row, spd_str, true);
+    lv_obj_t* spd_slider = tritium_theme::createSlider(right, 1, 100, sf_speed);
+    lv_obj_set_width(spd_slider, lv_pct(100));
+    lv_obj_add_event_cb(spd_slider, ss_speed_cb, LV_EVENT_VALUE_CHANGED, spd_val);
+
+    // --- TEST button (full width below columns) ---
+    lv_obj_t* test_btn = tritium_theme::createButton(panel, LV_SYMBOL_PLAY " TEST");
+    lv_obj_set_width(test_btn, lv_pct(100));
     lv_obj_add_event_cb(test_btn, [](lv_event_t* e) {
         (void)e;
         shell_screensaver::activate();

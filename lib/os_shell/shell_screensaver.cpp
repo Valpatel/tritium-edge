@@ -57,11 +57,12 @@ static constexpr uint32_t WARP_DURATION_MS   = 3000;
 // Runtime settings (loaded from NVS)
 // ---------------------------------------------------------------------------
 
-static bool     s_cfg_reverse   = false;   // travel direction: false=forward, true=backward
-static bool     s_cfg_colors    = true;    // colored star tints
-static int      s_cfg_star_size = 2;       // 1=dot only, 2+=cross pattern for bright stars
-static bool     s_cfg_warp      = false;   // periodic warp speed bursts
-static float    s_cfg_speed     = 0.012f;  // cruise travel speed (0.001..0.1)
+static bool     s_cfg_reverse    = false;   // travel direction: false=forward, true=backward
+static bool     s_cfg_colors     = true;    // colored star tints
+static int      s_cfg_star_size  = 2;       // 1=dot only, 2+=cross pattern for bright stars
+static bool     s_cfg_warp       = false;   // periodic warp speed bursts
+static float    s_cfg_speed      = 0.012f;  // cruise travel speed (0.001..0.1)
+static float    s_cfg_brightness = 0.8f;    // overall brightness multiplier (0.1..1.0)
 
 // ---------------------------------------------------------------------------
 // State
@@ -88,7 +89,7 @@ static uint16_t* s_fb0 = nullptr;
 static uint16_t* s_fb1 = nullptr;
 
 // Previous star screen positions for erasing (avoids full memset)
-struct StarPos { int16_t x, y; };
+struct StarPos { int16_t x, y; uint8_t drawn_size; };
 static StarPos* s_prev_pos = nullptr;
 static int      s_prev_count = 0;
 
@@ -124,6 +125,8 @@ static void load_settings() {
     s_cfg_reverse   = settings.getBool(SettingsDomain::SCREENSAVER, "sf_reverse", false);
     s_cfg_colors    = settings.getBool(SettingsDomain::SCREENSAVER, "sf_colors", true);
     s_cfg_star_size = settings.getInt(SettingsDomain::SCREENSAVER, "sf_star_size", 2);
+    if (s_cfg_star_size < 1) s_cfg_star_size = 1;
+    if (s_cfg_star_size > 4) s_cfg_star_size = 4;
     s_cfg_warp      = settings.getBool(SettingsDomain::SCREENSAVER, "sf_warp", false);
 
     // Speed stored as int 1..100 (thousandths), map to 0.001..0.100
@@ -131,6 +134,12 @@ static void load_settings() {
     if (speed_raw < 1) speed_raw = 1;
     if (speed_raw > 100) speed_raw = 100;
     s_cfg_speed = (float)speed_raw * 0.001f;
+
+    // Brightness stored as int 10..100 (percent), map to 0.1..1.0
+    int bright_raw = settings.getInt(SettingsDomain::SCREENSAVER, "sf_brightness", 80);
+    if (bright_raw < 10) bright_raw = 10;
+    if (bright_raw > 100) bright_raw = 100;
+    s_cfg_brightness = (float)bright_raw * 0.01f;
 #endif
 }
 
@@ -266,6 +275,7 @@ void activate() {
     for (int i = 0; i < NUM_STARS; i++) {
         s_prev_pos[i].x = -1;
         s_prev_pos[i].y = -1;
+        s_prev_pos[i].drawn_size = 0;
     }
     s_prev_count = NUM_STARS;
 
@@ -437,12 +447,12 @@ static void render_direct() {
 
     s_starfield->update(speed);
 
-    // Erase previous star positions (write black pixels)
+    // Erase previous star positions using their actual drawn size
     for (int i = 0; i < s_prev_count; i++) {
         int ox = s_prev_pos[i].x;
         int oy = s_prev_pos[i].y;
         if (ox < 0) continue;
-        erase_star(ox, oy, stride, s_cfg_star_size);
+        erase_star(ox, oy, stride, s_prev_pos[i].drawn_size);
     }
 
     // Render new star positions
@@ -455,14 +465,22 @@ static void render_direct() {
         if (!s_starfield->project(stars[i], sx, sy, brightness)) {
             s_prev_pos[i].x = -1;
             s_prev_pos[i].y = -1;
+            s_prev_pos[i].drawn_size = 0;
             continue;
         }
 
-        // Save position for next frame erasure
+        // Compute effective drawn size based on brightness thresholds
+        int effective_size = 1;
+        if (s_cfg_star_size >= 2 && brightness > 0.5f) effective_size = 2;
+        if (s_cfg_star_size >= 3 && brightness > 0.4f) effective_size = 3;
+        if (s_cfg_star_size >= 4 && brightness > 0.6f) effective_size = 4;
+
+        // Save position + drawn size for next frame erasure
         s_prev_pos[i].x = (int16_t)sx;
         s_prev_pos[i].y = (int16_t)sy;
+        s_prev_pos[i].drawn_size = (uint8_t)effective_size;
 
-        uint8_t gray = (uint8_t)(brightness * 255.0f);
+        uint8_t gray = (uint8_t)(brightness * s_cfg_brightness * 255.0f);
         uint8_t r = gray, g = gray, b = gray;
 
         if (s_cfg_colors) {
@@ -475,7 +493,7 @@ static void render_direct() {
         }
 
         uint16_t color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-        draw_star(sx, sy, stride, color, brightness, s_cfg_star_size);
+        draw_star(sx, sy, stride, color, brightness, effective_size);
     }
 }
 

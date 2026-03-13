@@ -92,7 +92,10 @@ bool StarField::project(const Star& s, int& sx, int& sy, float& brightness) cons
 
     if (sx < 0 || sx >= _w || sy < 0 || sy >= _h) return false;
 
-    // Brightness: closer stars are brighter (inv_z ranges roughly 1..100)
-    brightness = fminf(1.0f, inv_z * 0.15f);
+    // Brightness: closer stars are brighter
+    // inv_z ranges ~1 (far, z=1) to ~100 (close, z=0.01)
+    // Use squared falloff for more visible far stars with bright nearby stars
+    float raw = fminf(1.0f, inv_z * 0.4f);
+    brightness = 0.15f + 0.85f * raw;  // floor at 15% so distant stars are still visible
     return true;
 }
