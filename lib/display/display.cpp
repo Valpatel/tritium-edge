@@ -23,6 +23,7 @@
 #include "esp_lcd_panel_vendor.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "driver/i2c.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -245,6 +246,20 @@ static esp_err_t init_rgb_display(void)
 
 #endif /* RGB display */
 
+/* IO extension chip I2C write (Waveshare custom chip at 0x24, shared I2C bus) */
+#if defined(DISPLAY_DRIVER_RGB) && defined(BOARD_IO_EXT_I2C_ADDR)
+static esp_err_t display_io_ext_write(const uint8_t* data, size_t len) {
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (BOARD_IO_EXT_I2C_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write(cmd, data, len, true);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(BOARD_IO_EXT_I2C_PORT, cmd, pdMS_TO_TICKS(100));
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
+#endif
+
 /* ========================================================================== */
 /* Public API                                                                 */
 /* ========================================================================== */
@@ -278,6 +293,17 @@ esp_err_t display_init(void)
     /* Turn backlight on full */
     backlight_set_brightness(BOARD_LCD_BL_GPIO, BOARD_LCD_BL_PWM_CHANNEL, 255, BOARD_LCD_BL_ACTIVE_HIGH);
     ESP_LOGI(TAG, "Backlight ON (GPIO %d)", BOARD_LCD_BL_GPIO);
+#elif defined(DISPLAY_DRIVER_RGB) && defined(BOARD_IO_EXT_I2C_ADDR)
+    /* Turn on backlight via IO extension chip (PWM register 0x05, max=97) */
+    {
+        /* Also set IO2 (backlight enable) high via output register 0x03 */
+        uint8_t out_data[2] = { 0x03, (1 << BOARD_IO_EXT_BL_PIN) };
+        display_io_ext_write(out_data, sizeof(out_data));
+        /* Set PWM to full brightness */
+        uint8_t pwm_data[2] = { 0x05, 97 };
+        display_io_ext_write(pwm_data, sizeof(pwm_data));
+        ESP_LOGI(TAG, "Backlight ON via IO extension (I2C 0x%02X)", BOARD_IO_EXT_I2C_ADDR);
+    }
 #else
     ESP_LOGI(TAG, "No direct backlight GPIO (AMOLED or IO expander)");
 #endif
@@ -384,9 +410,15 @@ void display_set_brightness(uint8_t brightness)
         esp_lcd_panel_io_tx_param(s_panel_io, cmd, &val, 1);
     }
 #elif defined(DISPLAY_DRIVER_RGB)
-    /* 4.3C-BOX: brightness via IO extension chip */
-    /* TODO: Implement IO extension PWM control (I2C 0x24, register 0x05) */
-    ESP_LOGW(TAG, "RGB backlight brightness control not yet implemented");
-    (void)brightness;
+    /* 4.3C-BOX: brightness via Waveshare IO extension chip at I2C 0x24 */
+    /* PWM register 0x05, value 0-97 (maps from 0-255 input range)      */
+    {
+        uint8_t pwm_val = (brightness == 0) ? 0 : (uint8_t)(1 + ((uint16_t)brightness * 96 / 255));
+        uint8_t data[2] = { 0x05, pwm_val };
+        esp_err_t err = display_io_ext_write(data, sizeof(data));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Backlight PWM write failed: 0x%x", err);
+        }
+    }
 #endif
 }
