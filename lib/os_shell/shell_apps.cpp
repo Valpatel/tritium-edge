@@ -483,6 +483,9 @@ void settings_create(lv_obj_t* viewport) {
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(viewport, 4, 0);
     lv_obj_set_style_pad_gap(viewport, 4, 0);
+    // Prevent viewport from scrolling — only the content area should scroll,
+    // keeping the tab bar always visible at the top
+    lv_obj_remove_flag(viewport, LV_OBJ_FLAG_SCROLLABLE);
 
     // --- Tab bar: 5 icon buttons ---
     lv_obj_t* tab_bar = lv_obj_create(viewport);
@@ -526,10 +529,11 @@ void settings_create(lv_obj_t* viewport) {
         s_settings_tab_btns[i] = btn;
     }
 
-    // --- Scrollable content area ---
+    // --- Scrollable content area (fills remaining space, scrolls internally) ---
     s_settings_content = lv_obj_create(viewport);
     lv_obj_set_width(s_settings_content, lv_pct(100));
     lv_obj_set_flex_grow(s_settings_content, 1);
+    lv_obj_set_style_min_height(s_settings_content, 0, 0);
     lv_obj_set_style_bg_opa(s_settings_content, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_settings_content, 0, 0);
     lv_obj_set_style_pad_all(s_settings_content, 0, 0);

@@ -1879,7 +1879,7 @@ void WebServerHAL::addApiEndpoints() {
         _server->send(200, "application/json", "{\"ok\":true}");
     });
 
-    // POST /api/remote/tap — inject press + release
+    // POST /api/remote/tap — inject press + release (short tap)
     _server->on("/api/remote/tap", HTTP_POST, [self]() {
         self->_requestCount++;
         String _body = _server->arg("plain");
@@ -1891,8 +1891,39 @@ void WebServerHAL::addApiEndpoints() {
         if (x < 0) x = 0; if (x >= w) x = w - 1;
         if (y < 0) y = 0; if (y >= h) y = h - 1;
 
-        touch_input::inject((uint16_t)x, (uint16_t)y, true);
+        // Non-blocking tap: press for 3 LVGL read cycles then auto-release
+        touch_input::injectTap((uint16_t)x, (uint16_t)y, 3);
         _server->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    // POST /api/remote/click — directly send LVGL click event at coordinates
+    _server->on("/api/remote/click", HTTP_POST, [self]() {
+        self->_requestCount++;
+        String _body = _server->arg("plain");
+        const char* s = _body.c_str();
+        int x = json_int(s, "x");
+        int y = json_int(s, "y");
+
+        // Find the LVGL object at these coordinates
+        lv_point_t pt = {(int32_t)x, (int32_t)y};
+        lv_display_t* disp = lv_display_get_default();
+        lv_obj_t* obj = lv_indev_search_obj(lv_display_get_layer_sys(disp), &pt);
+        if (!obj) obj = lv_indev_search_obj(lv_display_get_layer_top(disp), &pt);
+        if (!obj) obj = lv_indev_search_obj(lv_display_get_screen_active(disp), &pt);
+
+        if (obj && lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE)) {
+            // Only send CLICKED — sending PRESSED/RELEASED directly can corrupt
+            // LVGL's internal indev state and break widget layout
+            lv_obj_send_event(obj, LV_EVENT_CLICKED, nullptr);
+            touch_input::registerActivity();
+            char buf[128];
+            snprintf(buf, sizeof(buf),
+                "{\"ok\":true,\"obj\":\"%p\",\"x\":%d,\"y\":%d}",
+                (void*)obj, x, y);
+            _server->send(200, "application/json", buf);
+        } else {
+            _server->send(200, "application/json", "{\"ok\":false,\"reason\":\"no clickable obj\"}");
+        }
     });
 
     // POST /api/remote/swipe — inject a swipe gesture (series of touch points)
@@ -1932,12 +1963,42 @@ void WebServerHAL::addApiEndpoints() {
     _server->on("/api/debug/touch", HTTP_GET, [self]() {
         self->_requestCount++;
         auto di = touch_input::getDebugInfo();
-        char buf[320];
+
+        // Also query LVGL indev state
+        lv_indev_t* indev = lv_indev_get_next(nullptr);
+        lv_point_t pt = {0, 0};
+        const char* indev_type = "none";
+        if (indev) {
+            lv_indev_get_point(indev, &pt);
+            indev_type = (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) ? "pointer" : "other";
+        }
+
+        // Check what LVGL object is at the last injected coordinates across all layers
+        lv_point_t test_pt = {di.last_raw_x, di.last_raw_y};
+        lv_display_t* disp = lv_display_get_default();
+        lv_obj_t* sys_hit = lv_indev_search_obj(lv_display_get_layer_sys(disp), &test_pt);
+        lv_obj_t* top_hit = lv_indev_search_obj(lv_display_get_layer_top(disp), &test_pt);
+        lv_obj_t* scr_hit = lv_indev_search_obj(lv_display_get_screen_active(disp), &test_pt);
+        // Use same priority as LVGL: sys > top > screen
+        lv_obj_t* hit_obj = sys_hit ? sys_hit : (top_hit ? top_hit : scr_hit);
+        const char* hit_layer = sys_hit ? "sys" : (top_hit ? "top" : (scr_hit ? "screen" : "none"));
+        bool hit_clickable = hit_obj ? lv_obj_has_flag(hit_obj, LV_OBJ_FLAG_CLICKABLE) : false;
+        int hit_w = hit_obj ? lv_obj_get_width(hit_obj) : 0;
+        int hit_h = hit_obj ? lv_obj_get_height(hit_obj) : 0;
+        int hit_x = hit_obj ? lv_obj_get_x(hit_obj) : 0;
+        int hit_y = hit_obj ? lv_obj_get_y(hit_obj) : 0;
+        int child_cnt = hit_obj ? (int)lv_obj_get_child_count(hit_obj) : 0;
+
+        char buf[512];
         snprintf(buf, sizeof(buf),
             "{\"read_cb_calls\":%lu,\"hw_touch_count\":%lu,"
             "\"inject_count\":%lu,\"last_x\":%d,\"last_y\":%d,"
             "\"last_touch_ms\":%lu,\"hw_available\":%s,"
-            "\"currently_pressed\":%s,\"last_activity_ms\":%lu}",
+            "\"currently_pressed\":%s,\"last_activity_ms\":%lu,"
+            "\"indev_type\":\"%s\","
+            "\"indev_pt_x\":%d,\"indev_pt_y\":%d,"
+            "\"hit_layer\":\"%s\",\"hit_obj\":\"%p\",\"hit_clickable\":%s,"
+            "\"hit_x\":%d,\"hit_y\":%d,\"hit_w\":%d,\"hit_h\":%d,\"hit_children\":%d}",
             (unsigned long)di.read_cb_calls,
             (unsigned long)di.hw_touch_count,
             (unsigned long)di.inject_count,
@@ -1945,7 +2006,11 @@ void WebServerHAL::addApiEndpoints() {
             (unsigned long)di.last_touch_ms,
             di.hw_available ? "true" : "false",
             di.currently_pressed ? "true" : "false",
-            (unsigned long)touch_input::lastActivityMs());
+            (unsigned long)touch_input::lastActivityMs(),
+            indev_type,
+            (int)pt.x, (int)pt.y,
+            hit_layer, (void*)hit_obj, hit_clickable ? "true" : "false",
+            hit_x, hit_y, hit_w, hit_h, child_cnt);
         _server->send(200, "application/json", buf);
     });
 #endif
@@ -4125,7 +4190,7 @@ if(dist>20){
 fetch('/api/remote/swipe',{method:'POST',headers:{'Content-Type':'application/json'},
 body:JSON.stringify({x1:dragStart.x,y1:dragStart.y,x2:end.x,y2:end.y,steps:Math.min(Math.round(dist/10),30)})});
 }else{
-fetch('/api/remote/tap',{method:'POST',headers:{'Content-Type':'application/json'},
+fetch('/api/remote/click',{method:'POST',headers:{'Content-Type':'application/json'},
 body:JSON.stringify({x:dragStart.x,y:dragStart.y})});}
 dragStart=null;
 });

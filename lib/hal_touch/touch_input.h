@@ -25,6 +25,10 @@ bool init();
 /// Inject a remote touch event (from web API). Thread-safe.
 void inject(uint16_t x, uint16_t y, bool pressed);
 
+/// Inject a tap: press for hold_reads read_cb cycles, then auto-release.
+/// Non-blocking — safe to call from the main loop (unlike delay-based tap).
+void injectTap(uint16_t x, uint16_t y, int hold_reads = 3);
+
 /// Clear any pending injected touch (release).
 void injectRelease();
 

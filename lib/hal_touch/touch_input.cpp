@@ -9,6 +9,7 @@
 namespace touch_input {
 bool init() { return false; }
 void inject(uint16_t, uint16_t, bool) {}
+void injectTap(uint16_t, uint16_t, int) {}
 void injectRelease() {}
 uint32_t lastActivityMs() { return 0; }
 void registerActivity() {}
@@ -48,6 +49,9 @@ static volatile int16_t  s_last_raw_y      = -1;
 static volatile uint32_t s_last_touch_ms   = 0;
 static volatile bool     s_currently_pressed = false;
 
+// Auto-release tap: counts down read_cb calls before releasing
+static volatile int      s_tap_reads_remaining = 0;
+
 namespace touch_input {
 
 // ── LVGL read callback ──────────────────────────────────────────────────────
@@ -66,6 +70,7 @@ void read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
             data->state = LV_INDEV_STATE_RELEASED;
             data->point.x = s_inject_x;
             data->point.y = s_inject_y;
+            s_tap_reads_remaining = 0;
             return;
         }
 
@@ -81,8 +86,18 @@ void read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
             s_last_raw_y = s_inject_y;
             s_last_touch_ms = now;
             s_currently_pressed = true;
+            // Tap auto-release countdown
+            if (s_tap_reads_remaining > 0) {
+                s_tap_reads_remaining = s_tap_reads_remaining - 1;
+                if (s_tap_reads_remaining == 0) {
+                    // Schedule release for next read
+                    s_inject_pressed = false;
+                    s_inject_pending = true;
+                }
+            }
         } else {
             s_currently_pressed = false;
+            s_tap_reads_remaining = 0;
         }
         return;
     }
@@ -131,6 +146,16 @@ void inject(uint16_t x, uint16_t y, bool pressed) {
     s_inject_pending = true;
     s_inject_expire  = millis() + INJECT_TIMEOUT_MS;
     s_last_activity  = millis();
+}
+
+void injectTap(uint16_t x, uint16_t y, int hold_reads) {
+    s_inject_x       = x;
+    s_inject_y       = y;
+    s_inject_pressed = true;
+    s_inject_pending = true;
+    s_inject_expire  = millis() + INJECT_TIMEOUT_MS;
+    s_last_activity  = millis();
+    s_tap_reads_remaining = (hold_reads > 0) ? hold_reads : 3;
 }
 
 void injectRelease() {
