@@ -19,6 +19,7 @@ void WebServerHAL::addBleViewer() {}
 void WebServerHAL::addCommissionPage() {}
 void WebServerHAL::addSystemPage() {}
 void WebServerHAL::addLogsPage() {}
+void WebServerHAL::addTerminalPage() {}
 void WebServerHAL::addMapPage() {}
 void WebServerHAL::addErrorPages() {}
 void WebServerHAL::addAllPages() {}
@@ -64,6 +65,10 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include <sys/stat.h>
 #include <dirent.h>
 #include "wifi_classifier.h"
+
+#if __has_include("serial_capture.h")
+#include "serial_capture.h"
+#endif
 
 #if __has_include("wifi_manager.h")
 #include "wifi_manager.h"
@@ -228,6 +233,7 @@ static const char NAV_HTML[] PROGMEM = R"rawliteral(
   <a href="/ble">BLE Scan</a>
   <a href="/ota">OTA Update</a>
   <a href="/logs">Logs</a>
+  <a href="/terminal">Terminal</a>
   <a href="/config">Config</a>
   <a href="/files">Files</a>
   <a href="/storage">SD Card</a>
@@ -3560,6 +3566,203 @@ void WebServerHAL::addLogsPage() {
     DBG_INFO("web", "Logs page added at /logs");
 }
 
+// ── Terminal page (/terminal) ─────────────────────────────────────────────
+
+static const char TERMINAL_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Terminal — Tritium Edge</title>
+%THEME%
+<style>
+#term{background:#050505;border:1px solid #00ffd022;border-radius:4px;
+  padding:10px;height:55vh;overflow-y:auto;font-size:13px;line-height:1.5;
+  font-family:'JetBrains Mono','Fira Code','Cascadia Code','Courier New',monospace;color:#05ffa1}
+#term .line{white-space:pre-wrap;word-wrap:break-word}
+.cmd-row{display:flex;gap:8px;margin-top:8px;align-items:center}
+#cmd-input{flex:1;background:#111;color:#00ffd0;border:1px solid #00ffd044;
+  padding:8px 12px;font-family:inherit;font-size:14px;border-radius:4px;outline:none}
+#cmd-input:focus{border-color:#00ffd0;box-shadow:0 0 8px #00ffd022}
+.quick-bar{display:flex;gap:6px;margin:8px 0;flex-wrap:wrap}
+.quick-bar button{background:#111;color:#00ffd0;border:1px solid #00ffd044;
+  padding:4px 10px;border-radius:3px;font-size:11px;cursor:pointer;
+  font-family:inherit;transition:all .15s}
+.quick-bar button:hover{background:#00ffd0;color:#0a0a0a}
+</style>
+</head><body>
+%NAV%
+<h1>// Terminal</h1>
+<div class="card">
+<div class="quick-bar">
+  <button onclick="send('IDENTIFY')">IDENTIFY</button>
+  <button onclick="send('SERVICES')">SERVICES</button>
+  <button onclick="send('HELP')">HELP</button>
+  <button onclick="clearTerm()" style="border-color:#ff336644;color:#ff3366">Clear</button>
+  <label style="margin-left:auto;color:#666;font-size:11px">
+    <input type="checkbox" id="autoscroll" checked> Auto-scroll</label>
+</div>
+<div id="term"></div>
+<div class="cmd-row">
+  <span style="color:#00ffd0;font-size:16px;font-weight:bold">&gt;</span>
+  <input id="cmd-input" type="text" placeholder="Type command..." autocomplete="off"
+    onkeydown="if(event.key==='Enter'){sendInput();event.preventDefault();}">
+  <button onclick="sendInput()" style="background:#00ffd0;color:#0a0a0a;border:none;
+    padding:8px 16px;border-radius:4px;cursor:pointer;font-weight:bold">Send</button>
+</div>
+</div>
+<script>
+var lastCount=0;
+function send(cmd){
+  fetch('/api/terminal/cmd',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cmd:cmd})}).then(function(){fetchLogs();});
+}
+function sendInput(){
+  var inp=document.getElementById('cmd-input');
+  var cmd=inp.value.trim();
+  if(!cmd)return;
+  send(cmd);
+  inp.value='';
+  inp.focus();
+}
+function clearTerm(){document.getElementById('term').innerHTML='';lastCount=0;}
+function fetchLogs(){
+  fetch('/api/terminal/output').then(function(r){return r.json()}).then(function(d){
+    if(d.count!==lastCount){
+      var t=document.getElementById('term');var html='';
+      d.lines.forEach(function(l){
+        var cls='color:#05ffa1';
+        if(l.indexOf('[E]')>=0||l.indexOf('ERROR')>=0) cls='color:#ff3366';
+        else if(l.indexOf('[W]')>=0||l.indexOf('WARN')>=0) cls='color:#ffaa00';
+        else if(l.indexOf('[I]')>=0||l.indexOf('INFO')>=0) cls='color:#00ffd0';
+        else if(l.indexOf('> ')===0) cls='color:#fcee0a';
+        html+='<div class="line" style="'+cls+'">'+escHtml(l)+'</div>';
+      });
+      t.innerHTML=html;lastCount=d.count;
+      if(document.getElementById('autoscroll').checked)t.scrollTop=t.scrollHeight;
+    }
+  }).catch(function(){});
+}
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+setInterval(fetchLogs,1000);
+fetchLogs();
+document.getElementById('cmd-input').focus();
+</script>
+</body></html>
+)rawliteral";
+
+void WebServerHAL::addTerminalPage() {
+    if (!_server) return;
+
+    WebServerHAL* self = this;
+
+    _server->on("/terminal", HTTP_GET, [self]() {
+        self->_requestCount++;
+        String html(FPSTR(TERMINAL_HTML));
+        html.replace("%THEME%", FPSTR(THEME_CSS));
+        html.replace("%NAV%",   FPSTR(NAV_HTML));
+        _server->send(200, "text/html", html);
+    });
+
+    // GET /api/terminal/output — get log lines for terminal display
+    _server->on("/api/terminal/output", HTTP_GET, [self]() {
+        self->_requestCount++;
+        char* buf = api_buf();
+        // Use the same log ring as /api/logs for terminal output
+        int len = WebServerHAL::getLogJson(buf, API_BUF_SIZE);
+        if (len > 0) {
+            _server->send(200, "application/json", buf);
+        } else {
+            _server->send(200, "application/json", "{\"count\":0,\"lines\":[]}");
+        }
+    });
+
+    // POST /api/terminal/cmd — execute a command and return output
+    _server->on("/api/terminal/cmd", HTTP_POST, [self]() {
+        self->_requestCount++;
+        if (!_server->hasArg("plain")) {
+            _server->send(400, "application/json", "{\"error\":\"Missing body\"}");
+            return;
+        }
+        String body = _server->arg("plain");
+        // Parse JSON: {"cmd":"IDENTIFY"}
+        int start = body.indexOf("\"cmd\"");
+        if (start < 0) {
+            _server->send(400, "application/json", "{\"error\":\"Missing cmd field\"}");
+            return;
+        }
+        start = body.indexOf(':', start);
+        if (start < 0) { _server->send(400, "application/json", "{\"error\":\"Bad JSON\"}"); return; }
+        start = body.indexOf('"', start + 1);
+        if (start < 0) { _server->send(400, "application/json", "{\"error\":\"Bad JSON\"}"); return; }
+        int end = body.indexOf('"', start + 1);
+        if (end <= start) { _server->send(400, "application/json", "{\"error\":\"Bad JSON\"}"); return; }
+
+        String cmd = body.substring(start + 1, end);
+        char cmd_buf[256];
+        strncpy(cmd_buf, cmd.c_str(), sizeof(cmd_buf) - 1);
+        cmd_buf[sizeof(cmd_buf) - 1] = '\0';
+
+        // Log the command echo
+        char echo[300];
+        snprintf(echo, sizeof(echo), "> %s", cmd_buf);
+        WebServerHAL::captureLog(echo);
+
+        // Split into verb + args
+        char* space = strchr(cmd_buf, ' ');
+        const char* verb = cmd_buf;
+        const char* args = nullptr;
+        if (space) { *space = '\0'; args = space + 1; }
+
+        char resp[512];
+        bool handled = false;
+
+        if (strcmp(verb, "IDENTIFY") == 0) {
+#if __has_include("display.h") && __has_include("service_registry.h")
+            snprintf(resp, sizeof(resp),
+                     "{\"board\":\"esp32-s3\",\"display\":\"%dx%d\",\"services\":%d}",
+                     display_get_width(), display_get_height(),
+                     ServiceRegistry::count());
+            WebServerHAL::captureLog(resp);
+#endif
+            handled = true;
+        } else if (strcmp(verb, "SERVICES") == 0) {
+#if __has_include("service_registry.h")
+            char line[128];
+            snprintf(line, sizeof(line), "[svc] %d services:", ServiceRegistry::count());
+            WebServerHAL::captureLog(line);
+            for (int i = 0; i < ServiceRegistry::count(); i++) {
+                auto* s = ServiceRegistry::at(i);
+                if (s) {
+                    snprintf(line, sizeof(line), "  %-20s pri=%3d cap=%02X",
+                             s->name(), s->initPriority(), s->capabilities());
+                    WebServerHAL::captureLog(line);
+                }
+            }
+#endif
+            handled = true;
+        } else if (strcmp(verb, "HELP") == 0) {
+            WebServerHAL::captureLog("Commands: IDENTIFY, SERVICES, HELP");
+            WebServerHAL::captureLog("Service commands are dispatched to registered services.");
+            handled = true;
+        }
+
+        if (!handled) {
+#if __has_include("service_registry.h")
+            if (!ServiceRegistry::dispatchCommand(verb, args)) {
+                snprintf(resp, sizeof(resp), "[cmd] Unknown: %s", verb);
+                WebServerHAL::captureLog(resp);
+            }
+#else
+            snprintf(resp, sizeof(resp), "[cmd] Unknown: %s", verb);
+            WebServerHAL::captureLog(resp);
+#endif
+        }
+
+        _server->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    DBG_INFO("web", "Terminal page added at /terminal");
+}
+
 // ── Error pages (404, 500) ───────────────────────────────────────────────
 
 static const char ERROR_HTML[] PROGMEM = R"rawliteral(
@@ -3946,6 +4149,7 @@ void WebServerHAL::addAllPages() {
     addCommissionPage();
     addSystemPage();
     addLogsPage();
+    addTerminalPage();
     addMapPage();
 
     // SD Card Storage page

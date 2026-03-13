@@ -41,6 +41,7 @@ public:
     void addCommissionPage();   // QR code commissioning at /commission
     void addSystemPage();       // Detailed hardware info at /system
     void addLogsPage();         // Live serial log viewer at /logs
+    void addTerminalPage();     // Interactive terminal at /terminal
     void addMapPage();          // Leaflet.js slippy map at /map
     void addErrorPages();       // 404 and 500 error handlers
     void addAllPages();         // Register all built-in pages
