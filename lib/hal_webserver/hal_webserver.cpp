@@ -3194,17 +3194,38 @@ static const char SYSTEM_HTML[] PROGMEM = R"rawliteral(
 </table>
 </div>
 <div class="card">
-<h2>Tasks</h2>
-<pre id="tasks" style="color:#00ffd0;font-size:12px;white-space:pre;overflow-x:auto">%TASKS%</pre>
+<h2>FreeRTOS Tasks <span id="task_count" style="color:#666;font-size:12px"></span></h2>
+<table id="task_table">
+<tr><th>Name</th><th>Pri</th><th>State</th><th>Stack HWM</th></tr>
+</table>
 </div>
 <script>
 function fmt(n){return n>1048576?(n/1048576).toFixed(1)+' MB':n>1024?(n/1024).toFixed(0)+' KB':n+' B'}
+function stColor(s){return s==='run'?'#05ffa1':s==='rdy'?'#00f0ff':s==='blk'?'#8888aa':'#ff2a6d'}
+function stkColor(v){return v<200?'#ff2a6d':v<500?'#fcee0a':'#05ffa1'}
+function refreshTasks(){
+  fetch('/api/diag/tasks').then(r=>r.json()).then(d=>{
+    document.getElementById('task_count').textContent='('+d.count+')';
+    var t=document.getElementById('task_table');
+    while(t.rows.length>1)t.deleteRow(1);
+    d.tasks.sort((a,b)=>b.pri-a.pri);
+    d.tasks.forEach(function(tk){
+      var r=t.insertRow();
+      r.insertCell().textContent=tk.name;
+      r.insertCell().textContent=tk.pri;
+      var sc=r.insertCell();sc.textContent=tk.state.toUpperCase();sc.style.color=stColor(tk.state);
+      var hc=r.insertCell();hc.textContent=tk.stack_hwm;hc.style.color=stkColor(tk.stack_hwm);
+    });
+  }).catch(function(){});
+}
 setInterval(function(){
   fetch('/api/status').then(r=>r.json()).then(d=>{
     document.getElementById('heap_free').textContent=fmt(d.free_heap);
     document.getElementById('psram_free').textContent=fmt(d.psram_free);
   });
+  refreshTasks();
 },5000);
+refreshTasks();
 </script>
 </body></html>
 )rawliteral";
@@ -3300,19 +3321,6 @@ void WebServerHAL::addSystemPage() {
         if (partHtml.length() == 0)
             partHtml = "<tr><td colspan='4' style='color:#666'>No partition info</td></tr>";
         html.replace("%PARTITIONS%", partHtml);
-
-        // Task list via vTaskList
-        char taskBuf[1024];
-#if configUSE_TRACE_FACILITY && configTASKLIST_INCLUDE_COREID
-        vTaskList(taskBuf);
-#else
-        snprintf(taskBuf, sizeof(taskBuf), "Name             State  Prio  Stack  Num\n");
-        // vTaskList may not be available with all configs
-        char* p = taskBuf + strlen(taskBuf);
-        snprintf(p, sizeof(taskBuf) - (p - taskBuf),
-            "(Task list requires configUSE_TRACE_FACILITY=1)");
-#endif
-        html.replace("%TASKS%", taskBuf);
 
         _server->send(200, "text/html", html);
     });
