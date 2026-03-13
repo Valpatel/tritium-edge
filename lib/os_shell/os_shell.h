@@ -115,6 +115,12 @@ void toast(const char* message,
 void notify(const char* title, const char* message,
             NotifyLevel level = NOTIFY_INFO);
 
+/// Clear all persistent notifications.
+void clearNotifications();
+
+/// Get the number of active persistent notifications.
+int getNotificationCount();
+
 // --- App management -------------------------------------------------------
 
 /// Register an app for the launcher (max 16).

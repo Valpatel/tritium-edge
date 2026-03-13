@@ -32,6 +32,7 @@
 #include "shell_theme.h"
 #include "shell_apps.h"
 #include "shell_screensaver.h"
+#include "display.h"
 #include "tritium_splash.h"  // TRITIUM_VERSION
 #include <cmath>
 #include <cstdio>
@@ -39,6 +40,7 @@
 
 #ifndef SIMULATOR
 #include "tritium_compat.h"
+#include <esp_heap_caps.h>
 #else
 #include <SDL2/SDL.h>
 static uint32_t millis() { return SDL_GetTicks(); }
@@ -76,6 +78,7 @@ static lv_obj_t* s_mesh_icon = nullptr;
 static lv_obj_t* s_mesh_count_label = nullptr;
 static lv_obj_t* s_batt_icon = nullptr;
 static lv_obj_t* s_batt_pct_label = nullptr;
+static lv_obj_t* s_notif_dot = nullptr;
 static lv_obj_t* s_clock_label = nullptr;
 
 // Nav bar state
@@ -121,6 +124,23 @@ static const lv_font_t* font_for_size(SizeClass sc) {
         case SIZE_LARGE:  return &lv_font_montserrat_20;
     }
     return &lv_font_montserrat_12;
+}
+
+static int count_active_notifs() {
+    int count = 0;
+    for (int i = 0; i < MAX_NOTIFICATIONS; i++) {
+        if (s_notifs[i].active) count++;
+    }
+    return count;
+}
+
+static void update_notif_dot() {
+    if (!s_notif_dot) return;
+    if (count_active_notifs() > 0) {
+        lv_obj_remove_flag(s_notif_dot, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_notif_dot, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static lv_color_t color_for_level(NotifyLevel level) {
@@ -274,6 +294,17 @@ static void create_status_bar(lv_obj_t* screen) {
         lv_obj_set_style_text_color(s_batt_pct_label, T_GHOST, 0);
         lv_obj_set_style_text_font(s_batt_pct_label, font, 0);
     }
+
+    // Notification dot — tiny magenta circle when notifications are pending
+    s_notif_dot = lv_obj_create(icons);
+    lv_obj_set_size(s_notif_dot, 6, 6);
+    lv_obj_set_style_radius(s_notif_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_notif_dot, T_MAGENTA, 0);
+    lv_obj_set_style_bg_opa(s_notif_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_notif_dot, 0, 0);
+    lv_obj_set_style_pad_all(s_notif_dot, 0, 0);
+    lv_obj_remove_flag(s_notif_dot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_notif_dot, LV_OBJ_FLAG_HIDDEN);  // hidden until notifications exist
 
     // Clock
     s_clock_label = lv_label_create(icons);
@@ -961,6 +992,7 @@ void notify(const char* title, const char* message, NotifyLevel level) {
             s_notifs[i].message[63] = '\0';
             s_notifs[i].level = level;
             s_notifs[i].active = true;
+            update_notif_dot();
             return;
         }
     }
@@ -970,6 +1002,18 @@ void notify(const char* title, const char* message, NotifyLevel level) {
     strncpy(s_notifs[0].message, message ? message : "", 63);
     s_notifs[0].message[63] = '\0';
     s_notifs[0].level = level;
+    update_notif_dot();
+}
+
+void clearNotifications() {
+    for (int i = 0; i < MAX_NOTIFICATIONS; i++) {
+        s_notifs[i].active = false;
+    }
+    update_notif_dot();
+}
+
+int getNotificationCount() {
+    return count_active_notifs();
 }
 
 // --- App management -------------------------------------------------------
@@ -1077,21 +1121,139 @@ void hideNavBar() {
     }
 }
 
+static void shade_brightness_cb(lv_event_t* e) {
+    lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
+    int val = lv_slider_get_value(slider);
+    display_set_brightness((uint8_t)val);
+}
+
+static void shade_dismiss_cb(lv_event_t* e) {
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx >= 0 && idx < MAX_NOTIFICATIONS) {
+        s_notifs[idx].active = false;
+        update_notif_dot();
+        showNotificationShade();  // rebuild
+    }
+}
+
+static void shade_clear_all_cb(lv_event_t* e) {
+    (void)e;
+    clearNotifications();
+    showNotificationShade();  // rebuild
+}
+
 void showNotificationShade() {
     if (!s_notif_shade) return;
 
     // Rebuild shade content with current notifications
     lv_obj_clean(s_notif_shade);
 
-    // Header
-    lv_obj_t* header = lv_label_create(s_notif_shade);
-    lv_label_set_text(header, "NOTIFICATIONS");
+    const lv_font_t* font = font_for_size(s_size_class);
+
+    // Header row: title + close button
+    lv_obj_t* hdr_row = lv_obj_create(s_notif_shade);
+    lv_obj_set_width(hdr_row, lv_pct(100));
+    lv_obj_set_height(hdr_row, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(hdr_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hdr_row, 0, 0);
+    lv_obj_set_style_pad_all(hdr_row, 0, 0);
+    lv_obj_set_flex_flow(hdr_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hdr_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(hdr_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* header = lv_label_create(hdr_row);
+    int n_active = count_active_notifs();
+    char hdr_buf[40];
+    if (n_active > 0)
+        snprintf(hdr_buf, sizeof(hdr_buf), "NOTIFICATIONS (%d)", n_active);
+    else
+        snprintf(hdr_buf, sizeof(hdr_buf), "NOTIFICATIONS");
+    lv_label_set_text(header, hdr_buf);
     lv_obj_set_style_text_color(header, T_BRIGHT, 0);
     lv_obj_set_style_text_font(header, uiHeadingFont(), 0);
-    lv_obj_set_width(header, lv_pct(100));
-    lv_obj_set_style_text_align(header, LV_TEXT_ALIGN_CENTER, 0);
 
-    // List persistent notifications
+    lv_obj_t* close_x = tritium_theme::createButton(hdr_row, LV_SYMBOL_CLOSE);
+    lv_obj_add_event_cb(close_x, shade_close_cb, LV_EVENT_CLICKED, nullptr);
+
+    // ── Quick Settings Panel ────────────────────────────────────────────
+    lv_obj_t* qs_panel = tritium_theme::createPanel(s_notif_shade, "QUICK SETTINGS");
+    lv_obj_set_width(qs_panel, lv_pct(100));
+    lv_obj_set_height(qs_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(qs_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(qs_panel, 24, 0);
+    lv_obj_set_style_pad_gap(qs_panel, 4, 0);
+
+    // Brightness slider
+    lv_obj_t* brt_row = lv_obj_create(qs_panel);
+    lv_obj_set_width(brt_row, lv_pct(100));
+    lv_obj_set_height(brt_row, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(brt_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(brt_row, 0, 0);
+    lv_obj_set_style_pad_all(brt_row, 0, 0);
+    lv_obj_set_flex_flow(brt_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(brt_row, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(brt_row, 8, 0);
+    lv_obj_remove_flag(brt_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* sun_icon = lv_label_create(brt_row);
+    lv_label_set_text(sun_icon, LV_SYMBOL_EYE_OPEN);
+    lv_obj_set_style_text_color(sun_icon, T_YELLOW, 0);
+    lv_obj_set_style_text_font(sun_icon, font, 0);
+
+    lv_obj_t* brt_slider = tritium_theme::createSlider(brt_row, 10, 255, 200);
+    lv_obj_set_flex_grow(brt_slider, 1);
+    lv_obj_add_event_cb(brt_slider, shade_brightness_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    // System info row
+    lv_obj_t* info_row = lv_obj_create(qs_panel);
+    lv_obj_set_width(info_row, lv_pct(100));
+    lv_obj_set_height(info_row, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(info_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(info_row, 0, 0);
+    lv_obj_set_style_pad_all(info_row, 0, 0);
+    lv_obj_set_flex_flow(info_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(info_row, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(info_row, LV_OBJ_FLAG_SCROLLABLE);
+
+#ifndef SIMULATOR
+    // WiFi status
+    {
+        char buf[32];
+        const char* rssi_text = s_rssi_label ? lv_label_get_text(s_rssi_label) : "--";
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " %sdBm", rssi_text);
+        lv_obj_t* lbl = lv_label_create(info_row);
+        lv_label_set_text(lbl, buf);
+        lv_obj_set_style_text_color(lbl, T_TEXT, 0);
+        lv_obj_set_style_text_font(lbl, font, 0);
+    }
+    // Heap
+    {
+        char buf[24];
+        size_t heap = esp_get_free_heap_size();
+        snprintf(buf, sizeof(buf), "Heap: %uKB", (unsigned)(heap / 1024));
+        lv_obj_t* lbl = lv_label_create(info_row);
+        lv_label_set_text(lbl, buf);
+        lv_obj_set_style_text_color(lbl, T_TEXT, 0);
+        lv_obj_set_style_text_font(lbl, font, 0);
+    }
+    // Uptime
+    {
+        char buf[24];
+        uint32_t sec = millis() / 1000;
+        uint32_t h = sec / 3600;
+        uint32_t m = (sec % 3600) / 60;
+        snprintf(buf, sizeof(buf), "Up: %luh%lum", (unsigned long)h, (unsigned long)m);
+        lv_obj_t* lbl = lv_label_create(info_row);
+        lv_label_set_text(lbl, buf);
+        lv_obj_set_style_text_color(lbl, T_TEXT, 0);
+        lv_obj_set_style_text_font(lbl, font, 0);
+    }
+#endif
+
+    // ── Notification List ───────────────────────────────────────────────
     bool any = false;
     for (int i = 0; i < MAX_NOTIFICATIONS; i++) {
         if (!s_notifs[i].active) continue;
@@ -1102,12 +1264,31 @@ void showNotificationShade() {
         lv_obj_set_height(card, LV_SIZE_CONTENT);
         lv_obj_set_style_border_color(card, color_for_level(s_notifs[i].level), 0);
         lv_obj_set_style_border_opa(card, LV_OPA_40, 0);
-
+        lv_obj_set_style_border_side(card, LV_BORDER_SIDE_LEFT, 0);
+        lv_obj_set_style_border_width(card, 3, 0);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_gap(card, 2, 0);
 
-        lv_obj_t* t = tritium_theme::createLabel(card, s_notifs[i].title);
+        // Title row with dismiss button
+        lv_obj_t* title_row = lv_obj_create(card);
+        lv_obj_set_width(title_row, lv_pct(100));
+        lv_obj_set_height(title_row, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(title_row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(title_row, 0, 0);
+        lv_obj_set_style_pad_all(title_row, 0, 0);
+        lv_obj_set_flex_flow(title_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(title_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_remove_flag(title_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t* t = tritium_theme::createLabel(title_row, s_notifs[i].title);
         lv_obj_set_style_text_color(t, T_BRIGHT, 0);
+        lv_obj_set_flex_grow(t, 1);
+
+        lv_obj_t* dismiss = tritium_theme::createButton(title_row, LV_SYMBOL_CLOSE);
+        lv_obj_set_style_pad_all(dismiss, 2, 0);
+        lv_obj_add_event_cb(dismiss, shade_dismiss_cb, LV_EVENT_CLICKED,
+                            (void*)(intptr_t)i);
 
         tritium_theme::createLabel(card, s_notifs[i].message);
     }
@@ -1120,10 +1301,25 @@ void showNotificationShade() {
         lv_obj_set_width(empty, lv_pct(100));
     }
 
-    // Close button
-    lv_obj_t* close_btn = tritium_theme::createButton(s_notif_shade, "CLOSE");
-    lv_obj_set_width(close_btn, lv_pct(50));
-    lv_obj_add_event_cb(close_btn, shade_close_cb, LV_EVENT_CLICKED, nullptr);
+    // Bottom buttons: Clear All + Close
+    if (any) {
+        lv_obj_t* btn_row = lv_obj_create(s_notif_shade);
+        lv_obj_set_width(btn_row, lv_pct(100));
+        lv_obj_set_height(btn_row, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(btn_row, 0, 0);
+        lv_obj_set_style_pad_all(btn_row, 0, 0);
+        lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_gap(btn_row, 12, 0);
+        lv_obj_remove_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t* clear_btn = tritium_theme::createButton(btn_row,
+            LV_SYMBOL_TRASH " Clear All");
+        lv_obj_set_style_border_color(clear_btn, T_MAGENTA, 0);
+        lv_obj_add_event_cb(clear_btn, shade_clear_all_cb, LV_EVENT_CLICKED, nullptr);
+    }
 
     lv_obj_remove_flag(s_notif_shade, LV_OBJ_FLAG_HIDDEN);
     s_shade_visible = true;
