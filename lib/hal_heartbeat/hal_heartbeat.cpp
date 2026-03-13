@@ -48,6 +48,13 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #include <mbedtls/sha256.h>
 #include "hal_provision.h"
 
+#if __has_include("ota_manager.h")
+#include "ota_manager.h"
+#define HAS_OTA_MANAGER 1
+#else
+#define HAS_OTA_MANAGER 0
+#endif
+
 // Optional BLE scanner integration
 #if __has_include("hal_ble_scanner.h")
 #include "hal_ble_scanner.h"
@@ -463,15 +470,28 @@ bool send_now() {
             }
         }
 
-        // Check for OTA directive — store URL in NVS for hal_ota to pick up
+        // Check for OTA directive — trigger URL-based OTA update
         if (response.indexOf("\"ota\"") >= 0 && response.indexOf("\"url\"") >= 0) {
             int urlStart = response.indexOf("\"url\":\"") + 7;
             int urlEnd = response.indexOf("\"", urlStart);
             if (urlStart > 6 && urlEnd > urlStart) {
-                String otaUrl = String(_server_url) + response.substring(urlStart, urlEnd);
+                String otaUrl = response.substring(urlStart, urlEnd);
+                // If URL is relative (starts with /), prepend server base URL
+                if (otaUrl.startsWith("/")) {
+                    otaUrl = String(_server_url) + otaUrl;
+                }
                 DBG_INFO(TAG, "Server scheduled OTA: %s", otaUrl.c_str());
-                // Note: OTA execution is left to apps that include hal_ota.
-                // The heartbeat library only logs the directive.
+#if HAS_OTA_MANAGER
+                ota_manager::init();
+                if (!ota_manager::updateFromUrl(otaUrl.c_str())) {
+                    DBG_ERROR(TAG, "Fleet OTA failed: %s",
+                              ota_manager::getStatus().error_msg);
+                } else {
+                    DBG_INFO(TAG, "Fleet OTA complete, rebooting...");
+                    delay(500);
+                    ota_manager::reboot();
+                }
+#endif
             }
         }
     } else {
