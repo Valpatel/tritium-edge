@@ -51,6 +51,7 @@ public:
     // Network management (persisted to NVS on ESP32, file on desktop)
     bool addNetwork(const char* ssid, const char* password);
     bool removeNetwork(const char* ssid);
+    bool moveNetwork(int fromIdx, int toIdx);
     int getSavedNetworks(SavedNetwork* out, int maxCount) const;
     int getSavedCount() const;
 

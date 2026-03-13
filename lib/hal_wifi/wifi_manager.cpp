@@ -503,6 +503,22 @@ bool WifiManager::removeNetwork(const char* ssid) {
     return false;
 }
 
+bool WifiManager::moveNetwork(int fromIdx, int toIdx) {
+    if (fromIdx < 0 || fromIdx >= _savedCount) return false;
+    if (toIdx < 0 || toIdx >= _savedCount) return false;
+    if (fromIdx == toIdx) return true;
+
+    SavedNetwork tmp = _saved[fromIdx];
+    if (fromIdx < toIdx) {
+        for (int i = fromIdx; i < toIdx; i++) _saved[i] = _saved[i + 1];
+    } else {
+        for (int i = fromIdx; i > toIdx; i--) _saved[i] = _saved[i - 1];
+    }
+    _saved[toIdx] = tmp;
+    saveNetworks();
+    return true;
+}
+
 int WifiManager::getSavedNetworks(SavedNetwork* out, int maxCount) const {
     int count = (_savedCount < maxCount) ? _savedCount : maxCount;
     memcpy(out, _saved, count * sizeof(SavedNetwork));

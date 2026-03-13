@@ -293,6 +293,34 @@ static void wifi_ap_toggle_cb(lv_event_t* e) {
     }
 }
 
+static void wifi_refresh_saved();  // forward declaration
+
+static void wifi_saved_delete_cb(lv_event_t* e) {
+    auto* wm = WifiManager::_instance;
+    if (!wm) return;
+    int idx = (int)(uintptr_t)lv_event_get_user_data(e);
+    SavedNetwork nets[WIFI_MAX_SAVED_NETWORKS];
+    int count = wm->getSavedNetworks(nets, WIFI_MAX_SAVED_NETWORKS);
+    if (idx >= 0 && idx < count) {
+        wm->removeNetwork(nets[idx].ssid);
+        wifi_refresh_saved();
+    }
+}
+
+static void wifi_saved_move_up_cb(lv_event_t* e) {
+    auto* wm = WifiManager::_instance;
+    if (!wm) return;
+    int idx = (int)(uintptr_t)lv_event_get_user_data(e);
+    if (wm->moveNetwork(idx, idx - 1)) wifi_refresh_saved();
+}
+
+static void wifi_saved_move_down_cb(lv_event_t* e) {
+    auto* wm = WifiManager::_instance;
+    if (!wm) return;
+    int idx = (int)(uintptr_t)lv_event_get_user_data(e);
+    if (wm->moveNetwork(idx, idx + 1)) wifi_refresh_saved();
+}
+
 static void wifi_refresh_saved() {
     auto* wm = WifiManager::_instance;
     if (!wm || !s_wifi_saved_list) return;
@@ -317,8 +345,22 @@ static void wifi_refresh_saved() {
         lv_obj_set_flex_grow(name, 1);
         lv_obj_set_style_text_color(name, T_TEXT, 0);
 
+        // Up button (hidden for first item)
+        lv_obj_t* up_btn = tritium_theme::createButton(row, LV_SYMBOL_UP, T_CYAN);
+        lv_obj_add_event_cb(up_btn, wifi_saved_move_up_cb, LV_EVENT_CLICKED,
+                            (void*)(uintptr_t)i);
+        if (i == 0) lv_obj_add_flag(up_btn, LV_OBJ_FLAG_HIDDEN);
+
+        // Down button (hidden for last item)
+        lv_obj_t* down_btn = tritium_theme::createButton(row, LV_SYMBOL_DOWN, T_CYAN);
+        lv_obj_add_event_cb(down_btn, wifi_saved_move_down_cb, LV_EVENT_CLICKED,
+                            (void*)(uintptr_t)i);
+        if (i == count - 1) lv_obj_add_flag(down_btn, LV_OBJ_FLAG_HIDDEN);
+
+        // Delete button
         lv_obj_t* del_btn = tritium_theme::createButton(row, LV_SYMBOL_TRASH, T_MAGENTA);
-        lv_obj_set_user_data(del_btn, (void*)(uintptr_t)i);
+        lv_obj_add_event_cb(del_btn, wifi_saved_delete_cb, LV_EVENT_CLICKED,
+                            (void*)(uintptr_t)i);
     }
 }
 
