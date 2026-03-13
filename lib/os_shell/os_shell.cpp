@@ -1025,6 +1025,9 @@ void registerApp(const AppDescriptor& app) {
 
 void showLauncher() {
     if (!s_viewport) return;
+    if (shell_screensaver::isActive()) {
+        shell_screensaver::dismiss();
+    }
     shell_apps::cleanup_timers();
     setAppName("TRITIUM OS v" TRITIUM_VERSION);
     s_active_app = 0;
@@ -1039,6 +1042,11 @@ void showApp(int app_index) {
         // No launch function (e.g., Launcher entry) -> show launcher
         showLauncher();
         return;
+    }
+
+    // Dismiss screensaver if active (stops direct FB rendering)
+    if (shell_screensaver::isActive()) {
+        shell_screensaver::dismiss();
     }
 
     shell_apps::cleanup_timers();

@@ -245,6 +245,9 @@ void dismiss() {
     s_bg_rendered = false;
     printf("[screensaver] dismissed\n");
 
+    // Register activity so screensaver doesn't immediately re-activate
+    touch_input::registerActivity();
+
     if (s_overlay) {
         lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
         // Force LVGL to redraw everything underneath

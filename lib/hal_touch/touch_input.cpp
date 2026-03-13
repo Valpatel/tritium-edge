@@ -11,6 +11,7 @@ bool init() { return false; }
 void inject(uint16_t, uint16_t, bool) {}
 void injectRelease() {}
 uint32_t lastActivityMs() { return 0; }
+void registerActivity() {}
 bool isRemoteActive() { return false; }
 DebugInfo getDebugInfo() { return {}; }
 }  // namespace touch_input
@@ -139,6 +140,10 @@ void injectRelease() {
 
 uint32_t lastActivityMs() {
     return s_last_activity;
+}
+
+void registerActivity() {
+    s_last_activity = millis();
 }
 
 bool isRemoteActive() {

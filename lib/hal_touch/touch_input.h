@@ -31,6 +31,9 @@ void injectRelease();
 /// Get millis() timestamp of last touch activity (hw or remote).
 uint32_t lastActivityMs();
 
+/// Register activity without a touch event (e.g., remote API launch).
+void registerActivity();
+
 /// Returns true if a remote touch is currently active.
 bool isRemoteActive();
 
