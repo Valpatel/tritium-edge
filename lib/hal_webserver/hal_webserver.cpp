@@ -565,6 +565,21 @@ void WebServerHAL::process() {
     if (_running && _server) {
         if (_dnsServer) _dnsServer->processNextRequest();
         _server->handleClient();
+
+        // Httpd watchdog: if WiFi is connected but no requests for 60s,
+        // restart the server (recovers from socket exhaustion)
+        static uint32_t _lastReqCount = 0;
+        static uint32_t _lastCheckMs = 0;
+        uint32_t now = millis();
+        if (now - _lastCheckMs > 60000) {
+            _lastCheckMs = now;
+            if (_requestCount == _lastReqCount && WiFi.isConnected()) {
+                DBG_WARN("web", "No requests in 60s — restarting httpd");
+                _server->close();
+                _server->begin();
+            }
+            _lastReqCount = _requestCount;
+        }
     }
 }
 
