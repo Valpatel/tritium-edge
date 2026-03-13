@@ -908,7 +908,9 @@ static void wifi_deferred_init() {
             }
         }
 #endif
-        Serial.printf("[tritium] WiFi services ready\n");
+        // Start TCP debug server for wireless serial monitoring (port 9999)
+        DebugLog::startTcpServer(9999);
+        Serial.printf("[tritium] WiFi services ready (debug TCP on :9999)\n");
     }
 }
 #endif  // ENABLE_WIFI
@@ -935,7 +937,8 @@ static void services_tick() {
 #if defined(ENABLE_COT)
     hal_cot::tick();
 #endif
-    // Periodically flush debug logs to SD card
+    // Debug log housekeeping: TCP client handling + SD card flush
+    DebugLog::poll();
     DebugLog::flushSDLog();
 }
 
