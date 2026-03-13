@@ -108,6 +108,14 @@ static uint32_t millis() { return SDL_GetTicks(); }
 #define BLE_APP_AVAILABLE 0
 #endif
 
+#if defined(ENABLE_WEBSERVER) && __has_include("serial_capture.h")
+#include "serial_capture.h"
+#include "service_registry.h"
+#define TERMINAL_AVAILABLE 1
+#else
+#define TERMINAL_AVAILABLE 0
+#endif
+
 namespace shell_apps {
 
 // ---------------------------------------------------------------------------
@@ -3503,6 +3511,203 @@ void ble_app_create(lv_obj_t* viewport) {
 }
 
 // ===========================================================================
+//  Terminal App — on-device serial console
+// ===========================================================================
+
+static lv_obj_t*   s_term_output  = nullptr;   // Scrollable label for output
+static lv_obj_t*   s_term_input   = nullptr;   // Text area for command input
+static lv_timer_t* s_term_timer   = nullptr;
+static lv_obj_t*   s_term_kb      = nullptr;   // On-screen keyboard
+
+// Ring buffer of displayed lines (to avoid re-fetching everything)
+static constexpr int TERM_MAX_LINES = 100;
+static char s_term_buf[4096] = {};  // Accumulated output text
+
+#if TERMINAL_AVAILABLE
+static void term_send_cmd(const char* cmd) {
+    if (!cmd || !cmd[0]) return;
+    serial_capture::injectCommand(cmd);
+}
+
+static void term_send_cb(lv_event_t* e) {
+    (void)e;
+    if (!s_term_input) return;
+    const char* txt = lv_textarea_get_text(s_term_input);
+    if (txt && txt[0]) {
+        term_send_cmd(txt);
+        lv_textarea_set_text(s_term_input, "");
+    }
+}
+
+static void term_quick_cmd_cb(lv_event_t* e) {
+    const char* cmd = (const char*)lv_event_get_user_data(e);
+    if (cmd) term_send_cmd(cmd);
+}
+
+static void term_clear_cb(lv_event_t* e) {
+    (void)e;
+    s_term_buf[0] = '\0';
+    if (s_term_output) lv_label_set_text(s_term_output, "");
+}
+
+static void term_input_focus_cb(lv_event_t* e) {
+    (void)e;
+    if (s_term_kb) lv_keyboard_set_textarea(s_term_kb, s_term_input);
+}
+
+static void term_refresh(lv_timer_t* t) {
+    (void)t;
+    if (!s_term_output) return;
+
+    // Fetch latest lines from serial capture
+    char fetch_buf[2048];
+    int n = serial_capture::getLines(fetch_buf, sizeof(fetch_buf), 20);
+    if (n <= 0) return;
+
+    // Append new lines to our buffer
+    size_t cur_len = strlen(s_term_buf);
+    const char* p = fetch_buf;
+    for (int i = 0; i < n; i++) {
+        size_t line_len = strlen(p);
+        if (cur_len + line_len + 2 >= sizeof(s_term_buf)) {
+            // Buffer full — shift out first half
+            const char* mid = s_term_buf + sizeof(s_term_buf) / 2;
+            const char* nl = strchr(mid, '\n');
+            if (nl) {
+                nl++;
+                size_t keep = cur_len - (nl - s_term_buf);
+                memmove(s_term_buf, nl, keep);
+                cur_len = keep;
+                s_term_buf[cur_len] = '\0';
+            } else {
+                cur_len = 0;
+                s_term_buf[0] = '\0';
+            }
+        }
+        // Strip ANSI escape codes for clean display
+        for (size_t j = 0; j < line_len && cur_len < sizeof(s_term_buf) - 2; j++) {
+            if (p[j] == '\033') {
+                // Skip ESC [ ... m sequences
+                if (j + 1 < line_len && p[j + 1] == '[') {
+                    j += 2;
+                    while (j < line_len && p[j] != 'm') j++;
+                    continue;
+                }
+            }
+            s_term_buf[cur_len++] = p[j];
+        }
+        s_term_buf[cur_len++] = '\n';
+        s_term_buf[cur_len] = '\0';
+        p += line_len + 1;
+    }
+
+    lv_label_set_text(s_term_output, s_term_buf);
+
+    // Auto-scroll to bottom
+    lv_obj_t* parent = lv_obj_get_parent(s_term_output);
+    if (parent) lv_obj_scroll_to_y(parent, LV_COORD_MAX, LV_ANIM_OFF);
+}
+#endif
+
+void terminal_app_create(lv_obj_t* viewport) {
+    lv_obj_clean(viewport);
+    lv_obj_set_flex_flow(viewport, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(viewport, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(viewport, 4, 0);
+    lv_obj_set_style_pad_gap(viewport, 4, 0);
+
+#if !TERMINAL_AVAILABLE
+    tritium_theme::createLabel(viewport, "Terminal not available");
+    return;
+#else
+    // Quick command bar
+    lv_obj_t* cmd_bar = lv_obj_create(viewport);
+    lv_obj_set_size(cmd_bar, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(cmd_bar, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(cmd_bar, 0, 0);
+    lv_obj_set_style_pad_all(cmd_bar, 0, 0);
+    lv_obj_set_flex_flow(cmd_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_gap(cmd_bar, 4, 0);
+    lv_obj_set_flex_align(cmd_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+
+    // Quick command buttons
+    static const char* quick_cmds[] = {
+        "IDENTIFY", "SERVICES", "HELP", nullptr
+    };
+    for (int i = 0; quick_cmds[i]; i++) {
+        lv_obj_t* btn = tritium_theme::createButton(cmd_bar, quick_cmds[i], T_CYAN);
+        lv_obj_set_style_pad_all(btn, 4, 0);
+        lv_obj_set_style_text_font(btn, &lv_font_montserrat_12, 0);
+        lv_obj_add_event_cb(btn, term_quick_cmd_cb, LV_EVENT_CLICKED, (void*)quick_cmds[i]);
+    }
+    // Clear button
+    lv_obj_t* clr_btn = tritium_theme::createButton(cmd_bar, LV_SYMBOL_TRASH, T_MAGENTA);
+    lv_obj_set_style_pad_all(clr_btn, 4, 0);
+    lv_obj_add_event_cb(clr_btn, term_clear_cb, LV_EVENT_CLICKED, nullptr);
+
+    // Output area (scrollable)
+    lv_obj_t* output_panel = lv_obj_create(viewport);
+    lv_obj_set_size(output_panel, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(output_panel, 1);
+    lv_obj_set_style_bg_color(output_panel, T_VOID, 0);
+    lv_obj_set_style_bg_opa(output_panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(output_panel, T_CYAN, 0);
+    lv_obj_set_style_border_opa(output_panel, LV_OPA_20, 0);
+    lv_obj_set_style_border_width(output_panel, 1, 0);
+    lv_obj_set_style_radius(output_panel, 4, 0);
+    lv_obj_set_style_pad_all(output_panel, 4, 0);
+    lv_obj_set_scrollbar_mode(output_panel, LV_SCROLLBAR_MODE_AUTO);
+
+    s_term_output = lv_label_create(output_panel);
+    lv_label_set_text(s_term_output, "Tritium Terminal v1.0\n> Type commands below\n");
+    lv_obj_set_width(s_term_output, lv_pct(100));
+    lv_label_set_long_mode(s_term_output, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(s_term_output, T_GREEN, 0);
+    lv_obj_set_style_text_font(s_term_output, &lv_font_montserrat_12, 0);
+
+    // Init display buffer with welcome text
+    snprintf(s_term_buf, sizeof(s_term_buf), "Tritium Terminal v1.0\n> Type commands below\n");
+
+    // Input row: text area + send button
+    lv_obj_t* input_row = lv_obj_create(viewport);
+    lv_obj_set_size(input_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(input_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(input_row, 0, 0);
+    lv_obj_set_style_pad_all(input_row, 0, 0);
+    lv_obj_set_flex_flow(input_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_gap(input_row, 4, 0);
+
+    s_term_input = lv_textarea_create(input_row);
+    lv_textarea_set_one_line(s_term_input, true);
+    lv_textarea_set_placeholder_text(s_term_input, "Command...");
+    lv_obj_set_flex_grow(s_term_input, 1);
+    lv_obj_set_style_bg_color(s_term_input, T_SURFACE3, 0);
+    lv_obj_set_style_text_color(s_term_input, T_TEXT, 0);
+    lv_obj_set_style_border_color(s_term_input, T_CYAN, 0);
+    lv_obj_set_style_border_opa(s_term_input, LV_OPA_20, 0);
+    lv_obj_set_style_text_font(s_term_input, &lv_font_montserrat_12, 0);
+    lv_obj_add_event_cb(s_term_input, term_input_focus_cb, LV_EVENT_FOCUSED, nullptr);
+
+    lv_obj_t* send_btn = tritium_theme::createButton(input_row, LV_SYMBOL_OK, T_GREEN);
+    lv_obj_set_style_pad_all(send_btn, 6, 0);
+    lv_obj_add_event_cb(send_btn, term_send_cb, LV_EVENT_CLICKED, nullptr);
+
+    // On-screen keyboard
+    s_term_kb = lv_keyboard_create(viewport);
+    lv_obj_set_size(s_term_kb, lv_pct(100), 160);
+    lv_keyboard_set_textarea(s_term_kb, s_term_input);
+    lv_obj_set_style_bg_color(s_term_kb, T_SURFACE2, 0);
+    lv_obj_set_style_text_color(s_term_kb, T_TEXT, 0);
+
+    // Refresh timer — poll for new serial output every 500ms
+    term_refresh(nullptr);
+    s_term_timer = lv_timer_create(term_refresh, 500, nullptr);
+#endif
+}
+
+// ===========================================================================
 //  Cleanup — delete active LVGL timers before switching apps
 // ===========================================================================
 
@@ -3512,6 +3717,7 @@ void cleanup_timers() {
     if (s_mesh_timer)   { lv_timer_delete(s_mesh_timer);   s_mesh_timer   = nullptr; }
     if (s_power_timer)  { lv_timer_delete(s_power_timer);  s_power_timer  = nullptr; }
     if (s_ble_timer)    { lv_timer_delete(s_ble_timer);    s_ble_timer    = nullptr; }
+    if (s_term_timer)   { lv_timer_delete(s_term_timer);   s_term_timer   = nullptr; }
     if (s_clock_timer)  { lv_timer_delete(s_clock_timer);  s_clock_timer  = nullptr; }
 }
 
@@ -3524,6 +3730,7 @@ void register_all_apps() {
     tritium_shell::registerApp({"Mesh",    "P2P network",      LV_SYMBOL_SHUFFLE,      true, mesh_app_create});
     tritium_shell::registerApp({"Storage", "Storage manager",  LV_SYMBOL_DRIVE,         true, files_app_create});
     tritium_shell::registerApp({"BLE",     "BLE scanner",      LV_SYMBOL_BLUETOOTH,    true, ble_app_create});
+    tritium_shell::registerApp({"Terminal","Serial console",   LV_SYMBOL_KEYBOARD,     true, terminal_app_create});
 }
 
 }  // namespace shell_apps
