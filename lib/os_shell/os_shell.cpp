@@ -655,7 +655,19 @@ static void build_launcher_grid(lv_obj_t* viewport) {
             lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_width(name, cell_w - 8);
             lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-            lv_obj_align_to(name, icon, LV_ALIGN_OUT_BOTTOM_MID, 0, 8);
+            lv_obj_align_to(name, icon, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
+
+            // Description subtitle — below name (only if cell is tall enough)
+            if (s_apps[i].description && cell_h >= 100) {
+                lv_obj_t* desc = lv_label_create(cell);
+                lv_label_set_text(desc, s_apps[i].description);
+                lv_obj_set_style_text_color(desc, T_GHOST, 0);
+                lv_obj_set_style_text_font(desc, uiSmallFont(), 0);
+                lv_obj_set_style_text_align(desc, LV_TEXT_ALIGN_CENTER, 0);
+                lv_obj_set_width(desc, cell_w - 8);
+                lv_label_set_long_mode(desc, LV_LABEL_LONG_DOT);
+                lv_obj_align_to(desc, name, LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
+            }
 
             // Click handler
             lv_obj_add_event_cb(cell, launcher_app_click_cb, LV_EVENT_CLICKED,
