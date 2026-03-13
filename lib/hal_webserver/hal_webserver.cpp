@@ -98,6 +98,11 @@ static char* api_buf() {
 #define WEB_HAS_DISPLAY 0
 #endif
 
+// Settings API
+#if __has_include("os_settings.h")
+#include "os_settings.h"
+#endif
+
 static WebServer* _server = nullptr;
 static WebServerHAL* _instance = nullptr;
 static DNSServer* _dnsServer = nullptr;
@@ -1175,6 +1180,53 @@ void WebServerHAL::addApiEndpoints() {
 
         touch_input::inject((uint16_t)x, (uint16_t)y, true);
         _server->send(200, "application/json", "{\"ok\":true}");
+    });
+#endif
+
+    // ── Settings API ────────────────────────────────────────────────────
+
+#if __has_include("os_settings.h")
+    // GET /api/settings — export all settings as JSON
+    // GET /api/settings?domain=screensaver — export one domain
+    _server->on("/api/settings", HTTP_GET, [self]() {
+        self->_requestCount++;
+        char* buf = api_buf();
+        const char* domain = nullptr;
+        if (_server->hasArg("domain")) {
+            domain = _server->arg("domain").c_str();
+        }
+        int len = TritiumSettings::instance().toJson(buf, API_BUF_SIZE, domain);
+        if (len < 0) {
+            _server->send(500, "application/json", "{\"error\":\"export failed\"}");
+        } else {
+            _server->sendHeader("Access-Control-Allow-Origin", "*");
+            _server->send(200, "application/json", buf);
+        }
+    });
+
+    // POST /api/settings — import settings from JSON body
+    _server->on("/api/settings", HTTP_POST, [self]() {
+        self->_requestCount++;
+        String body = _server->arg("plain");
+        if (body.length() == 0) {
+            _server->send(400, "application/json", "{\"error\":\"empty body\"}");
+            return;
+        }
+        bool ok = TritiumSettings::instance().fromJson(body.c_str());
+        _server->send(ok ? 200 : 400, "application/json",
+            ok ? "{\"ok\":true}" : "{\"error\":\"import failed\"}");
+    });
+
+    // POST /api/settings/reset — factory reset (optional domain param)
+    _server->on("/api/settings/reset", HTTP_POST, [self]() {
+        self->_requestCount++;
+        const char* domain = nullptr;
+        if (_server->hasArg("domain")) {
+            domain = _server->arg("domain").c_str();
+        }
+        bool ok = TritiumSettings::instance().factoryReset(domain);
+        _server->send(ok ? 200 : 500, "application/json",
+            ok ? "{\"ok\":true}" : "{\"error\":\"reset failed\"}");
     });
 #endif
 
