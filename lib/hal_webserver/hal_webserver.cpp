@@ -1659,6 +1659,31 @@ void WebServerHAL::addApiEndpoints() {
     });
 #endif
 
+    // GET /api/diag/frames — frame timing info for flicker detection
+    _server->on("/api/diag/frames", HTTP_GET, [self]() {
+        self->_requestCount++;
+        uint32_t flushes = lvgl_driver::getFlushCount();
+        uint32_t last_ms = lvgl_driver::getLastFlushMs();
+        uint32_t now = millis();
+        uint32_t uptime = now / 1000;
+        // Estimate FPS from total flushes over uptime (rough average)
+        float avg_fps = uptime > 0 ? (float)flushes / (float)uptime : 0.0f;
+        bool is_rgb = lvgl_driver::isRgb();
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+            "{\"target_fps\":%d,\"avg_fps\":%.1f,"
+            "\"total_flushes\":%lu,\"last_flush_ms\":%lu,"
+            "\"uptime_s\":%lu,\"rgb_direct\":%s,"
+            "\"dropped\":0,\"count\":0,\"frames\":[]}",
+            is_rgb ? 60 : 30,
+            avg_fps,
+            (unsigned long)flushes,
+            (unsigned long)(now - last_ms),
+            (unsigned long)uptime,
+            is_rgb ? "true" : "false");
+        _server->send(200, "application/json", buf);
+    });
+
     // GET /api/logs — recent log entries
     _server->on("/api/logs", HTTP_GET, [self]() {
         self->_requestCount++;
