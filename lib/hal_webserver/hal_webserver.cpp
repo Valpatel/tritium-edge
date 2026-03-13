@@ -859,6 +859,8 @@ void WebServerHAL::addOtaPage() {
             } else if (upload.status == UPLOAD_FILE_END) {
                 ota_manager::updateFromUpload(nullptr, 0, true);
                 DBG_INFO("web", "OTA multipart end: %u bytes", upload.totalSize);
+            } else if (upload.status == UPLOAD_FILE_ABORTED) {
+                DBG_WARN("web", "OTA upload aborted");
             }
         }
     );
@@ -885,6 +887,8 @@ void WebServerHAL::addOtaPage() {
                 ota_manager::updateFromUpload(upload.buf, upload.currentSize, false);
             } else if (upload.status == UPLOAD_FILE_END) {
                 ota_manager::updateFromUpload(nullptr, 0, true);
+            } else if (upload.status == UPLOAD_FILE_ABORTED) {
+                DBG_WARN("web", "OTA legacy upload aborted");
             }
         }
     );
@@ -940,6 +944,19 @@ void WebServerHAL::addOtaPage() {
         _server->send(200, "application/json", "{\"ok\":true,\"msg\":\"Rebooting...\"}");
         delay(500);
         ota_manager::reboot();
+    });
+
+    // POST /api/ota/validate — manually mark current firmware as valid
+    _server->on("/api/ota/validate", HTTP_POST, [self]() {
+        self->_requestCount++;
+        bool ok = ota_manager::markValid();
+        if (ok) {
+            _server->send(200, "application/json",
+                "{\"ok\":true,\"msg\":\"Firmware marked as valid\"}");
+        } else {
+            _server->send(500, "application/json",
+                "{\"ok\":false,\"msg\":\"Failed to mark firmware valid\"}");
+        }
     });
 
     // GET /api/ota/history

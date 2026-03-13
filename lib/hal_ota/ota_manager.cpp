@@ -170,6 +170,22 @@ bool updateFromUpload(const uint8_t* data, size_t len, bool final_chunk) {
     if (!_uploadStarted) {
         // First chunk — begin OTA
         DBG_INFO(TAG, "Upload OTA begin");
+
+        // Validate ESP32 image header (magic byte 0xE9)
+        if (len >= 8) {
+            if (data[0] != 0xE9) {
+                setError("Invalid firmware: bad magic byte");
+                _audit.logAttempt("web", "unknown", "any", false, "Bad magic byte");
+                return false;
+            }
+            // Segment count (byte 1) should be 1-32
+            if (data[1] == 0 || data[1] > 32) {
+                setError("Invalid firmware: bad segment count");
+                _audit.logAttempt("web", "unknown", "any", false, "Bad segment count");
+                return false;
+            }
+        }
+
         setState(OTA_WRITING, "Receiving firmware upload");
         _status.bytes_written = 0;
         _status.total_bytes = 0;
@@ -201,6 +217,19 @@ bool updateFromUpload(const uint8_t* data, size_t len, bool final_chunk) {
     // Write chunk (skip if len=0, e.g. final-only call)
     esp_err_t err = ESP_OK;
     if (len > 0) {
+        // Check if write would exceed partition size
+        if (_ota_partition && (_status.bytes_written + len) > _ota_partition->size) {
+            char errbuf[64];
+            snprintf(errbuf, sizeof(errbuf), "Firmware too large: %u > %u",
+                     (unsigned)(_status.bytes_written + len),
+                     (unsigned)_ota_partition->size);
+            setError(errbuf);
+            esp_ota_abort(_ota_handle);
+            mbedtls_md5_free(&_md5_ctx);
+            _uploadStarted = false;
+            _audit.logAttempt("web", "unknown", "any", false, errbuf);
+            return false;
+        }
         mbedtls_md5_update(&_md5_ctx, data, len);
         err = esp_ota_write(_ota_handle, data, len);
     }
@@ -471,6 +500,13 @@ bool updateFromSD(const char* path) {
         return false;
     }
 
+    // Validate minimum size (ESP image header is at least 24 bytes)
+    if (fileSize < 256) {
+        setError("Firmware file too small");
+        _audit.logAttempt("sd", "unknown", "any", false, "File too small");
+        return false;
+    }
+
     FILE* firmware = fopen(fullPath, "rb");
     if (!firmware) {
         char errbuf[64];
@@ -479,6 +515,22 @@ bool updateFromSD(const char* path) {
         _audit.logAttempt("sd", "unknown", "any", false, errbuf);
         return false;
     }
+
+    // Validate ESP32 image header
+    uint8_t hdr[8];
+    if (fread(hdr, 1, 8, firmware) != 8 || hdr[0] != 0xE9) {
+        fclose(firmware);
+        setError("Invalid firmware: bad magic byte");
+        _audit.logAttempt("sd", "unknown", "any", false, "Bad magic byte");
+        return false;
+    }
+    if (hdr[1] == 0 || hdr[1] > 32) {
+        fclose(firmware);
+        setError("Invalid firmware: bad segment count");
+        _audit.logAttempt("sd", "unknown", "any", false, "Bad segment count");
+        return false;
+    }
+    fseek(firmware, 0, SEEK_SET);
 
     _status.total_bytes = fileSize;
 
