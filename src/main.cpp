@@ -520,6 +520,7 @@ static void services_init() {
 
 #if defined(ENABLE_BLE_SCANNER)
     {
+        boot_show("BLE", "ok", "starting...");
         hal_ble_scanner::ScanConfig ble_cfg;
         ble_cfg.scan_duration_s = 5;
         ble_cfg.pause_between_ms = 10000;  // Scan every 10s

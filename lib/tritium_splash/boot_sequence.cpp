@@ -224,6 +224,7 @@ static int _crystal_clip_y = 9999;    // Y limit for crystal rendering (set in s
 static int _scale = 2;                // text scale for service log
 static int _title_scale = 4;          // title text scale
 static int _line_y = 0;               // cursor Y for next service line
+static int _line_y_max = 0;           // bottom limit for service lines (above footer)
 static int _margin_x = 0;
 static int _line_height = 0;
 static float _crystal_angle = 0.0f;   // current crystal rotation
@@ -673,6 +674,11 @@ void showLogo(const char* version) {
     // Separator and service log start position
     int sep_y = ver_y + 7 * _scale + 10;
 
+    // Compute max Y for service lines: leave room for
+    // separator (2px) + gap (6px) + SYSTEM READY line + gap before footer
+    int ready_reserve = 2 + 6 + _line_height + 4;
+    _line_y_max = author2_y - ready_reserve;
+
     _crystal_angle = 0.0f;
     _crystal_clip_y = text_zone_top;  // Clip crystal rendering above title
 
@@ -801,7 +807,7 @@ void showLogo(const char* version) {
 
 void showService(const char* name, const char* status, const char* detail) {
     if (!_fb) return;
-    if (_line_y + _line_height > _h) return;
+    if (_line_y + _line_height > _line_y_max) return;
 
     // Spin the crystal a bit each service call (keeps it alive)
     _crystal_angle += 0.12f;
