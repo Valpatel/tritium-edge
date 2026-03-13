@@ -375,7 +375,8 @@ id="url-input" placeholder="https://example.com/firmware.bin">
 </div>
 
 <div class="panel danger-zone"><div class="panel-title" style="color:var(--mag)">Danger Zone</div>
-<div class="btn-row"><button class="btn danger" id="btn-rollback">Rollback</button>
+<div class="btn-row"><button class="btn" id="btn-validate" style="border-color:rgba(5,255,161,0.3);color:var(--green)">Validate Firmware</button>
+<button class="btn danger" id="btn-rollback">Rollback</button>
 <button class="btn danger" id="btn-reboot">Reboot</button></div></div>
 
 <script>
@@ -420,6 +421,9 @@ sm(d.ok?'ok':'err',d.msg);rs();});};
 $('btn-reboot').onclick=function(){if(!confirm('Reboot device now?'))return;
 fetch('/api/ota/reboot',{method:'POST'}).then(function(){sm('ok','Rebooting...');
 setTimeout(function(){location.reload()},10000);});};
+$('btn-validate').onclick=function(){
+fetch('/api/ota/validate',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+sm(d.ok?'ok':'err',d.msg);}).catch(function(){sm('err','Failed');});};
 fetch('/api/ota/history').then(function(r){return r.json()}).then(function(es){
 var tb=$('history-body');if(!es.length){tb.innerHTML='<tr><td colspan="3" style="color:var(--ghost)">No history</td></tr>';return;}
 var h='';es.forEach(function(e){h+='<tr><td style="color:var(--cyan)">'+e.version+'</td><td>'+
