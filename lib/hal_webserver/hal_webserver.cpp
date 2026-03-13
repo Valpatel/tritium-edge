@@ -3712,48 +3712,86 @@ void WebServerHAL::addErrorPages() {
 static const char REMOTE_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Tritium-OS // Remote Viewer</title>
+<title>Tritium-OS // Remote Control</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--cyan:#00f0ff;--mag:#ff2a6d;--green:#05ffa1;--void:#0a0a0f;--s2:#12121a;--ghost:#8888aa;--text:#c8d0dc}
+:root{--cyan:#00f0ff;--mag:#ff2a6d;--green:#05ffa1;--void:#0a0a0f;--s2:#12121a;--s3:#1a1a2e;--ghost:#8888aa;--text:#c8d0dc}
 body{background:var(--void);color:var(--text);font-family:'Courier New',monospace;
-font-size:13px;display:flex;flex-direction:column;align-items:center;padding:12px}
-h1{color:var(--cyan);font-size:14px;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:10px}
-.controls{display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap}
-.btn{padding:5px 12px;border:1px solid rgba(0,240,255,0.3);background:transparent;
-color:var(--cyan);font-family:inherit;font-size:11px;cursor:pointer;border-radius:3px}
+font-size:13px;display:flex;flex-direction:column;align-items:center;padding:12px;gap:8px}
+h1{color:var(--cyan);font-size:14px;letter-spacing:0.12em;text-transform:uppercase}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:center}
+.btn{padding:4px 10px;border:1px solid rgba(0,240,255,0.3);background:transparent;
+color:var(--cyan);font-family:inherit;font-size:11px;cursor:pointer;border-radius:3px;
+transition:background 0.15s}
+.btn:hover{background:rgba(0,240,255,0.1)}
 .btn.active{background:rgba(0,240,255,0.15)}
-.info{font-size:11px;color:var(--ghost)}
+.btn.app{border-color:rgba(0,240,255,0.15);color:var(--text);font-size:10px}
+.btn.app:hover{border-color:var(--cyan);color:var(--cyan)}
+.btn.home{border-color:var(--green);color:var(--green)}
+.info{font-size:10px;color:var(--ghost)}
 #viewer{border:1px solid rgba(0,240,255,0.15);border-radius:4px;cursor:crosshair;
-image-rendering:pixelated;max-width:100%}
-.status{margin-top:6px;font-size:11px}
+image-rendering:pixelated;max-width:100%;touch-action:none}
+.stats{display:flex;gap:12px;font-size:10px;color:var(--ghost)}
+.stats .val{color:var(--cyan)}
 .status .on{color:var(--green)}.status .off{color:var(--mag)}
 </style></head><body>
-<h1>// Remote Viewer</h1>
-<div class="controls">
+<h1>// Remote Control</h1>
+<div class="row">
 <button class="btn active" id="btn-live" onclick="toggleLive()">Live</button>
-<button class="btn" onclick="capture()">Snapshot</button>
-<label style="color:var(--ghost);font-size:11px"><input type="checkbox" id="touch-enable" checked> Touch</label>
+<button class="btn" onclick="capture()">Snap</button>
+<label class="info"><input type="checkbox" id="touch-enable" checked> Touch</label>
+<button class="btn home" onclick="goHome()">Home</button>
+<span id="app-btns"></span>
 <span class="info" id="fps-info">--</span>
-<span class="info" id="res-info">--</span>
 </div>
 <canvas id="viewer" width="800" height="480"></canvas>
-<div class="status"><span id="status">Connecting...</span></div>
+<div class="stats">
+<span id="status" class="status">Connecting...</span>
+<span id="res-info">--</span>
+<span>Heap: <span class="val" id="v-heap">--</span></span>
+<span>RSSI: <span class="val" id="v-rssi">--</span></span>
+<span>Up: <span class="val" id="v-uptime">--</span></span>
+</div>
 <script>
 (function(){
 var canvas=document.getElementById('viewer');
 var ctx=canvas.getContext('2d');
 var W=0,H=0,live=true,busy=false,frames=0,lastFps=Date.now();
 var isRgb=false;
+var dragStart=null;
 
 function fetchInfo(){
 fetch('/api/remote/info').then(function(r){return r.json()}).then(function(d){
 W=d.width;H=d.height;isRgb=d.rgb||false;
 canvas.width=W;canvas.height=H;
-document.getElementById('res-info').textContent=W+'x'+H+' '+d.format;
+document.getElementById('res-info').textContent=W+'x'+H;
 document.getElementById('status').innerHTML='<span class="on">Connected</span>';
-capture();
-}).catch(function(){document.getElementById('status').innerHTML='<span class="off">No display</span>';});}
+capture();loadApps();updateStatus();
+}).catch(function(){document.getElementById('status').innerHTML='<span class="off">Offline</span>';});}
+
+function loadApps(){
+fetch('/api/shell/apps').then(function(r){return r.json()}).then(function(d){
+var html='';
+d.apps.forEach(function(a){
+html+='<button class="btn app" onclick="launchApp('+a.index+')">'+a.name+'</button>';
+});
+document.getElementById('app-btns').innerHTML=html;
+}).catch(function(){});}
+
+window.launchApp=function(i){
+fetch('/api/shell/launch',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({index:i})});};
+
+window.goHome=function(){
+fetch('/api/shell/home',{method:'POST'});};
+
+function updateStatus(){
+fetch('/api/status').then(function(r){return r.json()}).then(function(d){
+document.getElementById('v-heap').textContent=Math.round(d.free_heap/1024)+'KB';
+document.getElementById('v-rssi').textContent=d.rssi+'dBm';
+var s=d.uptime_s;var h=Math.floor(s/3600);var m=Math.floor((s%3600)/60);
+document.getElementById('v-uptime').textContent=h+'h'+m+'m';
+}).catch(function(){});}
 
 function capture(){
 if(busy)return;busy=true;
@@ -3778,40 +3816,43 @@ document.getElementById('fps-info').textContent=(frames*1000/(now-lastFps)).toFi
 frames=0;lastFps=now;}
 }).catch(function(){busy=false;});}
 
-function toggleLive(){live=!live;
-document.getElementById('btn-live').className=live?'btn active':'btn';}
+window.toggleLive=function(){live=!live;
+document.getElementById('btn-live').className=live?'btn active':'btn';};
 
-setInterval(function(){if(live)capture();},250);
+setInterval(function(){if(live)capture();},200);
+setInterval(updateStatus,5000);
 
-canvas.addEventListener('click',function(e){
-if(!document.getElementById('touch-enable').checked)return;
+function toDevice(e){
 var r=canvas.getBoundingClientRect();
 var sx=W/r.width,sy=H/r.height;
-var x=Math.round((e.clientX-r.left)*sx);
-var y=Math.round((e.clientY-r.top)*sy);
+var cx=e.clientX!==undefined?e.clientX:e.touches[0].clientX;
+var cy=e.clientY!==undefined?e.clientY:e.touches[0].clientY;
+return{x:Math.round((cx-r.left)*sx),y:Math.round((cy-r.top)*sy)};}
+
+canvas.addEventListener('pointerdown',function(e){
+if(!document.getElementById('touch-enable').checked)return;
+e.preventDefault();canvas.setPointerCapture(e.pointerId);
+dragStart=toDevice(e);
+fetch('/api/remote/touch',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({x:dragStart.x,y:dragStart.y,pressed:true})});
+});
+
+canvas.addEventListener('pointerup',function(e){
+if(!document.getElementById('touch-enable').checked||!dragStart)return;
+e.preventDefault();
+var end=toDevice(e);
+var dx=end.x-dragStart.x,dy=end.y-dragStart.y;
+var dist=Math.sqrt(dx*dx+dy*dy);
+if(dist>20){
+fetch('/api/remote/swipe',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({x1:dragStart.x,y1:dragStart.y,x2:end.x,y2:end.y,steps:Math.min(Math.round(dist/10),30)})});
+}else{
 fetch('/api/remote/tap',{method:'POST',headers:{'Content-Type':'application/json'},
-body:JSON.stringify({x:x,y:y})});
+body:JSON.stringify({x:dragStart.x,y:dragStart.y})});}
+dragStart=null;
 });
 
-canvas.addEventListener('mousedown',function(e){
-if(!document.getElementById('touch-enable').checked)return;
-var r=canvas.getBoundingClientRect();
-var sx=W/r.width,sy=H/r.height;
-var x=Math.round((e.clientX-r.left)*sx);
-var y=Math.round((e.clientY-r.top)*sy);
-fetch('/api/remote/touch',{method:'POST',headers:{'Content-Type':'application/json'},
-body:JSON.stringify({x:x,y:y,pressed:true})});
-});
-
-canvas.addEventListener('mouseup',function(e){
-if(!document.getElementById('touch-enable').checked)return;
-var r=canvas.getBoundingClientRect();
-var sx=W/r.width,sy=H/r.height;
-var x=Math.round((e.clientX-r.left)*sx);
-var y=Math.round((e.clientY-r.top)*sy);
-fetch('/api/remote/touch',{method:'POST',headers:{'Content-Type':'application/json'},
-body:JSON.stringify({x:x,y:y,pressed:false})});
-});
+canvas.addEventListener('pointercancel',function(){dragStart=null;});
 
 fetchInfo();
 })();
