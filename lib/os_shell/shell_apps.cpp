@@ -533,51 +533,65 @@ void settings_create(lv_obj_t* viewport) {
 // Settings Tab: DISPLAY
 // ---------------------------------------------------------------------------
 
+static lv_obj_t* make_row(lv_obj_t* parent, const char* label) {
+    lv_obj_t* row = lv_obj_create(parent);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    tritium_theme::createLabel(row, label);
+    return row;
+}
+
+static lv_obj_t* make_col(lv_obj_t* parent, int pct) {
+    lv_obj_t* col = lv_obj_create(parent);
+    lv_obj_set_width(col, lv_pct(pct));
+    lv_obj_set_height(col, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(col, 0, 0);
+    lv_obj_set_style_pad_all(col, 0, 0);
+    lv_obj_set_style_pad_gap(col, 4, 0);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+    return col;
+}
+
 static void settings_build_display(lv_obj_t* cont) {
     lv_obj_t* panel = tritium_theme::createPanel(cont, "DISPLAY");
     lv_obj_set_width(panel, lv_pct(100));
     lv_obj_set_height(panel, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_top(panel, 24, 0);
     lv_obj_set_style_pad_gap(panel, 6, 0);
 
-    // Brightness slider
-    lv_obj_t* bright_row = lv_obj_create(panel);
-    lv_obj_set_size(bright_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(bright_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(bright_row, 0, 0);
-    lv_obj_set_style_pad_all(bright_row, 0, 0);
-    lv_obj_set_flex_flow(bright_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(bright_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(bright_row, LV_OBJ_FLAG_SCROLLABLE);
+    // Two-column layout
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-    tritium_theme::createLabel(bright_row, LV_SYMBOL_EYE_OPEN " Brightness");
+    lv_obj_t* left = make_col(panel, 55);
+    lv_obj_t* right = make_col(panel, 38);
+
+    // Left: Brightness
+    lv_obj_t* bright_row = make_row(left, LV_SYMBOL_EYE_OPEN " Brightness");
     lv_obj_t* bright_val = tritium_theme::createLabel(bright_row, "100%", true);
 
-    lv_obj_t* slider = tritium_theme::createSlider(panel, 10, 255, 255);
-    lv_obj_set_width(slider, lv_pct(95));
+    lv_obj_t* slider = tritium_theme::createSlider(left, 10, 255, 255);
+    lv_obj_set_width(slider, lv_pct(100));
     lv_obj_add_event_cb(slider, brightness_slider_cb, LV_EVENT_VALUE_CHANGED,
                          bright_val);
 
-    // Screen timeout dropdown
-    lv_obj_t* timeout_row = lv_obj_create(panel);
-    lv_obj_set_size(timeout_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(timeout_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(timeout_row, 0, 0);
-    lv_obj_set_style_pad_all(timeout_row, 0, 0);
-    lv_obj_set_flex_flow(timeout_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(timeout_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(timeout_row, LV_OBJ_FLAG_SCROLLABLE);
+    // Right: Timeout
+    lv_obj_t* timeout_row = make_row(right, LV_SYMBOL_BELL " Timeout");
+    (void)timeout_row;
 
-    tritium_theme::createLabel(timeout_row, LV_SYMBOL_BELL " Timeout");
-
-    int vp_w = lv_obj_get_width(cont);
-    lv_obj_t* dd = lv_dropdown_create(timeout_row);
+    lv_obj_t* dd = lv_dropdown_create(right);
     lv_dropdown_set_options(dd, "30s\n1m\n5m\nNever");
     lv_dropdown_set_selected(dd, 2);
-    lv_obj_set_width(dd, (vp_w > 300) ? 100 : 70);
+    lv_obj_set_width(dd, lv_pct(100));
     lv_obj_set_style_bg_color(dd, T_SURFACE3, 0);
     lv_obj_set_style_text_color(dd, T_TEXT, 0);
     lv_obj_set_style_border_color(dd, T_CYAN, 0);
@@ -738,47 +752,30 @@ static void settings_build_power(lv_obj_t* cont) {
     lv_obj_set_width(legend, lv_pct(100));
     lv_obj_set_style_text_align(legend, LV_TEXT_ALIGN_CENTER, 0);
 
-    // --- Timeouts ---
+    // --- Timeouts (two-column) ---
     lv_obj_t* timeout_panel = tritium_theme::createPanel(cont, "TIMEOUTS");
     lv_obj_set_width(timeout_panel, lv_pct(100));
     lv_obj_set_height(timeout_panel, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(timeout_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_flow(timeout_panel, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(timeout_panel, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_top(timeout_panel, 24, 0);
-    lv_obj_set_style_pad_gap(timeout_panel, 6, 0);
 
-    // Screen dim
-    lv_obj_t* dim_row = lv_obj_create(timeout_panel);
-    lv_obj_set_size(dim_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(dim_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(dim_row, 0, 0);
-    lv_obj_set_style_pad_all(dim_row, 0, 0);
-    lv_obj_set_flex_flow(dim_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(dim_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(dim_row, LV_OBJ_FLAG_SCROLLABLE);
-    tritium_theme::createLabel(dim_row, "Dim");
+    // Left: Dim timeout
+    lv_obj_t* dim_col = make_col(timeout_panel, 45);
+    lv_obj_t* dim_row = make_row(dim_col, "Dim");
     s_power_dim_val = tritium_theme::createLabel(dim_row, "30s", true);
-
-    s_power_dim_slider = tritium_theme::createSlider(timeout_panel, 0, 300, 30);
-    lv_obj_set_width(s_power_dim_slider, lv_pct(95));
+    s_power_dim_slider = tritium_theme::createSlider(dim_col, 0, 300, 30);
+    lv_obj_set_width(s_power_dim_slider, lv_pct(100));
     lv_obj_add_event_cb(s_power_dim_slider, power_dim_slider_cb,
                         LV_EVENT_VALUE_CHANGED, nullptr);
 
-    // Screen off
-    lv_obj_t* off_row = lv_obj_create(timeout_panel);
-    lv_obj_set_size(off_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(off_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(off_row, 0, 0);
-    lv_obj_set_style_pad_all(off_row, 0, 0);
-    lv_obj_set_flex_flow(off_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(off_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(off_row, LV_OBJ_FLAG_SCROLLABLE);
-    tritium_theme::createLabel(off_row, "Screen Off");
+    // Right: Screen off timeout
+    lv_obj_t* off_col = make_col(timeout_panel, 45);
+    lv_obj_t* off_row = make_row(off_col, "Screen Off");
     s_power_off_val = tritium_theme::createLabel(off_row, "60s", true);
-
-    s_power_off_slider = tritium_theme::createSlider(timeout_panel, 0, 600, 60);
-    lv_obj_set_width(s_power_off_slider, lv_pct(95));
+    s_power_off_slider = tritium_theme::createSlider(off_col, 0, 600, 60);
+    lv_obj_set_width(s_power_off_slider, lv_pct(100));
     lv_obj_add_event_cb(s_power_off_slider, power_off_slider_cb,
                         LV_EVENT_VALUE_CHANGED, nullptr);
 
@@ -875,34 +872,9 @@ static void ss_timeout_cb(lv_event_t* e) {
     }
 }
 
-// Helper: create a transparent row container with label + value, SPACE_BETWEEN
-static lv_obj_t* ss_make_row(lv_obj_t* parent, const char* label) {
-    lv_obj_t* row = lv_obj_create(parent);
-    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    tritium_theme::createLabel(row, label);
-    return row;
-}
-
-// Helper: create a column container for two-column layout
-static lv_obj_t* ss_make_col(lv_obj_t* parent, int pct) {
-    lv_obj_t* col = lv_obj_create(parent);
-    lv_obj_set_width(col, lv_pct(pct));
-    lv_obj_set_height(col, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(col, 0, 0);
-    lv_obj_set_style_pad_all(col, 0, 0);
-    lv_obj_set_style_pad_gap(col, 4, 0);
-    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-    lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
-    return col;
-}
+// Reuse generic make_row/make_col helpers defined above settings_build_display
+static inline lv_obj_t* ss_make_row(lv_obj_t* p, const char* l) { return make_row(p, l); }
+static inline lv_obj_t* ss_make_col(lv_obj_t* p, int pct) { return make_col(p, pct); }
 
 static void settings_build_screensaver(lv_obj_t* cont) {
     auto& cfg = TritiumSettings::instance();
