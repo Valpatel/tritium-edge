@@ -1988,13 +1988,14 @@ function scanNetworks(){
   var t=document.getElementById('scan_table');
   t.innerHTML='<tr><th>SSID</th><th>RSSI</th><th>Ch</th><th>Security</th><th></th></tr><tr><td colspan="5" style="color:#666">Scanning...</td></tr>';
   fetch('/api/scan').then(r=>r.json()).then(d=>{
-    var rows='<tr><th>SSID</th><th>RSSI</th><th>Ch</th><th>Security</th><th></th></tr>';
+    var rows='<tr><th>SSID</th><th>Type</th><th>RSSI</th><th>Ch</th><th>Security</th><th></th></tr>';
     d.networks.forEach(n=>{
       var sec=n.encryption==0?'Open':'Encrypted';
-      rows+='<tr><td>'+n.ssid+'</td><td>'+n.rssi+' dBm</td><td>'+n.channel+'</td><td>'+sec+'</td>';
+      var tp=n.type||'';
+      rows+='<tr><td>'+n.ssid+'</td><td><span class="cap-badge">'+tp+'</span></td><td>'+n.rssi+' dBm</td><td>'+n.channel+'</td><td>'+sec+'</td>';
       rows+='<td><button onclick="document.getElementById(\'ssid_input\').value=\''+n.ssid+'\'">Select</button></td></tr>';
     });
-    if(d.count==0) rows+='<tr><td colspan="5" style="color:#666">No networks found</td></tr>';
+    if(d.count==0) rows+='<tr><td colspan="6" style="color:#666">No networks found</td></tr>';
     t.innerHTML=rows;
   });
 }
