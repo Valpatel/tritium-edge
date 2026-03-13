@@ -89,6 +89,33 @@ static bool sd_path_is_safe(const char* path) {
     return true;
 }
 
+// Safe JSON integer extraction: finds "key":N and returns value, or dflt on failure.
+// Handles colon, optional whitespace, and validates the pointer doesn't run off.
+static int json_int(const char* json, const char* key, int dflt = 0) {
+    if (!json || !key) return dflt;
+    const char* p = strstr(json, key);
+    if (!p) return dflt;
+    p += strlen(key);
+    // Skip past closing quote, colon, whitespace
+    while (*p && (*p == '"' || *p == ':' || *p == ' ')) p++;
+    if (!*p) return dflt;
+    return atoi(p);
+}
+
+// Safe JSON string extraction into buffer. Returns true if found.
+static bool json_str(const char* json, const char* key, char* out, size_t out_size) {
+    if (!json || !key || !out || out_size == 0) return false;
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
+    const char* p = strstr(json, pattern);
+    if (!p) return false;
+    p += strlen(pattern);
+    size_t i = 0;
+    while (p[i] && p[i] != '"' && i < out_size - 1) { out[i] = p[i]; i++; }
+    out[i] = '\0';
+    return i > 0;
+}
+
 // Persistent diagnostic log — optional
 #if __has_include("hal_diaglog.h")
 #include "hal_diaglog.h"
@@ -901,19 +928,12 @@ void WebServerHAL::addOtaPage() {
     _server->on("/api/ota/url", HTTP_POST, [self]() {
         self->_requestCount++;
         String body = _server->arg("plain");
-        // Extract URL from JSON
-        const char* s = body.c_str();
-        const char* up = strstr(s, "\"url\":\"");
-        if (!up) {
+        char url[256];
+        if (!json_str(body.c_str(), "url", url, sizeof(url))) {
             _server->send(400, "application/json",
                 "{\"ok\":false,\"msg\":\"Missing url field\"}");
             return;
         }
-        up += 7;  // skip "url":"
-        char url[256];
-        int i = 0;
-        while (up[i] && up[i] != '"' && i < 255) { url[i] = up[i]; i++; }
-        url[i] = '\0';
 
         bool ok = ota_manager::updateFromUrl(url);
         if (ok) {
@@ -1619,18 +1639,15 @@ void WebServerHAL::addApiEndpoints() {
     // POST /api/remote/touch — inject touch event
     _server->on("/api/remote/touch", HTTP_POST, [self]() {
         self->_requestCount++;
-        String body = _server->arg("plain");
-        // Parse x, y, pressed from JSON (minimal parser)
-        int x = 0, y = 0;
-        bool pressed = true;
-        // Look for "x":N, "y":N, "pressed":true/false
-        const char* s = body.c_str();
-        const char* xp = strstr(s, "\"x\"");
-        const char* yp = strstr(s, "\"y\"");
-        const char* pp = strstr(s, "\"pressed\"");
-        if (xp) x = atoi(xp + 4);
-        if (yp) y = atoi(yp + 4);
-        if (pp) pressed = (strstr(pp, "true") != nullptr);
+        const char* s = _server->arg("plain").c_str();
+        int x = json_int(s, "x");
+        int y = json_int(s, "y");
+        bool pressed = (strstr(s, "\"pressed\"") && strstr(s, "true"));
+        // Clamp to screen bounds
+        int w = lvgl_driver::getWidth();
+        int h = lvgl_driver::getHeight();
+        if (x < 0) x = 0; if (x >= w) x = w - 1;
+        if (y < 0) y = 0; if (y >= h) y = h - 1;
 
         touch_input::inject((uint16_t)x, (uint16_t)y, pressed);
         _server->send(200, "application/json", "{\"ok\":true}");
@@ -1639,13 +1656,13 @@ void WebServerHAL::addApiEndpoints() {
     // POST /api/remote/tap — inject press + release
     _server->on("/api/remote/tap", HTTP_POST, [self]() {
         self->_requestCount++;
-        String body = _server->arg("plain");
-        int x = 0, y = 0;
-        const char* s = body.c_str();
-        const char* xp = strstr(s, "\"x\"");
-        const char* yp = strstr(s, "\"y\"");
-        if (xp) x = atoi(xp + 4);
-        if (yp) y = atoi(yp + 4);
+        const char* s = _server->arg("plain").c_str();
+        int x = json_int(s, "x");
+        int y = json_int(s, "y");
+        int w = lvgl_driver::getWidth();
+        int h = lvgl_driver::getHeight();
+        if (x < 0) x = 0; if (x >= w) x = w - 1;
+        if (y < 0) y = 0; if (y >= h) y = h - 1;
 
         touch_input::inject((uint16_t)x, (uint16_t)y, true);
         _server->send(200, "application/json", "{\"ok\":true}");
@@ -1972,15 +1989,14 @@ void WebServerHAL::addApiEndpoints() {
     _server->on("/api/ota/sd", HTTP_POST, [self]() {
         self->_requestCount++;
         String body = _server->arg("plain");
-        const char* s = body.c_str();
-        const char* pp = strstr(s, "\"path\":\"");
-        const char* path = "/firmware.bin";
         char pathBuf[256];
-        if (pp) {
-            pp += 8;
-            int i = 0;
-            while (pp[i] && pp[i] != '"' && i < 255) { pathBuf[i] = pp[i]; i++; }
-            pathBuf[i] = '\0';
+        const char* path = "/firmware.bin";
+        if (json_str(body.c_str(), "path", pathBuf, sizeof(pathBuf))) {
+            if (!sd_path_is_safe(pathBuf)) {
+                _server->send(400, "application/json",
+                    "{\"ok\":false,\"msg\":\"Invalid path\"}");
+                return;
+            }
             path = pathBuf;
         }
 
@@ -2674,17 +2690,20 @@ static int   _logHead = 0;                  // Next write position
 static int   _logCount = 0;                 // Total lines stored (up to LOG_RING_SIZE)
 static SemaphoreHandle_t _logMutex = nullptr;
 
-static void _logRingInit() {
-    if (_logRing) return;
-    _logRing = (char(*)[LOG_LINE_MAX])heap_caps_calloc(
-        LOG_RING_SIZE, LOG_LINE_MAX, MALLOC_CAP_SPIRAM);
-    if (!_logRing) _logRing = (char(*)[LOG_LINE_MAX])calloc(LOG_RING_SIZE, LOG_LINE_MAX);
-}
-
 void WebServerHAL::captureLog(const char* line) {
     if (!line || !line[0]) return;
     if (!_logMutex) _logMutex = xSemaphoreCreateMutex();
-    _logRingInit();
+    if (!_logRing) {
+        // Allocate under mutex to prevent double-init race
+        if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            if (!_logRing) {  // Double-check after acquiring lock
+                _logRing = (char(*)[LOG_LINE_MAX])heap_caps_calloc(
+                    LOG_RING_SIZE, LOG_LINE_MAX, MALLOC_CAP_SPIRAM);
+                if (!_logRing) _logRing = (char(*)[LOG_LINE_MAX])calloc(LOG_RING_SIZE, LOG_LINE_MAX);
+            }
+            xSemaphoreGive(_logMutex);
+        }
+    }
     if (!_logRing) return;
     if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         strncpy(_logRing[_logHead], line, LOG_LINE_MAX - 1);
@@ -2708,12 +2727,14 @@ int WebServerHAL::getLogJson(char* buf, size_t size) {
     int start = (_logCount < LOG_RING_SIZE) ? 0 : _logHead;
     int count = _logCount;
 
-    for (int i = 0; i < count && pos < (int)size - 20; i++) {
+    int limit = (int)size - 8;  // Reserve space for trailing "]}\0"
+    for (int i = 0; i < count && pos < limit; i++) {
         int idx = (start + i) % LOG_RING_SIZE;
-        if (i > 0 && pos < (int)size - 2) buf[pos++] = ',';
+        if (i > 0 && pos < limit) buf[pos++] = ',';
+        if (pos >= limit) break;
         buf[pos++] = '"';
         // JSON-escape the line
-        for (int c = 0; _logRing[idx][c] && pos < (int)size - 4; c++) {
+        for (int c = 0; _logRing[idx][c] && pos < limit - 2; c++) {
             char ch = _logRing[idx][c];
             if (ch == '"') { buf[pos++] = '\\'; buf[pos++] = '"'; }
             else if (ch == '\\') { buf[pos++] = '\\'; buf[pos++] = '\\'; }
@@ -2722,9 +2743,15 @@ int WebServerHAL::getLogJson(char* buf, size_t size) {
             else if ((unsigned char)ch < 0x20) { buf[pos++] = '.'; }
             else { buf[pos++] = ch; }
         }
-        buf[pos++] = '"';
+        if (pos < limit) buf[pos++] = '"';
     }
-    pos += snprintf(buf + pos, size - pos, "]}");
+    if (pos < (int)size - 3) {
+        pos += snprintf(buf + pos, size - pos, "]}");
+    } else {
+        // Truncated — close JSON safely
+        pos = (int)size - 3;
+        buf[pos++] = ']'; buf[pos++] = '}'; buf[pos] = '\0';
+    }
     xSemaphoreGive(_logMutex);
     return pos;
 }
