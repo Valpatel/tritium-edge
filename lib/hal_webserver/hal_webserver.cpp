@@ -64,6 +64,13 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include <sys/stat.h>
 #include <dirent.h>
 #include "wifi_classifier.h"
+
+#if __has_include("wifi_manager.h")
+#include "wifi_manager.h"
+#define HAS_WIFI_MANAGER 1
+#else
+#define HAS_WIFI_MANAGER 0
+#endif
 #include "service_registry.h"
 
 // Shared API response buffer — allocated in PSRAM on first use.
@@ -2185,6 +2192,137 @@ void WebServerHAL::addWiFiSetup() {
         _server->sendHeader("Location", "/wifi", true);
         _server->send(302, "text/plain", "Removed");
     });
+
+    // ── WiFi REST API (JSON) ───────────────────────────────────────────
+    // These endpoints power both the modern wifi.html UI and fleet management.
+
+#if HAS_WIFI_MANAGER
+
+    // GET /api/wifi/status — current connection info
+    _server->on("/api/wifi/status", HTTP_GET, [self]() {
+        self->_requestCount++;
+        WifiManager* wm = WifiManager::_instance;
+        char* buf = api_buf();
+        if (!wm) {
+            snprintf(buf, API_BUF_SIZE, "{\"available\":false}");
+        } else {
+            snprintf(buf, API_BUF_SIZE,
+                "{\"connected\":%s,\"ssid\":\"%s\",\"ip\":\"%s\","
+                "\"rssi\":%d,\"channel\":%d,\"ap_mode\":%s,"
+                "\"state\":%d,\"saved_count\":%d}",
+                wm->isConnected() ? "true" : "false",
+                wm->isConnected() ? wm->getSSID() : "",
+                wm->isConnected() ? wm->getIP() : "",
+                wm->isConnected() ? (int)wm->getRSSI() : 0,
+                wm->isConnected() ? (int)WiFi.channel() : 0,
+                wm->isAPMode() ? "true" : "false",
+                (int)wm->getState(),
+                wm->getSavedCount());
+        }
+        _server->sendHeader("Access-Control-Allow-Origin", "*");
+        _server->send(200, "application/json", buf);
+    });
+
+    // GET /api/wifi/list — saved networks
+    _server->on("/api/wifi/list", HTTP_GET, [self]() {
+        self->_requestCount++;
+        WifiManager* wm = WifiManager::_instance;
+        char* buf = api_buf();
+        int pos = snprintf(buf, API_BUF_SIZE, "{\"networks\":[");
+        if (wm) {
+            SavedNetwork nets[WIFI_MAX_SAVED_NETWORKS];
+            int count = wm->getSavedNetworks(nets, WIFI_MAX_SAVED_NETWORKS);
+            for (int i = 0; i < count && pos < (int)API_BUF_SIZE - 64; i++) {
+                if (i > 0) pos += snprintf(buf + pos, API_BUF_SIZE - pos, ",");
+                pos += snprintf(buf + pos, API_BUF_SIZE - pos,
+                    "{\"ssid\":\"%s\",\"priority\":%d}", nets[i].ssid, i);
+            }
+        }
+        snprintf(buf + pos, API_BUF_SIZE - pos, "]}");
+        _server->sendHeader("Access-Control-Allow-Origin", "*");
+        _server->send(200, "application/json", buf);
+    });
+
+    // POST /api/wifi/add — add a network (JSON body: ssid, password)
+    _server->on("/api/wifi/add", HTTP_POST, [self]() {
+        self->_requestCount++;
+        WifiManager* wm = WifiManager::_instance;
+        if (!wm) {
+            _server->send(500, "application/json",
+                "{\"ok\":false,\"msg\":\"WiFi not available\"}");
+            return;
+        }
+        String body = _server->arg("plain");
+        char ssid[33], pass[65];
+        if (!json_str(body.c_str(), "ssid", ssid, sizeof(ssid))) {
+            _server->send(400, "application/json",
+                "{\"ok\":false,\"msg\":\"Missing ssid\"}");
+            return;
+        }
+        json_str(body.c_str(), "password", pass, sizeof(pass));
+        bool ok = wm->addNetwork(ssid, pass);
+        _server->sendHeader("Access-Control-Allow-Origin", "*");
+        _server->send(200, "application/json",
+            ok ? "{\"ok\":true,\"msg\":\"Network added\"}"
+               : "{\"ok\":false,\"msg\":\"Failed to add (full?)\"}");
+    });
+
+    // POST /api/wifi/remove — remove a saved network (JSON body: ssid)
+    _server->on("/api/wifi/remove", HTTP_POST, [self]() {
+        self->_requestCount++;
+        WifiManager* wm = WifiManager::_instance;
+        if (!wm) {
+            _server->send(500, "application/json",
+                "{\"ok\":false,\"msg\":\"WiFi not available\"}");
+            return;
+        }
+        String body = _server->arg("plain");
+        char ssid[33];
+        if (!json_str(body.c_str(), "ssid", ssid, sizeof(ssid))) {
+            _server->send(400, "application/json",
+                "{\"ok\":false,\"msg\":\"Missing ssid\"}");
+            return;
+        }
+        bool ok = wm->removeNetwork(ssid);
+        _server->sendHeader("Access-Control-Allow-Origin", "*");
+        _server->send(200, "application/json",
+            ok ? "{\"ok\":true,\"msg\":\"Network removed\"}"
+               : "{\"ok\":false,\"msg\":\"Network not found\"}");
+    });
+
+    // POST /api/wifi/connect — connect to a specific or auto-connect
+    _server->on("/api/wifi/connect", HTTP_POST, [self]() {
+        self->_requestCount++;
+        WifiManager* wm = WifiManager::_instance;
+        if (!wm) {
+            _server->send(500, "application/json",
+                "{\"ok\":false,\"msg\":\"WiFi not available\"}");
+            return;
+        }
+        String body = _server->arg("plain");
+        char ssid[33];
+        bool ok;
+        if (json_str(body.c_str(), "ssid", ssid, sizeof(ssid))) {
+            ok = wm->connect(ssid);
+        } else {
+            ok = wm->connect();
+        }
+        _server->sendHeader("Access-Control-Allow-Origin", "*");
+        _server->send(200, "application/json",
+            ok ? "{\"ok\":true,\"msg\":\"Connected\"}"
+               : "{\"ok\":false,\"msg\":\"Connection failed\"}");
+    });
+
+    // POST /api/wifi/disconnect — disconnect
+    _server->on("/api/wifi/disconnect", HTTP_POST, [self]() {
+        self->_requestCount++;
+        WifiManager* wm = WifiManager::_instance;
+        if (wm) wm->disconnect();
+        _server->sendHeader("Access-Control-Allow-Origin", "*");
+        _server->send(200, "application/json", "{\"ok\":true,\"msg\":\"Disconnected\"}");
+    });
+
+#endif  // HAS_WIFI_MANAGER
 
     DBG_INFO("web", "WiFi setup added at /wifi");
 }
