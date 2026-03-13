@@ -75,6 +75,7 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 
 #if __has_include("os_shell.h")
 #include "os_shell.h"
+#include "shell_screensaver.h"
 #define HAS_SHELL 1
 #else
 #define HAS_SHELL 0
@@ -1425,6 +1426,48 @@ void WebServerHAL::addApiEndpoints() {
 #if HAS_SHELL
         tritium_shell::showLauncher();
         _server->send(200, "application/json", "{\"ok\":true}");
+#else
+        _server->send(501, "application/json", "{\"error\":\"no shell\"}");
+#endif
+    });
+
+    // POST /api/shell/screensaver — control screensaver (dismiss, disable, enable)
+    _server->on("/api/shell/screensaver", HTTP_POST, [self]() {
+        self->_requestCount++;
+#if HAS_SHELL
+        String _body = _server->arg("plain");
+        const char* s = _body.c_str();
+        char action[16];
+        json_str(s, "action", action, sizeof(action));
+        if (strcmp(action, "dismiss") == 0) {
+            shell_screensaver::dismiss();
+            _server->send(200, "application/json", "{\"ok\":true}");
+        } else if (strcmp(action, "disable") == 0) {
+            shell_screensaver::dismiss();
+            shell_screensaver::setTimeoutS(0);
+            _server->send(200, "application/json", "{\"ok\":true,\"timeout\":0}");
+        } else if (strcmp(action, "enable") == 0) {
+            shell_screensaver::reloadSettings();
+            _server->send(200, "application/json", "{\"ok\":true}");
+        } else {
+            bool active = shell_screensaver::isActive();
+            char buf[64];
+            snprintf(buf, sizeof(buf), "{\"active\":%s}", active ? "true" : "false");
+            _server->send(200, "application/json", buf);
+        }
+#else
+        _server->send(501, "application/json", "{\"error\":\"no shell\"}");
+#endif
+    });
+
+    // GET /api/shell/screensaver — query screensaver state
+    _server->on("/api/shell/screensaver", HTTP_GET, [self]() {
+        self->_requestCount++;
+#if HAS_SHELL
+        bool active = shell_screensaver::isActive();
+        char buf[64];
+        snprintf(buf, sizeof(buf), "{\"active\":%s}", active ? "true" : "false");
+        _server->send(200, "application/json", buf);
 #else
         _server->send(501, "application/json", "{\"error\":\"no shell\"}");
 #endif
