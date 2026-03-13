@@ -63,6 +63,7 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include <cstring>
 #include <sys/stat.h>
 #include <dirent.h>
+#include "wifi_classifier.h"
 
 // Shared API response buffer — allocated in PSRAM on first use.
 // Safe because WebServer is single-threaded (one request at a time).
@@ -1271,28 +1272,39 @@ void WebServerHAL::addApiEndpoints() {
         ESP.restart();
     });
 
-    // GET /api/scan — WiFi scan
+    // GET /api/scan — WiFi scan with SSID classification
     _server->on("/api/scan", HTTP_GET, [self]() {
         self->_requestCount++;
         int n = WiFi.scanNetworks();
-        String json = "{\"count\":";
-        json += String(n);
-        json += ",\"networks\":[";
-        for (int i = 0; i < n; i++) {
-            if (i > 0) json += ",";
-            json += "{\"ssid\":\"";
-            json += WiFi.SSID(i);
-            json += "\",\"rssi\":";
-            json += String(WiFi.RSSI(i));
-            json += ",\"channel\":";
-            json += String(WiFi.channel(i));
-            json += ",\"encryption\":";
-            json += String(WiFi.encryptionType(i));
-            json += "}";
+        char* buf = api_buf();
+        if (!buf) { _server->send(500, "text/plain", "OOM"); return; }
+        int pos = snprintf(buf, API_BUF_SIZE, "{\"count\":%d,\"networks\":[", n);
+        for (int i = 0; i < n && pos < (int)API_BUF_SIZE - 256; i++) {
+            // Map wifi_auth_mode_t to our simple auth type
+            uint8_t auth = 0;
+            switch (WiFi.encryptionType(i)) {
+                case WIFI_AUTH_OPEN:         auth = 0; break;
+                case WIFI_AUTH_WEP:          auth = 1; break;
+                case WIFI_AUTH_WPA_PSK:      auth = 2; break;
+                case WIFI_AUTH_WPA2_PSK:     auth = 3; break;
+                case WIFI_AUTH_WPA_WPA2_PSK: auth = 4; break;
+                case WIFI_AUTH_WPA3_PSK:     auth = 5; break;
+                default:                     auth = 3; break;
+            }
+            auto cl = wifi_classifier::classify(
+                WiFi.SSID(i).c_str(), auth, WiFi.RSSI(i));
+            if (i > 0) buf[pos++] = ',';
+            pos += snprintf(buf + pos, API_BUF_SIZE - pos,
+                "{\"ssid\":\"%s\",\"rssi\":%d,\"channel\":%d,"
+                "\"encryption\":%d,\"type\":\"%s\",\"type_id\":%d,"
+                "\"confidence\":%d}",
+                WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i),
+                (int)WiFi.encryptionType(i), cl.type_name,
+                (int)cl.type, cl.confidence);
         }
-        json += "]}";
+        snprintf(buf + pos, API_BUF_SIZE - pos, "]}");
         WiFi.scanDelete();
-        _server->send(200, "application/json", json);
+        _server->send(200, "application/json", buf);
     });
 
     // GET /api/node — full node identity and capabilities for fleet discovery
