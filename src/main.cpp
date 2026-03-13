@@ -847,10 +847,17 @@ static void wifi_deferred_init() {
 
 #if defined(ENABLE_DIAG)
                 _webserver.setDiagProvider([](char* buf, size_t size) -> int {
-                    return hal_diag::full_report_json(buf, size);
+                    int pos = snprintf(buf, size, "{\"health\":");
+                    pos += hal_diag::cached_health_to_json(buf + pos, size - pos);
+                    pos += snprintf(buf + pos, size - pos, ",\"events\":");
+                    pos += hal_diag::events_to_json(buf + pos, size - pos, 50);
+                    pos += snprintf(buf + pos, size - pos, ",\"anomalies\":");
+                    pos += hal_diag::anomalies_to_json(buf + pos, size - pos);
+                    pos += snprintf(buf + pos, size - pos, "}");
+                    return pos;
                 });
                 _webserver.setDiagHealthProvider([](char* buf, size_t size) -> int {
-                    return hal_diag::health_to_json(buf, size);
+                    return hal_diag::cached_health_to_json(buf, size);
                 });
                 _webserver.setDiagEventsProvider([](char* buf, size_t size) -> int {
                     return hal_diag::events_to_json(buf, size, 50);

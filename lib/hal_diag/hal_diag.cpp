@@ -100,6 +100,10 @@ int health_to_json(char* buf, size_t size) {
     return snprintf(buf, size, "{\"simulator\":true}");
 }
 
+int cached_health_to_json(char* buf, size_t size) {
+    return health_to_json(buf, size);
+}
+
 int events_to_json(char* buf, size_t size, int) {
     return snprintf(buf, size, "{\"events\":[]}");
 }
@@ -136,7 +140,7 @@ void store_crash(const char*, const char*) {}
 #include <esp_heap_caps.h>
 #include <esp_timer.h>
 #include <driver/i2c.h>
-#include <driver/temperature_sensor.h>
+// temperature_sensor.h removed — using Arduino temperatureRead() instead
 #include <nvs_flash.h>
 #include <nvs.h>
 #include <WiFi.h>
@@ -193,6 +197,16 @@ static int              _anomaly_count = 0;
 static uint32_t         _last_health_ms = 0;
 static uint32_t         _last_flush_ms = 0;
 
+// Cached snapshot for web endpoints (avoids take_snapshot in httpd context)
+static HealthSnapshot   _cached_snapshot = {};
+static bool             _cached_snapshot_valid = false;
+
+// Pre-formatted JSON cache — formatted in tick() where stack is plentiful,
+// returned verbatim from cached_health_to_json() in httpd handler context.
+static constexpr size_t CACHED_JSON_SIZE = 4096;
+static char             _cached_json[CACHED_JSON_SIZE] = {};
+static int              _cached_json_len = 0;
+
 // Counters (volatile — may be updated from ISR context in future)
 static volatile uint32_t _wifi_disconnects = 0;
 static volatile uint32_t _mqtt_disconnects = 0;
@@ -224,8 +238,10 @@ static bool             _sd_mounted = false;
 static char             _sd_log_dir[64] = {};
 #endif
 
-// Temperature sensor handle
-static temperature_sensor_handle_t _temp_handle = nullptr;
+// Temperature sensor: uses Arduino temperatureRead() — no separate handle needed
+
+// Forward declaration: formats a HealthSnapshot as JSON without calling take_snapshot()
+static int snapshot_to_json(const HealthSnapshot& snap, char* buf, size_t size);
 
 // ── Serial color codes ──────────────────────────────────────────────────────
 
@@ -282,25 +298,17 @@ static void nvs_init_reboot_counter() {
 }
 
 // ── Temperature sensor ──────────────────────────────────────────────────────
+// Use Arduino's temperatureRead() instead of a separate ESP-IDF handle.
+// Installing a second temperature_sensor handle conflicts with Arduino's
+// internal one and can cause blocking reads.
 
 static void temp_sensor_init() {
-    temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
-    esp_err_t err = temperature_sensor_install(&cfg, &_temp_handle);
-    if (err != ESP_OK) {
-        DBG_DEBUG("diag", "Temp sensor install failed: %d (may already be installed)", err);
-        _temp_handle = nullptr;
-        return;
-    }
-    temperature_sensor_enable(_temp_handle);
+    // No-op: Arduino framework manages the temp sensor handle.
 }
 
 static float read_cpu_temp() {
-    if (!_temp_handle) return 0.0f;
-    float temp = 0.0f;
-    if (temperature_sensor_get_celsius(_temp_handle, &temp) != ESP_OK) {
-        return 0.0f;
-    }
-    return temp;
+    float t = temperatureRead();
+    return isnan(t) ? 0.0f : t;
 }
 
 // ── SD card logging ─────────────────────────────────────────────────────────
@@ -756,6 +764,9 @@ bool init(const DiagConfig& cfg) {
 
     _last_health_ms = millis();
     _last_flush_ms = millis();
+
+    _cached_snapshot_valid = false;
+
     _initialized = true;
 
     DBG_INFO("diag", "Initialized: events=%u snapshots=%u (%.1fKB PSRAM)",
@@ -800,6 +811,13 @@ void tick() {
     if (now - _last_health_ms >= _cfg.health_interval_ms) {
         _last_health_ms = now;
         HealthSnapshot snap = take_snapshot();
+
+        // Cache snapshot and pre-format JSON for web endpoints.
+        // snapshot_to_json() uses significant stack (~2KB for snprintf chain),
+        // which is safe here in the main loop but NOT in httpd handler context.
+        _cached_snapshot = snap;
+        _cached_snapshot_valid = true;
+        _cached_json_len = snapshot_to_json(snap, _cached_json, CACHED_JSON_SIZE);
 
         // Store in ring buffer
         _snapshots[_snap_head] = snap;
@@ -1103,85 +1121,53 @@ static int json_escape(char* dst, size_t dst_size,
 
 int health_to_json(char* buf, size_t size) {
     HealthSnapshot snap = take_snapshot();
+    return snapshot_to_json(snap, buf, size);
+}
 
-    int pos = snprintf(buf, size,
-        "{"
-        "\"timestamp_ms\":%lu,"
-        "\"epoch\":%lu,"
-        "\"memory\":{"
-            "\"free_heap\":%lu,"
-            "\"min_free_heap\":%lu,"
-            "\"free_psram\":%lu,"
-            "\"largest_block\":%lu"
-        "},"
-        "\"power\":{"
-            "\"battery_v\":%.2f,"
-            "\"battery_pct\":%.1f,"
-            "\"charge_ma\":%.1f,"
-            "\"source\":%u"
-        "},"
-        "\"thermal\":{"
-            "\"cpu_c\":%.1f,"
-            "\"pmic_c\":%.1f"
-        "},"
-        "\"display\":{"
-            "\"initialized\":%s,"
-            "\"fps\":%lu,"
-            "\"brightness\":%u,"
-            "\"frame_us\":%lu,"
-            "\"max_frame_us\":%lu"
-        "},"
-        "\"wifi\":{"
-            "\"connected\":%s,"
-            "\"rssi\":%d,"
-            "\"disconnects\":%lu"
-        "},"
-        "\"i2c\":{"
-            "\"devices\":%u,"
-            "\"errors\":%u,"
-            "\"slave_count\":%u"
-        "},"
-        "\"perf\":{"
-            "\"loop_us\":%lu,"
-            "\"max_loop_us\":%lu"
-        "},"
-        "\"touch\":{\"available\":%s},"
-        "\"ntp\":{\"synced\":%s,\"age_s\":%lu},"
-        "\"mesh\":{\"peers\":%u,\"routes\":%u,\"tx\":%lu,\"rx\":%lu,\"tx_fail\":%lu,\"relayed\":%lu},"
-        "\"system\":{"
-            "\"uptime_s\":%lu,"
-            "\"reboot_count\":%lu,"
-            "\"reset_reason\":\"%s\""
-        "}"
-        "}",
-        (unsigned long)snap.timestamp_ms,
-        (unsigned long)snap.epoch_time,
-        (unsigned long)snap.free_heap,
-        (unsigned long)snap.min_free_heap,
-        (unsigned long)snap.free_psram,
-        (unsigned long)snap.largest_free_block,
-        snap.battery_voltage, snap.battery_percent,
-        snap.charge_current_ma, snap.power_source,
-        snap.cpu_temp_c, snap.pmic_temp_c,
+static int snapshot_to_json(const HealthSnapshot& snap, char* buf, size_t size) {
+    // Build JSON in small incremental snprintf calls to minimize stack usage.
+    // A single giant snprintf with 30+ args (including floats→doubles) uses
+    // ~1.5KB stack just for the argument list, causing overflow on loopTask (8KB).
+    int pos = 0;
+    #define J(fmt, ...) pos += snprintf(buf + pos, size - pos, fmt, ##__VA_ARGS__)
+
+    J("{\"timestamp_ms\":%lu,\"epoch\":%lu,",
+        (unsigned long)snap.timestamp_ms, (unsigned long)snap.epoch_time);
+    J("\"memory\":{\"free_heap\":%lu,\"min_free_heap\":%lu,",
+        (unsigned long)snap.free_heap, (unsigned long)snap.min_free_heap);
+    J("\"free_psram\":%lu,\"largest_block\":%lu},",
+        (unsigned long)snap.free_psram, (unsigned long)snap.largest_free_block);
+    J("\"power\":{\"battery_v\":%.2f,\"battery_pct\":%.1f,",
+        snap.battery_voltage, snap.battery_percent);
+    J("\"charge_ma\":%.1f,\"source\":%u},",
+        snap.charge_current_ma, snap.power_source);
+    J("\"thermal\":{\"cpu_c\":%.1f,\"pmic_c\":%.1f},",
+        snap.cpu_temp_c, snap.pmic_temp_c);
+    J("\"display\":{\"initialized\":%s,\"fps\":%lu,\"brightness\":%u,",
         snap.display_initialized ? "true" : "false",
-        (unsigned long)snap.display_fps, snap.display_brightness,
+        (unsigned long)snap.display_fps, snap.display_brightness);
+    J("\"frame_us\":%lu,\"max_frame_us\":%lu},",
         (unsigned long)snap.display_frame_time_us,
-        (unsigned long)snap.display_max_frame_us,
-        snap.wifi_connected ? "true" : "false",
-        (int)snap.wifi_rssi,
-        (unsigned long)snap.wifi_disconnects,
-        snap.i2c_devices_found, (unsigned)snap.i2c_errors, snap.i2c_slave_count,
-        snap.touch_available ? "true" : "false",
-        snap.ntp_synced ? "true" : "false",
-        (unsigned long)snap.ntp_last_sync_age_s,
+        (unsigned long)snap.display_max_frame_us);
+    J("\"wifi\":{\"connected\":%s,\"rssi\":%d,\"disconnects\":%lu},",
+        snap.wifi_connected ? "true" : "false", (int)snap.wifi_rssi,
+        (unsigned long)snap.wifi_disconnects);
+    J("\"i2c\":{\"devices\":%u,\"errors\":%u,\"slave_count\":%u},",
+        snap.i2c_devices_found, (unsigned)snap.i2c_errors, snap.i2c_slave_count);
+    J("\"perf\":{\"loop_us\":%lu,\"max_loop_us\":%lu},",
+        (unsigned long)snap.loop_time_us, (unsigned long)snap.max_loop_time_us);
+    J("\"touch\":{\"available\":%s},", snap.touch_available ? "true" : "false");
+    J("\"ntp\":{\"synced\":%s,\"age_s\":%lu},",
+        snap.ntp_synced ? "true" : "false", (unsigned long)snap.ntp_last_sync_age_s);
+    J("\"mesh\":{\"peers\":%u,\"routes\":%u,\"tx\":%lu,\"rx\":%lu,\"tx_fail\":%lu,\"relayed\":%lu},",
         snap.mesh_peers, snap.mesh_routes,
         (unsigned long)snap.mesh_tx, (unsigned long)snap.mesh_rx,
-        (unsigned long)snap.mesh_tx_fail, (unsigned long)snap.mesh_relayed,
-        (unsigned long)snap.loop_time_us,
-        (unsigned long)snap.max_loop_time_us,
-        (unsigned long)snap.uptime_s,
-        (unsigned long)snap.reboot_count,
+        (unsigned long)snap.mesh_tx_fail, (unsigned long)snap.mesh_relayed);
+    J("\"system\":{\"uptime_s\":%lu,\"reboot_count\":%lu,\"reset_reason\":\"%s\"}}",
+        (unsigned long)snap.uptime_s, (unsigned long)snap.reboot_count,
         reset_reason_str(snap.last_reset_reason));
+
+    #undef J
 
     // Append camera metrics if available
     if (snap.camera_available && pos > 0 && pos < (int)size - 2) {
@@ -1238,6 +1224,18 @@ int health_to_json(char* buf, size_t size) {
     }
 
     return pos;
+}
+
+int cached_health_to_json(char* buf, size_t size) {
+    if (_cached_json_len > 0) {
+        // Return pre-formatted JSON — zero stack pressure in httpd context
+        int len = (_cached_json_len < (int)size - 1) ? _cached_json_len : (int)size - 1;
+        memcpy(buf, _cached_json, len);
+        buf[len] = '\0';
+        return len;
+    }
+    // No cached data yet — return minimal response
+    return snprintf(buf, size, "{\"cached\":false,\"message\":\"Waiting for first snapshot\"}");
 }
 
 int events_to_json(char* buf, size_t size, int last_n) {

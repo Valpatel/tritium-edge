@@ -288,6 +288,9 @@ void clear_anomalies();
 /// @return Number of bytes written, or -1 on error.
 int health_to_json(char* buf, size_t size);
 
+/// Return cached health JSON (safe to call from httpd — no take_snapshot()).
+int cached_health_to_json(char* buf, size_t size);
+
 /// Serialize recent events to JSON.
 /// @param last_n Number of most recent events to include.
 /// @return Number of bytes written, or -1 on error.

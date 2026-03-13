@@ -145,6 +145,11 @@ static bool json_str(const char* json, const char* key, char* out, size_t out_si
 #define WEB_HAS_DIAGLOG 0
 #endif
 
+// Diagnostics HAL — for cached health endpoints
+#if defined(ENABLE_DIAG) && __has_include("hal_diag.h")
+#include "hal_diag.h"
+#endif
+
 // Touch injection for remote control
 #if __has_include("touch_input.h")
 #include "touch_input.h"
@@ -1624,34 +1629,44 @@ void WebServerHAL::addApiEndpoints() {
             "{\"enabled\":false,\"message\":\"ESP-NOW mesh not available\"}");
     });
 
-    // GET /api/diag — full diagnostics report (requires diag provider)
+    // GET /api/diag — full diagnostics report
     _server->on("/api/diag", HTTP_GET, [self]() {
         self->_requestCount++;
-        if (self->_diagProvider) {
-            char* buf = api_buf();
-            int len = self->_diagProvider(buf, API_BUF_SIZE);
-            if (len > 0) {
-                _server->send(200, "application/json", buf);
-                return;
-            }
+        // Build from cached snapshot + live events/anomalies (avoids stack overflow)
+        char* buf = api_buf();
+        int pos = 0;
+#if defined(ENABLE_DIAG) && __has_include("hal_diag.h")
+        pos = snprintf(buf, API_BUF_SIZE, "{\"health\":");
+        pos += hal_diag::cached_health_to_json(buf + pos, API_BUF_SIZE - pos);
+        pos += snprintf(buf + pos, API_BUF_SIZE - pos, ",\"events\":");
+        pos += hal_diag::events_to_json(buf + pos, API_BUF_SIZE - pos, 50);
+        pos += snprintf(buf + pos, API_BUF_SIZE - pos, ",\"anomalies\":");
+        pos += hal_diag::anomalies_to_json(buf + pos, API_BUF_SIZE - pos);
+        pos += snprintf(buf + pos, API_BUF_SIZE - pos, "}");
+#endif
+        if (pos > 0) {
+            _server->send(200, "application/json", buf);
+        } else {
+            _server->send(200, "application/json",
+                "{\"enabled\":false,\"message\":\"Diagnostics not available\"}");
         }
-        _server->send(200, "application/json",
-            "{\"enabled\":false,\"message\":\"Diagnostics not available\"}");
     });
 
     // GET /api/diag/health — current health snapshot only
     _server->on("/api/diag/health", HTTP_GET, [self]() {
         self->_requestCount++;
-        if (self->_diagHealthProvider) {
-            char* buf = api_buf();
-            int len = self->_diagHealthProvider(buf, API_BUF_SIZE);
-            if (len > 0) {
-                _server->send(200, "application/json", buf);
-                return;
-            }
+        // Use cached snapshot to avoid stack overflow from take_snapshot() in httpd
+        char* buf = api_buf();
+        int len = 0;
+#if defined(ENABLE_DIAG) && __has_include("hal_diag.h")
+        len = hal_diag::cached_health_to_json(buf, API_BUF_SIZE);
+#endif
+        if (len > 0) {
+            _server->send(200, "application/json", buf);
+        } else {
+            _server->send(200, "application/json",
+                "{\"enabled\":false}");
         }
-        _server->send(200, "application/json",
-            "{\"enabled\":false}");
     });
 
     // GET /api/diag/events — recent diagnostic events
