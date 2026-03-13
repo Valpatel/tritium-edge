@@ -680,10 +680,10 @@ void report_i2c_result(uint8_t addr, bool success, bool is_timeout, int16_t late
         s.success_count++;
     } else if (is_timeout) {
         s.timeout_count++;
-        _i2c_errors++;
+        _i2c_errors = _i2c_errors + 1;
     } else {
         s.nack_count++;
-        _i2c_errors++;
+        _i2c_errors = _i2c_errors + 1;
     }
     s.last_latency_us = latency_us;
 }

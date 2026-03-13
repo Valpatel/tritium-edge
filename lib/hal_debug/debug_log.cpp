@@ -208,7 +208,7 @@ void DebugLog::poll() {
     if (!_tcp_server) return;
 
     // Accept new clients
-    WiFiClient newClient = _tcp_server->available();
+    WiFiClient newClient = _tcp_server->accept();
     if (newClient) {
         for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
             if (!_tcp_clients[i] || !_tcp_clients[i].connected()) {

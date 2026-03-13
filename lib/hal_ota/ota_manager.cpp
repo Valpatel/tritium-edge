@@ -139,7 +139,7 @@ bool init() {
     _status.state = OTA_IDLE;
 
     // Read current firmware version from app description
-    const esp_app_desc_t* desc = esp_ota_get_app_description();
+    const esp_app_desc_t* desc = esp_app_get_description();
     if (desc) {
         strncpy(_status.current_version, desc->version,
                 sizeof(_status.current_version) - 1);

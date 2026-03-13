@@ -1393,8 +1393,8 @@ static void settings_build_clock(lv_obj_t* cont) {
         lv_obj_set_style_border_color(list, T_CYAN, 0);
         lv_obj_set_style_border_opa(list, LV_OPA_40, 0);
         lv_obj_set_style_text_color(list, T_TEXT, 0);
-        lv_obj_set_style_bg_color(list, T_CYAN, LV_PART_SELECTED | LV_STATE_CHECKED);
-        lv_obj_set_style_text_color(list, T_VOID, LV_PART_SELECTED | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(list, T_CYAN, (int)LV_PART_SELECTED | (int)LV_STATE_CHECKED);
+        lv_obj_set_style_text_color(list, T_VOID, (int)LV_PART_SELECTED | (int)LV_STATE_CHECKED);
     }
 
     // Read saved timezone and select it

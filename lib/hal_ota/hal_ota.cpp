@@ -472,7 +472,7 @@ bool OtaHAL::init() {
     _error[0] = '\0';
 
     // Read version from running app description
-    const esp_app_desc_t* desc = esp_ota_get_app_description();
+    const esp_app_desc_t* desc = esp_app_get_description();
     if (desc) {
         snprintf(_version, sizeof(_version), "%s", desc->version);
     } else {
@@ -1156,7 +1156,7 @@ bool OtaHAL::getFirmwareHash(char* out, size_t outLen) const {
     if (!running) return false;
 
     // Get actual firmware size from app description
-    const esp_app_desc_t* desc = esp_ota_get_app_description();
+    const esp_app_desc_t* desc = esp_app_get_description();
     // Use partition size as upper bound if desc unavailable
     size_t fwSize = running->size;
 

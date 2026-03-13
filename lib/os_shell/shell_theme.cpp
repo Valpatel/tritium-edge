@@ -55,7 +55,7 @@ void apply() {
     lv_style_init(&style_scrollbar_scrolled);
     lv_style_set_bg_opa(&style_scrollbar_scrolled, LV_OPA_60);
     lv_style_set_transition(&style_scrollbar_scrolled, &trans_zero);
-    lv_obj_add_style(scr, &style_scrollbar_scrolled, LV_PART_SCROLLBAR | LV_STATE_SCROLLED);
+    lv_obj_add_style(scr, &style_scrollbar_scrolled, (int)LV_PART_SCROLLBAR | (int)LV_STATE_SCROLLED);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,8 +167,8 @@ lv_obj_t* createSwitch(lv_obj_t* parent, bool initial) {
     lv_obj_set_style_bg_opa(sw, LV_OPA_40, LV_PART_MAIN);
 
     // On state: cyan indicator
-    lv_obj_set_style_bg_color(sw, T_CYAN, LV_PART_INDICATOR | LV_STATE_CHECKED);
-    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, T_CYAN, (int)LV_PART_INDICATOR | (int)LV_STATE_CHECKED);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, (int)LV_PART_INDICATOR | (int)LV_STATE_CHECKED);
 
     // Knob
     lv_obj_set_style_bg_color(sw, T_BRIGHT, LV_PART_KNOB);

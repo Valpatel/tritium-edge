@@ -88,7 +88,7 @@ static void flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map)
             // an atomic swap (not a bounce-buffer copy).
             esp_lcd_panel_draw_bitmap(s_panel, 0, 0, s_width, s_height, px_map);
 
-            s_flush_count++;
+            s_flush_count = s_flush_count + 1;
             s_last_flush_ms = millis();
         }
         // else: intermediate flush — no-op, pixels are already in the FB
@@ -108,7 +108,7 @@ static void flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map)
             xSemaphoreTake(s_flush_sem, pdMS_TO_TICKS(100));
         }
 
-        s_flush_count++;
+        s_flush_count = s_flush_count + 1;
         s_last_flush_ms = millis();
 
         lv_display_flush_ready(disp);

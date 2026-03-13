@@ -52,7 +52,7 @@ namespace touch_input {
 // ── LVGL read callback ──────────────────────────────────────────────────────
 
 void read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
-    s_read_cb_calls++;
+    s_read_cb_calls = s_read_cb_calls + 1;
 
     // Priority 1: injected remote touch
     if (s_inject_pending || s_inject_pressed) {
@@ -75,7 +75,7 @@ void read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
                                        : LV_INDEV_STATE_RELEASED;
         if (s_inject_pressed) {
             s_last_activity = now;
-            s_inject_count++;
+            s_inject_count = s_inject_count + 1;
             s_last_raw_x = s_inject_x;
             s_last_raw_y = s_inject_y;
             s_last_touch_ms = now;
@@ -93,7 +93,7 @@ void read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
         data->point.y = hy;
         data->state = LV_INDEV_STATE_PRESSED;
         s_last_activity = millis();
-        s_hw_touch_count++;
+        s_hw_touch_count = s_hw_touch_count + 1;
         s_last_raw_x = hx;
         s_last_raw_y = hy;
         s_last_touch_ms = millis();
