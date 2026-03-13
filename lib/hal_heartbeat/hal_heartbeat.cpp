@@ -95,6 +95,15 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #define HAS_LORA 0
 #endif
 
+// Optional WiFi scanner — include network count + classification summary
+#if __has_include("hal_wifi_scanner.h")
+#include "hal_wifi_scanner.h"
+#include "wifi_classifier.h"
+#define HAS_WIFI_SCANNER 1
+#else
+#define HAS_WIFI_SCANNER 0
+#endif
+
 namespace hal_heartbeat {
 
 // Internal state
@@ -345,6 +354,32 @@ bool send_now() {
             hal_ble_scanner::get_devices_json(devs_json, sizeof(devs_json));
             pos += snprintf(body + pos, BODY_SIZE - pos, ",\"ble_devices\":%s", devs_json);
         }
+    }
+#endif
+
+    // Append WiFi scanner summary if available
+#if HAS_WIFI_SCANNER
+    if (hal_wifi_scanner::is_active()) {
+        int wifi_count = hal_wifi_scanner::get_visible_count();
+        // Classify visible networks to get type distribution
+        hal_wifi_scanner::WifiNetwork nets[16];
+        int n = hal_wifi_scanner::get_networks(nets, 16);
+        int type_counts[12] = {};
+        for (int i = 0; i < n; i++) {
+            auto cl = wifi_classifier::classify(nets[i].ssid, nets[i].auth_type, nets[i].rssi);
+            int tid = (int)cl.type;
+            if (tid >= 0 && tid < 12) type_counts[tid]++;
+        }
+        pos += snprintf(body + pos, BODY_SIZE - pos,
+            ",\"wifi_scan\":{\"count\":%d,\"home\":%d,\"hotspot\":%d,"
+            "\"iot\":%d,\"corporate\":%d,\"public\":%d,\"hidden\":%d}",
+            wifi_count,
+            type_counts[(int)wifi_classifier::NetworkType::HOME_ROUTER],
+            type_counts[(int)wifi_classifier::NetworkType::MOBILE_HOTSPOT],
+            type_counts[(int)wifi_classifier::NetworkType::IOT_DEVICE],
+            type_counts[(int)wifi_classifier::NetworkType::CORPORATE],
+            type_counts[(int)wifi_classifier::NetworkType::PUBLIC_OPEN],
+            type_counts[(int)wifi_classifier::NetworkType::HIDDEN]);
     }
 #endif
 
