@@ -47,7 +47,7 @@ namespace shell_screensaver {
 static constexpr uint32_t DEFAULT_TIMEOUT_S = 10;
 static constexpr int      RENDER_FPS        = 20;
 static constexpr int      RENDER_PERIOD_MS  = 1000 / RENDER_FPS;
-static constexpr int      NUM_STARS         = 250;
+static constexpr int      NUM_STARS         = 500;
 
 // Warp speed cycling defaults
 static constexpr uint32_t CRUISE_DURATION_MS = 10000;
@@ -62,7 +62,7 @@ static bool     s_cfg_colors     = true;    // colored star tints
 static int      s_cfg_star_size  = 2;       // 1=dot only, 2+=cross pattern for bright stars
 static bool     s_cfg_warp       = false;   // periodic warp speed bursts
 static float    s_cfg_speed      = 0.012f;  // cruise travel speed (0.001..0.1)
-static float    s_cfg_brightness = 0.8f;    // overall brightness multiplier (0.1..1.0)
+static float    s_cfg_brightness = 1.0f;    // overall brightness multiplier (0.1..1.0)
 
 // ---------------------------------------------------------------------------
 // State
@@ -365,15 +365,15 @@ static inline void erase_star(int ox, int oy, int stride, int size) {
     }
 }
 
-// Draw a star's pixels to both framebuffers
-static inline void draw_star(int sx, int sy, int stride, uint16_t color,
-                              float brightness, int size) {
+// Draw a star's pixels to both framebuffers.
+// `size` is the pre-computed effective size (brightness thresholds already applied).
+static inline void draw_star(int sx, int sy, int stride, uint16_t color, int size) {
     // Core pixel
     write_pixel(s_fb0, stride, sx, sy, color);
     if (s_fb1) write_pixel(s_fb1, stride, sx, sy, color);
 
-    // Cross pattern for bright stars at size >= 2
-    if (size >= 2 && brightness > 0.5f) {
+    // Cross pattern for size >= 2
+    if (size >= 2) {
         write_pixel(s_fb0, stride, sx - 1, sy, color);
         write_pixel(s_fb0, stride, sx + 1, sy, color);
         write_pixel(s_fb0, stride, sx, sy - 1, color);
@@ -387,7 +387,7 @@ static inline void draw_star(int sx, int sy, int stride, uint16_t color,
     }
 
     // Larger cross for size >= 3
-    if (size >= 3 && brightness > 0.4f) {
+    if (size >= 3) {
         write_pixel(s_fb0, stride, sx - 2, sy, color);
         write_pixel(s_fb0, stride, sx + 2, sy, color);
         write_pixel(s_fb0, stride, sx, sy - 2, color);
@@ -400,8 +400,8 @@ static inline void draw_star(int sx, int sy, int stride, uint16_t color,
         }
     }
 
-    // 3x3 block for size >= 4
-    if (size >= 4 && brightness > 0.6f) {
+    // Corner pixels for size >= 4
+    if (size >= 4) {
         write_pixel(s_fb0, stride, sx - 1, sy - 1, color);
         write_pixel(s_fb0, stride, sx + 1, sy - 1, color);
         write_pixel(s_fb0, stride, sx - 1, sy + 1, color);
@@ -471,9 +471,9 @@ static void render_direct() {
 
         // Compute effective drawn size based on brightness thresholds
         int effective_size = 1;
-        if (s_cfg_star_size >= 2 && brightness > 0.5f) effective_size = 2;
-        if (s_cfg_star_size >= 3 && brightness > 0.4f) effective_size = 3;
-        if (s_cfg_star_size >= 4 && brightness > 0.6f) effective_size = 4;
+        if (s_cfg_star_size >= 2 && brightness > 0.35f) effective_size = 2;
+        if (s_cfg_star_size >= 3 && brightness > 0.55f) effective_size = 3;
+        if (s_cfg_star_size >= 4 && brightness > 0.75f) effective_size = 4;
 
         // Save position + drawn size for next frame erasure
         s_prev_pos[i].x = (int16_t)sx;
@@ -493,7 +493,7 @@ static void render_direct() {
         }
 
         uint16_t color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-        draw_star(sx, sy, stride, color, brightness, effective_size);
+        draw_star(sx, sy, stride, color, effective_size);
     }
 }
 

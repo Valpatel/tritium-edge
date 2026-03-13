@@ -16,7 +16,6 @@ StarField::StarField(int screen_width, int screen_height, int num_stars)
     _cx = _w * 0.5f;
     _cy = _h * 0.5f;
 
-    // Scale star count to screen area if not specified
     if (num_stars <= 0) {
         int area = _w * _h;
         if (area > 300000)      num_stars = 600;
@@ -37,9 +36,10 @@ StarField::~StarField() {
 }
 
 void StarField::resetStar(Star& s, bool randomize_z) {
-    s.x = randf_range(-1.0f, 1.0f);
-    s.y = randf_range(-1.0f, 1.0f);
-    s.z = randomize_z ? randf_range(0.01f, 1.0f) : 1.0f;
+    // Screen-space: x in [0,1] → [0,_w], y in [0,1] → [0,_h]
+    s.x = randf();
+    s.y = randf();
+    s.z = randomize_z ? randf_range(0.1f, 1.0f) : randf_range(0.7f, 1.0f);
     s.prev_z = s.z;
 
     // ~75% white, ~10% blue, ~10% yellow, ~5% red
@@ -51,51 +51,51 @@ void StarField::resetStar(Star& s, bool randomize_z) {
 }
 
 void StarField::update(float speed) {
-    bool reverse = speed < 0.0f;
+    float abs_speed = fabsf(speed);
+    float direction = (speed >= 0) ? 1.0f : -1.0f;
+
     for (int i = 0; i < _num_stars; i++) {
         Star& s = _stars[i];
         s.prev_z = s.z;
-        s.z -= speed;
 
-        // Reset if past the camera (forward) or receded past max depth (reverse)
-        if (s.z <= 0.001f) {
-            resetStar(s, false);
-            if (reverse) s.z = 0.01f;  // spawn close when going backward
-            continue;
-        }
-        if (s.z > 1.5f) {
-            resetStar(s, false);
-            if (!reverse) s.z = 1.0f;  // spawn far when going forward
-            continue;
-        }
+        // Parallax lateral drift: closer stars (smaller z) move faster.
+        // All stars drift in the same direction — no center clustering.
+        // Primary drift: horizontal. Secondary: slight vertical for variety.
+        float depth_speed = abs_speed / fmaxf(s.z, 0.1f);
+        s.x += direction * depth_speed * 0.15f;
+        s.y += direction * depth_speed * 0.04f;  // gentle vertical component
 
-        // Check if projected position is off screen
-        float inv_z = 1.0f / s.z;
-        float sx = _cx + s.x * _cx * inv_z;
-        float sy = _cy + s.y * _cy * inv_z;
-        if (sx < -2 || sx >= _w + 2 || sy < -2 || sy >= _h + 2) {
-            resetStar(s, false);
-            if (reverse) s.z = 0.01f;
+        // Slowly cycle z to create twinkling/depth variation
+        s.z -= speed * 0.1f;
+
+        // Wrap horizontally (seamless scrolling)
+        if (s.x > 1.05f) { s.x -= 1.1f; }
+        if (s.x < -0.05f) { s.x += 1.1f; }
+
+        // Wrap vertically
+        if (s.y > 1.05f) { s.y -= 1.1f; }
+        if (s.y < -0.05f) { s.y += 1.1f; }
+
+        // Reset z if out of range (cycles brightness over time)
+        if (s.z <= 0.05f) {
+            s.z = 1.0f;
+        }
+        if (s.z > 1.2f) {
+            s.z = 0.1f;
         }
     }
 }
 
 bool StarField::project(const Star& s, int& sx, int& sy, float& brightness) const {
-    if (s.z <= 0.001f) return false;
-
-    float inv_z = 1.0f / s.z;
-    float fx = _cx + s.x * _cx * inv_z;
-    float fy = _cy + s.y * _cy * inv_z;
-
-    sx = (int)fx;
-    sy = (int)fy;
+    // Direct screen-space mapping
+    sx = (int)(s.x * _w);
+    sy = (int)(s.y * _h);
 
     if (sx < 0 || sx >= _w || sy < 0 || sy >= _h) return false;
 
-    // Brightness: closer stars are brighter
-    // inv_z ranges ~1 (far, z=1) to ~100 (close, z=0.01)
-    // Use squared falloff for more visible far stars with bright nearby stars
-    float raw = fminf(1.0f, inv_z * 0.4f);
-    brightness = 0.15f + 0.85f * raw;  // floor at 15% so distant stars are still visible
+    // Brightness: closer stars (small z) are brighter
+    // z ranges 0.1 (close, bright) to 1.0 (far, dimmer)
+    brightness = 1.0f - (s.z * 0.6f);  // z=0.1 → 0.94, z=1.0 → 0.40
+    brightness = fmaxf(0.3f, fminf(1.0f, brightness));
     return true;
 }
