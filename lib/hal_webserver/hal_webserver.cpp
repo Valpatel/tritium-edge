@@ -3273,6 +3273,16 @@ void WebServerHAL::addErrorPages() {
     _server->onNotFound([self]() {
         self->_requestCount++;
 
+        // Handle CORS preflight requests for cross-origin fleet panel access
+        if (_server->method() == HTTP_OPTIONS) {
+            _server->sendHeader("Access-Control-Allow-Origin", "*");
+            _server->sendHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+            _server->sendHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            _server->sendHeader("Access-Control-Max-Age", "86400");
+            _server->send(204);
+            return;
+        }
+
         // Serve GIS tile requests: /api/gis/tiles/{layer}/{z}/{x}/{y}.png
         String uri = _server->uri();
         if (uri.startsWith("/api/gis/tiles/") && self->_gisTileProvider) {
