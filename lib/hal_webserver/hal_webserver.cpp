@@ -54,6 +54,7 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include <DNSServer.h>
 #include <Update.h>
 #include <LittleFS.h>
+#include <SD_MMC.h>
 #include <esp_system.h>
 #include <esp_partition.h>
 #include <freertos/FreeRTOS.h>
@@ -61,6 +62,7 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include <esp_heap_caps.h>
 #include <cstring>
 #include <sys/stat.h>
+#include <dirent.h>
 
 // Shared API response buffer — allocated in PSRAM on first use.
 // Safe because WebServer is single-threaded (one request at a time).
@@ -162,6 +164,7 @@ static const char NAV_HTML[] PROGMEM = R"rawliteral(
   <a href="/logs">Logs</a>
   <a href="/config">Config</a>
   <a href="/files">Files</a>
+  <a href="/storage">SD Card</a>
   <a href="/commission">Commission</a>
   <a href="/map">Map</a>
   <a href="/api/status">API</a>
@@ -343,6 +346,12 @@ id="url-input" placeholder="https://example.com/firmware.bin">
 <table><thead><tr><th>Version</th><th>Source</th><th>Status</th></tr></thead>
 <tbody id="history-body"><tr><td colspan="3" style="color:var(--ghost)">Loading...</td></tr></tbody></table></div>
 
+<div class="panel"><div class="panel-title">Flash from SD Card</div>
+<div id="sd-status" style="font-size:11px;color:var(--ghost);margin-bottom:8px">Checking SD card...</div>
+<div id="sd-files" style="max-height:200px;overflow-y:auto"></div>
+<div id="sd-msg" class="status-msg"></div>
+</div>
+
 <div class="panel danger-zone"><div class="panel-title" style="color:var(--mag)">Danger Zone</div>
 <div class="btn-row"><button class="btn danger" id="btn-rollback">Rollback</button>
 <button class="btn danger" id="btn-reboot">Reboot</button></div></div>
@@ -394,7 +403,31 @@ var tb=$('history-body');if(!es.length){tb.innerHTML='<tr><td colspan="3" style=
 var h='';es.forEach(function(e){h+='<tr><td style="color:var(--cyan)">'+e.version+'</td><td>'+
 e.source+'</td><td><span class="dot '+(e.success?'ok':'fail')+'"></span>'+
 (e.success?'OK':'FAIL')+'</td></tr>';});tb.innerHTML=h;}).catch(function(){});
-rs();setInterval(rs,5000);})();
+rs();setInterval(rs,5000);
+function sdSm(c,m){var e=$('sd-msg');e.className='status-msg show '+c;e.textContent=m;}
+function loadSdFiles(p){
+fetch('/api/fs/sd/list?path='+(p||'/')).then(function(r){return r.json()}).then(function(d){
+var c=$('sd-files');$('sd-status').textContent='SD Card: '+d.path;
+var h='<table style="width:100%"><tr><th>Name</th><th>Size</th><th></th></tr>';
+if(p&&p!=='/'){h+='<tr><td><a href="#" onclick="loadSdFiles(\''+
+(p.replace(/\/[^/]+\/?$/,'/')||'/')+ '\');return false" style="color:var(--ghost)">..</a></td><td></td><td></td></tr>';}
+d.files.sort(function(a,b){return a.dir===b.dir?a.name.localeCompare(b.name):(a.dir?-1:1);});
+d.files.forEach(function(f){
+var fp=(p||'/')+((p||'/').endsWith('/')?'':'/')+f.name;
+if(f.dir){h+='<tr><td><a href="#" onclick="loadSdFiles(\''+fp+'\');return false" style="color:var(--cyan)">'+f.name+'/</a></td><td>DIR</td><td></td></tr>';}
+else{var isBin=f.name.endsWith('.bin')||f.name.endsWith('.ota');
+h+='<tr><td style="color:'+(isBin?'var(--green)':'var(--text)')+'">'+f.name+'</td><td>'+fb(f.size)+'</td><td>';
+if(isBin){h+='<button class="btn" style="padding:3px 8px;font-size:10px" onclick="flashSd(\''+fp+'\')">Flash</button>';}
+h+='</td></tr>';}});
+h+='</table>';c.innerHTML=h;
+}).catch(function(e){$('sd-status').textContent='SD card not available';$('sd-files').innerHTML='';});}
+function flashSd(p){if(!confirm('Flash firmware from SD: '+p+'?'))return;
+sdSm('ok','Flashing from SD...');
+fetch('/api/ota/sd',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({path:p})}).then(function(r){return r.json()}).then(function(d){
+sdSm(d.ok?'ok':'err',d.msg||'Failed');rs();}).catch(function(){sdSm('err','Connection error');});}
+loadSdFiles('/');
+})();
 </script></body></html>)rawliteral";
 
 // ── Config Editor page (/config) ────────────────────────────────────────────
@@ -1025,6 +1058,130 @@ void WebServerHAL::addFileManager() {
     DBG_INFO("web", "File manager added at /files");
 }
 
+// ── SD Card Storage page (/storage) ──────────────────────────────────────
+
+static const char STORAGE_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tritium-OS // SD Card</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--cyan:#00f0ff;--mag:#ff2a6d;--green:#05ffa1;--yellow:#fcee0a;
+--void:#0a0a0f;--s1:#0e0e14;--s2:#12121a;--s3:#1a1a2e;
+--ghost:#8888aa;--text:#c8d0dc;--bright:#e0e0ff}
+body{background:var(--void);color:var(--text);font-family:'Courier New',monospace;
+font-size:13px;padding:16px;max-width:800px;margin:0 auto}
+h1{color:var(--cyan);font-size:16px;letter-spacing:0.15em;text-transform:uppercase;
+padding:12px 0;border-bottom:1px solid rgba(0,240,255,0.15);margin-bottom:16px}
+.panel{background:var(--s2);border:1px solid rgba(0,240,255,0.08);border-radius:4px;
+padding:14px;margin-bottom:12px}
+.panel-title{color:var(--bright);font-size:11px;letter-spacing:0.12em;
+text-transform:uppercase;margin-bottom:10px}
+.btn{padding:5px 12px;border:1px solid rgba(0,240,255,0.3);background:transparent;
+color:var(--cyan);font-family:inherit;font-size:11px;cursor:pointer;border-radius:3px;margin:2px}
+.btn:hover{background:rgba(0,240,255,0.1)}
+.btn.danger{border-color:rgba(255,42,109,0.3);color:var(--mag)}
+.btn.green{border-color:rgba(5,255,161,0.3);color:var(--green)}
+.info-grid{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:12px}
+.info-grid .k{color:var(--ghost)}.info-grid .v{color:var(--cyan)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:var(--ghost);font-size:10px;padding:4px 8px;border-bottom:1px solid rgba(0,240,255,0.08)}
+td{padding:5px 8px;border-bottom:1px solid rgba(255,255,255,0.03)}
+tr:hover{background:rgba(0,240,255,0.03)}
+.path-bar{font-size:12px;color:var(--cyan);margin-bottom:10px;word-break:break-all}
+.path-bar a{color:var(--cyan);text-decoration:none}.path-bar a:hover{text-decoration:underline}
+.drop-zone{border:2px dashed rgba(0,240,255,0.2);border-radius:6px;padding:24px 16px;
+text-align:center;position:relative;background:var(--s1);margin-top:10px}
+.drop-zone input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.progress-bar{height:14px;background:var(--s3);border-radius:3px;overflow:hidden;margin:8px 0;display:none}
+.progress-fill{height:100%;width:0%;background:var(--cyan);transition:width 0.3s}
+.msg{padding:6px 10px;border-radius:3px;font-size:11px;margin:6px 0;display:none}
+.msg.show{display:block}.msg.ok{background:rgba(5,255,161,0.08);color:var(--green)}
+.msg.err{background:rgba(255,42,109,0.08);color:var(--mag)}
+</style></head><body>
+<h1>// SD Card Storage</h1>
+<div class="panel"><div class="panel-title">Card Info</div>
+<div class="info-grid">
+<span class="k">Status</span><span class="v" id="sd-mounted">---</span>
+<span class="k">Total</span><span class="v" id="sd-total">---</span>
+<span class="k">Used</span><span class="v" id="sd-used">---</span>
+<span class="k">Free</span><span class="v" id="sd-free">---</span>
+</div></div>
+<div class="panel"><div class="panel-title">File Browser</div>
+<div class="path-bar" id="path-bar">/</div>
+<div id="file-list"></div>
+<div class="drop-zone" id="drop-zone">
+<input type="file" id="upload-file" multiple>
+<div style="color:var(--ghost)">Drop files here or click to <span style="color:var(--cyan)">upload</span></div>
+</div>
+<div class="progress-bar" id="up-bar"><div class="progress-fill" id="up-fill"></div></div>
+<div class="msg" id="msg"></div>
+</div>
+<script>
+(function(){
+var $=function(s){return document.getElementById(s)};
+var curPath='/';
+function fb(b){return b>=1073741824?(b/1073741824).toFixed(1)+' GB':b>=1048576?(b/1048576).toFixed(1)+' MB':b>=1024?(b/1024).toFixed(1)+' KB':b+' B';}
+function sm(c,m){var e=$('msg');e.className='msg show '+c;e.textContent=m;setTimeout(function(){e.className='msg';},4000);}
+function loadInfo(){
+fetch('/api/fs/sd/info').then(function(r){return r.json()}).then(function(d){
+$('sd-mounted').textContent=d.mounted?'Mounted':'Not mounted';
+if(d.mounted){$('sd-total').textContent=fb(d.total);$('sd-used').textContent=fb(d.used);
+$('sd-free').textContent=fb(d.free);}
+});}
+function buildPathBar(p){
+var parts=p.split('/').filter(function(x){return x;});
+var h='<a href="#" onclick="nav(\'/\');return false">/</a>';
+var acc='/';
+parts.forEach(function(part){acc+=part+'/';
+h+=' <a href="#" onclick="nav(\''+acc+'\');return false">'+part+'/</a>';});
+$('path-bar').innerHTML=h;
+}
+function nav(p){curPath=p;loadDir();}
+window.nav=nav;
+function loadDir(){
+buildPathBar(curPath);
+fetch('/api/fs/sd/list?path='+encodeURIComponent(curPath)).then(function(r){return r.json()}).then(function(d){
+var h='<table><tr><th>Name</th><th>Size</th><th>Actions</th></tr>';
+if(curPath!=='/'){var parent=curPath.replace(/\/[^/]+\/$/,'/');if(!parent)parent='/';
+h+='<tr><td><a href="#" onclick="nav(\''+parent+'\');return false" style="color:var(--ghost)">..</a></td><td></td><td></td></tr>';}
+d.files.sort(function(a,b){return a.dir===b.dir?a.name.localeCompare(b.name):(a.dir?-1:1);});
+d.files.forEach(function(f){
+var fp=curPath+(curPath.endsWith('/')?'':'/')+f.name;
+h+='<tr><td>';
+if(f.dir){h+='<a href="#" onclick="nav(\''+fp+'/\');return false" style="color:var(--cyan)">'+f.name+'/</a>';}
+else{var isBin=f.name.endsWith('.bin')||f.name.endsWith('.ota');
+h+='<span style="color:'+(isBin?'var(--green)':'var(--text)')+'">'+f.name+'</span>';}
+h+='</td><td>'+(f.dir?'DIR':fb(f.size))+'</td><td>';
+if(!f.dir){h+='<a class="btn" href="/api/fs/sd/download?path='+encodeURIComponent(fp)+'" style="padding:2px 6px;font-size:10px">DL</a>';
+h+=' <button class="btn danger" style="padding:2px 6px;font-size:10px" onclick="del(\''+fp+'\')">Del</button>';
+if(isBin){h+=' <button class="btn green" style="padding:2px 6px;font-size:10px" onclick="flash(\''+fp+'\')">Flash</button>';}}
+h+='</td></tr>';});
+h+='</table>';$('file-list').innerHTML=h;
+}).catch(function(){$('file-list').innerHTML='<div style="color:var(--ghost);padding:10px">SD card not available</div>';});}
+window.del=function(p){if(!confirm('Delete '+p+'?'))return;
+fetch('/api/fs/sd/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({path:p})}).then(function(r){return r.json()}).then(function(d){
+sm(d.ok?'ok':'err',d.ok?'Deleted':'Delete failed');loadDir();
+}).catch(function(){sm('err','Error');});};
+window.flash=function(p){if(!confirm('Flash firmware from: '+p+'?'))return;
+sm('ok','Flashing from SD...');
+fetch('/api/ota/sd',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({path:p})}).then(function(r){return r.json()}).then(function(d){
+sm(d.ok?'ok':'err',d.msg||'Failed');}).catch(function(){sm('err','Connection error');});};
+$('upload-file').onchange=function(){
+var files=this.files;if(!files.length)return;
+var i=0;var bar=$('up-bar');var fill=$('up-fill');bar.style.display='block';
+function next(){if(i>=files.length){bar.style.display='none';sm('ok','Upload complete');loadDir();loadInfo();return;}
+var fd=new FormData();fd.append('file',files[i],files[i].name);
+var xhr=new XMLHttpRequest();xhr.open('POST','/api/fs/sd/upload?path='+encodeURIComponent(curPath),true);
+xhr.upload.onprogress=function(e){if(e.lengthComputable){fill.style.width=Math.round(e.loaded/e.total*100)+'%';}};
+xhr.onload=function(){i++;next();};xhr.onerror=function(){sm('err','Upload failed');bar.style.display='none';};
+xhr.send(fd);}
+next();};
+loadInfo();loadDir();})();
+</script></body></html>)rawliteral";
+
 // ── addApiEndpoints() ───────────────────────────────────────────────────────
 
 void WebServerHAL::addApiEndpoints() {
@@ -1425,6 +1582,272 @@ void WebServerHAL::addApiEndpoints() {
         bool ok = TritiumSettings::instance().factoryReset(domain);
         _server->send(ok ? 200 : 500, "application/json",
             ok ? "{\"ok\":true}" : "{\"error\":\"reset failed\"}");
+    });
+#endif
+
+    // ── SD Card Filesystem API ─────────────────────────────────────────
+
+    // GET /api/fs/sd/list?path=/ — list files and directories on SD card
+    _server->on("/api/fs/sd/list", HTTP_GET, [self]() {
+        self->_requestCount++;
+        struct stat sd_stat;
+        if (stat("/sdcard", &sd_stat) != 0) {
+            _server->send(503, "application/json",
+                "{\"error\":\"SD card not mounted\"}");
+            return;
+        }
+
+        String dirPath = "/sdcard";
+        if (_server->hasArg("path")) {
+            String p = _server->arg("path");
+            if (p.length() > 0 && p != "/") {
+                dirPath += p;
+            }
+        }
+
+        DIR* dir = opendir(dirPath.c_str());
+        if (!dir) {
+            _server->send(404, "application/json",
+                "{\"error\":\"Directory not found\"}");
+            return;
+        }
+
+        char* buf = api_buf();
+        int pos = snprintf(buf, API_BUF_SIZE,
+            "{\"path\":\"%s\",\"files\":[",
+            dirPath.c_str() + 7);  // strip "/sdcard"
+
+        bool first = true;
+        struct dirent* ent;
+        while ((ent = readdir(dir)) != nullptr) {
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+                continue;
+
+            char fullPath[256];
+            snprintf(fullPath, sizeof(fullPath), "%s/%s",
+                     dirPath.c_str(), ent->d_name);
+
+            struct stat st;
+            bool isDir = false;
+            long fsize = 0;
+            if (stat(fullPath, &st) == 0) {
+                isDir = S_ISDIR(st.st_mode);
+                fsize = isDir ? 0 : (long)st.st_size;
+            }
+
+            if (!first) buf[pos++] = ',';
+            first = false;
+            pos += snprintf(buf + pos, API_BUF_SIZE - pos,
+                "{\"name\":\"%s\",\"size\":%ld,\"dir\":%s}",
+                ent->d_name, fsize, isDir ? "true" : "false");
+
+            if (pos > (int)API_BUF_SIZE - 128) break;  // safety
+        }
+        closedir(dir);
+
+        snprintf(buf + pos, API_BUF_SIZE - pos, "]}");
+        _server->sendHeader("Access-Control-Allow-Origin", "*");
+        _server->send(200, "application/json", buf);
+    });
+
+    // GET /api/fs/sd/info — SD card capacity and usage
+    _server->on("/api/fs/sd/info", HTTP_GET, [self]() {
+        self->_requestCount++;
+        struct stat sd_stat;
+        bool mounted = (stat("/sdcard", &sd_stat) == 0);
+
+        char buf[256];
+        if (mounted) {
+            // Use SD_MMC for capacity info
+            uint64_t totalBytes = SD_MMC.totalBytes();
+            uint64_t usedBytes = SD_MMC.usedBytes();
+            snprintf(buf, sizeof(buf),
+                "{\"mounted\":true,\"total\":%llu,\"free\":%llu,\"used\":%llu}",
+                (unsigned long long)totalBytes,
+                (unsigned long long)(totalBytes - usedBytes),
+                (unsigned long long)usedBytes);
+        } else {
+            snprintf(buf, sizeof(buf), "{\"mounted\":false}");
+        }
+        _server->send(200, "application/json", buf);
+    });
+
+    // GET /api/fs/sd/download?path=/file.bin — download a file from SD card
+    _server->on("/api/fs/sd/download", HTTP_GET, [self]() {
+        self->_requestCount++;
+        if (!_server->hasArg("path")) {
+            _server->send(400, "application/json",
+                "{\"error\":\"Missing path parameter\"}");
+            return;
+        }
+        String relPath = _server->arg("path");
+        char fullPath[256];
+        snprintf(fullPath, sizeof(fullPath), "/sdcard%s", relPath.c_str());
+
+        struct stat st;
+        if (stat(fullPath, &st) != 0 || S_ISDIR(st.st_mode)) {
+            _server->send(404, "application/json",
+                "{\"error\":\"File not found\"}");
+            return;
+        }
+
+        FILE* f = fopen(fullPath, "rb");
+        if (!f) {
+            _server->send(500, "application/json",
+                "{\"error\":\"Cannot open file\"}");
+            return;
+        }
+
+        // Extract filename for Content-Disposition
+        const char* fname = strrchr(relPath.c_str(), '/');
+        fname = fname ? fname + 1 : relPath.c_str();
+
+        char header[128];
+        snprintf(header, sizeof(header),
+            "attachment; filename=\"%s\"", fname);
+        _server->sendHeader("Content-Disposition", header);
+        _server->setContentLength(st.st_size);
+        _server->send(200, "application/octet-stream", "");
+
+        char chunk[1024];
+        size_t total = 0;
+        while (total < (size_t)st.st_size) {
+            size_t n = fread(chunk, 1, sizeof(chunk), f);
+            if (n == 0) break;
+            _server->sendContent(chunk, n);
+            total += n;
+        }
+        fclose(f);
+    });
+
+    // POST /api/fs/sd/delete — delete file from SD card (JSON body: {"path":"/..."})
+    _server->on("/api/fs/sd/delete", HTTP_POST, [self]() {
+        self->_requestCount++;
+        String body = _server->arg("plain");
+        // Extract path from JSON
+        const char* s = body.c_str();
+        const char* pp = strstr(s, "\"path\":\"");
+        if (!pp) {
+            _server->send(400, "application/json",
+                "{\"ok\":false,\"error\":\"Missing path\"}");
+            return;
+        }
+        pp += 8;
+        char path[256];
+        int i = 0;
+        while (pp[i] && pp[i] != '"' && i < 255) { path[i] = pp[i]; i++; }
+        path[i] = '\0';
+
+        char fullPath[280];
+        snprintf(fullPath, sizeof(fullPath), "/sdcard%s", path);
+
+        if (remove(fullPath) == 0) {
+            DBG_INFO("web", "SD file deleted: %s", path);
+            _server->send(200, "application/json", "{\"ok\":true}");
+        } else {
+            _server->send(500, "application/json",
+                "{\"ok\":false,\"error\":\"Delete failed\"}");
+        }
+    });
+
+    // POST /api/fs/sd/mkdir — create directory on SD card
+    _server->on("/api/fs/sd/mkdir", HTTP_POST, [self]() {
+        self->_requestCount++;
+        String body = _server->arg("plain");
+        const char* s = body.c_str();
+        const char* pp = strstr(s, "\"path\":\"");
+        if (!pp) {
+            _server->send(400, "application/json",
+                "{\"ok\":false,\"error\":\"Missing path\"}");
+            return;
+        }
+        pp += 8;
+        char path[256];
+        int i = 0;
+        while (pp[i] && pp[i] != '"' && i < 255) { path[i] = pp[i]; i++; }
+        path[i] = '\0';
+
+        char fullPath[280];
+        snprintf(fullPath, sizeof(fullPath), "/sdcard%s", path);
+
+        if (mkdir(fullPath, 0755) == 0) {
+            DBG_INFO("web", "SD dir created: %s", path);
+            _server->send(200, "application/json", "{\"ok\":true}");
+        } else {
+            _server->send(500, "application/json",
+                "{\"ok\":false,\"error\":\"mkdir failed\"}");
+        }
+    });
+
+    // POST /api/fs/sd/upload?path=/dir/ — upload file to SD card
+    _server->on("/api/fs/sd/upload", HTTP_POST,
+        [self]() {
+            self->_requestCount++;
+            _server->send(200, "application/json",
+                "{\"ok\":true,\"msg\":\"Uploaded\"}");
+        },
+        [self]() {
+            HTTPUpload& upload = _server->upload();
+            static FILE* sdFile = nullptr;
+
+            if (upload.status == UPLOAD_FILE_START) {
+                // Build full path: /sdcard/<dirpath>/<filename>
+                String dirPath = "/sdcard";
+                if (_server->hasArg("path")) {
+                    dirPath += _server->arg("path");
+                }
+                // Ensure directory exists
+                struct stat st;
+                if (stat(dirPath.c_str(), &st) != 0) {
+                    mkdir(dirPath.c_str(), 0755);
+                }
+                String fullPath = dirPath;
+                if (!fullPath.endsWith("/")) fullPath += "/";
+                fullPath += upload.filename;
+
+                sdFile = fopen(fullPath.c_str(), "wb");
+                DBG_INFO("web", "SD upload: %s", fullPath.c_str());
+            } else if (upload.status == UPLOAD_FILE_WRITE) {
+                if (sdFile) fwrite(upload.buf, 1, upload.currentSize, sdFile);
+            } else if (upload.status == UPLOAD_FILE_END) {
+                if (sdFile) {
+                    fclose(sdFile);
+                    sdFile = nullptr;
+                    DBG_INFO("web", "SD upload complete: %u bytes",
+                             upload.totalSize);
+                }
+            }
+        }
+    );
+
+    // POST /api/ota/sd — flash firmware from SD card file
+#if OTA_MANAGER_AVAILABLE
+    _server->on("/api/ota/sd", HTTP_POST, [self]() {
+        self->_requestCount++;
+        String body = _server->arg("plain");
+        const char* s = body.c_str();
+        const char* pp = strstr(s, "\"path\":\"");
+        const char* path = "/firmware.bin";
+        char pathBuf[256];
+        if (pp) {
+            pp += 8;
+            int i = 0;
+            while (pp[i] && pp[i] != '"' && i < 255) { pathBuf[i] = pp[i]; i++; }
+            pathBuf[i] = '\0';
+            path = pathBuf;
+        }
+
+        bool ok = ota_manager::updateFromSD(path);
+        if (ok) {
+            _server->send(200, "application/json",
+                "{\"ok\":true,\"msg\":\"SD flash complete, ready to reboot\"}");
+        } else {
+            const auto& st = ota_manager::getStatus();
+            char buf[128];
+            snprintf(buf, sizeof(buf), "{\"ok\":false,\"msg\":\"%s\"}",
+                     st.error_msg);
+            _server->send(500, "application/json", buf);
+        }
     });
 #endif
 
@@ -2737,6 +3160,17 @@ void WebServerHAL::addAllPages() {
     addSystemPage();
     addLogsPage();
     addMapPage();
+
+    // SD Card Storage page
+    if (_server) {
+        WebServerHAL* self = this;
+        _server->on("/storage", HTTP_GET, [self]() {
+            self->_requestCount++;
+            _server->send(200, "text/html", FPSTR(STORAGE_HTML));
+        });
+        DBG_INFO("web", "SD storage page added at /storage");
+    }
+
     addErrorPages();       // Must be last — registers onNotFound handler
     DBG_INFO("web", "All pages registered");
 }
