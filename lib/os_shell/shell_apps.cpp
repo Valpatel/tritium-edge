@@ -3524,9 +3524,106 @@ static constexpr int TERM_MAX_LINES = 100;
 static char s_term_buf[4096] = {};  // Accumulated output text
 
 #if TERMINAL_AVAILABLE
+static void term_append_line(const char* line) {
+    size_t cur = strlen(s_term_buf);
+    size_t ll = strlen(line);
+    if (cur + ll + 2 >= sizeof(s_term_buf)) {
+        // Shift out first half
+        const char* mid = s_term_buf + sizeof(s_term_buf) / 2;
+        const char* nl = strchr(mid, '\n');
+        if (nl) { nl++; size_t keep = cur - (nl - s_term_buf); memmove(s_term_buf, nl, keep); cur = keep; }
+        else { cur = 0; }
+        s_term_buf[cur] = '\0';
+    }
+    memcpy(s_term_buf + cur, line, ll);
+    cur += ll;
+    s_term_buf[cur++] = '\n';
+    s_term_buf[cur] = '\0';
+}
+
 static void term_send_cmd(const char* cmd) {
     if (!cmd || !cmd[0]) return;
-    serial_capture::injectCommand(cmd);
+
+    // Echo the command
+    char echo[300];
+    snprintf(echo, sizeof(echo), "> %s", cmd);
+    term_append_line(echo);
+
+    // Parse verb + args
+    char buf[256];
+    strncpy(buf, cmd, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    char* space = strchr(buf, ' ');
+    const char* verb = buf;
+    const char* args = nullptr;
+    if (space) { *space = '\0'; args = space + 1; }
+
+    if (strcmp(verb, "IDENTIFY") == 0) {
+        char r[128];
+        snprintf(r, sizeof(r), "{\"board\":\"esp32-s3\",\"display\":\"%dx%d\"}",
+                 display_get_width(), display_get_height());
+        term_append_line(r);
+    } else if (strcmp(verb, "SERVICES") == 0) {
+#if __has_include("service_registry.h")
+        char line[128];
+        snprintf(line, sizeof(line), "[svc] %d services:", ServiceRegistry::count());
+        term_append_line(line);
+        for (int i = 0; i < ServiceRegistry::count(); i++) {
+            auto* s = ServiceRegistry::at(i);
+            if (s) {
+                snprintf(line, sizeof(line), "  %-16s pri=%3d cap=%02X",
+                         s->name(), s->initPriority(), s->capabilities());
+                term_append_line(line);
+            }
+        }
+#endif
+    } else if (strcmp(verb, "HELP") == 0) {
+        term_append_line("Commands: IDENTIFY, SERVICES, HELP, STATUS, HEAP");
+    } else if (strcmp(verb, "STATUS") == 0) {
+        char r[256];
+#ifndef SIMULATOR
+        uint32_t heap_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        uint32_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        snprintf(r, sizeof(r), "Heap: %luKB free, %luKB PSRAM, Uptime: %lus",
+                 (unsigned long)(heap_free / 1024),
+                 (unsigned long)(psram_free / 1024),
+                 (unsigned long)(millis() / 1000));
+#else
+        snprintf(r, sizeof(r), "Simulator mode");
+#endif
+        term_append_line(r);
+    } else if (strcmp(verb, "HEAP") == 0) {
+#ifndef SIMULATOR
+        char r[256];
+        uint32_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        uint32_t free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        uint32_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        int frag = (free_heap > 0) ? 100 - (int)(largest * 100 / free_heap) : 0;
+        snprintf(r, sizeof(r), "Free: %luKB  Largest: %luKB  Frag: %d%%  PSRAM: %luKB",
+                 (unsigned long)(free_heap / 1024), (unsigned long)(largest / 1024), frag,
+                 (unsigned long)(psram_free / 1024));
+        term_append_line(r);
+#endif
+    } else {
+#if __has_include("service_registry.h")
+        if (!ServiceRegistry::dispatchCommand(verb, args)) {
+            char err[128];
+            snprintf(err, sizeof(err), "[cmd] Unknown: %s", verb);
+            term_append_line(err);
+        }
+#else
+        char err[128];
+        snprintf(err, sizeof(err), "[cmd] Unknown: %s", verb);
+        term_append_line(err);
+#endif
+    }
+
+    // Update display immediately
+    if (s_term_output) {
+        lv_label_set_text(s_term_output, s_term_buf);
+        lv_obj_t* parent = lv_obj_get_parent(s_term_output);
+        if (parent) lv_obj_scroll_to_y(parent, LV_COORD_MAX, LV_ANIM_OFF);
+    }
 }
 
 static void term_send_cb(lv_event_t* e) {
