@@ -60,6 +60,7 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include <freertos/semphr.h>
 #include <esp_heap_caps.h>
 #include <cstring>
+#include <sys/stat.h>
 
 // Shared API response buffer — allocated in PSRAM on first use.
 // Safe because WebServer is single-threaded (one request at a time).
@@ -2441,6 +2442,70 @@ void WebServerHAL::addLogsPage() {
             }
         }
         _server->send(200, "application/json", "{\"count\":0,\"lines\":[]}");
+    });
+
+    // GET /api/logs/sd — download SD card system log
+    _server->on("/api/logs/sd", HTTP_GET, [self]() {
+        self->_requestCount++;
+        struct stat st;
+        if (stat("/sdcard/logs/system.log", &st) != 0) {
+            _server->send(404, "application/json",
+                "{\"error\":\"No SD log file\"}");
+            return;
+        }
+        FILE* f = fopen("/sdcard/logs/system.log", "r");
+        if (!f) {
+            _server->send(500, "application/json",
+                "{\"error\":\"Cannot open log\"}");
+            return;
+        }
+
+        char sizeStr[16];
+        snprintf(sizeStr, sizeof(sizeStr), "%ld", (long)st.st_size);
+        _server->sendHeader("Content-Disposition",
+            "attachment; filename=\"system.log\"");
+        _server->setContentLength(st.st_size);
+        _server->send(200, "text/plain", "");
+
+        char chunk[1024];
+        size_t total = 0;
+        while (total < (size_t)st.st_size) {
+            size_t n = fread(chunk, 1, sizeof(chunk), f);
+            if (n == 0) break;
+            _server->sendContent(chunk, n);
+            total += n;
+        }
+        fclose(f);
+    });
+
+    // GET /api/logs/sd/list — list available log files
+    _server->on("/api/logs/sd/list", HTTP_GET, [self]() {
+        self->_requestCount++;
+        char* buf = api_buf();
+        int pos = snprintf(buf, API_BUF_SIZE, "[");
+
+        const char* names[] = {
+            "/sdcard/logs/system.log",
+            "/sdcard/logs/system.log.1",
+            "/sdcard/logs/system.log.2",
+            "/sdcard/logs/system.log.3",
+            "/sdcard/logs/system.log.4",
+            "/sdcard/logs/system.log.5",
+        };
+        bool first = true;
+        for (int i = 0; i < 6; i++) {
+            struct stat st;
+            if (stat(names[i], &st) == 0) {
+                if (!first) buf[pos++] = ',';
+                first = false;
+                pos += snprintf(buf + pos, API_BUF_SIZE - pos,
+                    "{\"name\":\"%s\",\"size\":%ld}",
+                    names[i] + 14,  // strip "/sdcard/logs/"
+                    (long)st.st_size);
+            }
+        }
+        snprintf(buf + pos, API_BUF_SIZE - pos, "]");
+        _server->send(200, "application/json", buf);
     });
 
     DBG_INFO("web", "Logs page added at /logs");
