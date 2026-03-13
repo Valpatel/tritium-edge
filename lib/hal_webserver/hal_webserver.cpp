@@ -217,15 +217,19 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
   <div class="metric"><div class="val" id="v_uptime">%UPTIME%</div><div class="lbl">Uptime</div></div>
   <div class="metric"><div class="val" id="v_heap">%HEAP%</div><div class="lbl">Free Heap</div></div>
   <div class="metric"><div class="val" id="v_rssi">%RSSI%</div><div class="lbl">WiFi dBm</div></div>
+  <div class="metric"><div class="val" id="v_temp">--</div><div class="lbl">CPU Temp</div></div>
   <div class="metric"><div class="val" id="v_reqs">%REQCOUNT%</div><div class="lbl">Requests</div></div>
 </div>
 </div>
 <div class="card">
 <h2>Node Identity</h2>
 <table>
+<tr><td class="label">Firmware</td><td id="v_fw">--</td></tr>
 <tr><td class="label">Board</td><td>%BOARD%</td></tr>
 <tr><td class="label">MAC</td><td style="font-family:monospace">%MAC%</td></tr>
 <tr><td class="label">IP</td><td>%IP%</td></tr>
+<tr><td class="label">SSID</td><td id="v_ssid">--</td></tr>
+<tr><td class="label">CPU</td><td><span id="v_cpu">--</span> MHz</td></tr>
 <tr><td class="label">PSRAM</td><td><span id="v_psram">%PSRAM_FREE%</span> / %PSRAM_TOTAL% bytes</td></tr>
 <tr><td class="label">Signal</td><td>
   <div class="bar-bg" style="width:200px"><div class="bar-fill" id="v_rssi_bar" style="width:%RSSI_PCT%%"></div></div>
@@ -251,8 +255,12 @@ setInterval(function(){
     document.getElementById('v_uptime').textContent=uptimeFmt(d.uptime_s);
     document.getElementById('v_heap').textContent=fmt(d.free_heap);
     document.getElementById('v_rssi').textContent=d.rssi;
+    document.getElementById('v_temp').textContent=d.temp_c?d.temp_c.toFixed(1)+'°C':'--';
     document.getElementById('v_reqs').textContent=d.requests;
     document.getElementById('v_psram').textContent=fmt(d.psram_free);
+    if(d.fw_version)document.getElementById('v_fw').textContent=d.fw_version;
+    if(d.ssid)document.getElementById('v_ssid').textContent=d.ssid;
+    if(d.cpu_freq)document.getElementById('v_cpu').textContent=d.cpu_freq;
     var pct=Math.min(100,Math.max(0,2*(d.rssi+100)));
     document.getElementById('v_rssi_bar').style.width=pct+'%';
   });
