@@ -1675,6 +1675,7 @@ static lv_obj_t* s_sysmon_temp_lbl   = nullptr;
 static lv_obj_t* s_sysmon_wifi_lbl   = nullptr;
 static lv_obj_t* s_sysmon_tasks_lbl  = nullptr;
 static lv_obj_t* s_sysmon_storage_lbl = nullptr;
+static lv_obj_t* s_sysmon_task_list  = nullptr;
 static lv_timer_t* s_sysmon_timer    = nullptr;
 
 static void sysmon_update(lv_timer_t* t) {
@@ -1725,6 +1726,39 @@ static void sysmon_update(lv_timer_t* t) {
     UBaseType_t task_count = uxTaskGetNumberOfTasks();
     snprintf(buf, sizeof(buf), "Tasks: %u", (unsigned)task_count);
     lv_label_set_text(s_sysmon_tasks_lbl, buf);
+
+    // Task detail list
+    if (s_sysmon_task_list && task_count > 0 && task_count <= 32) {
+        lv_obj_clean(s_sysmon_task_list);
+        TaskStatus_t* task_arr = (TaskStatus_t*)malloc(task_count * sizeof(TaskStatus_t));
+        if (task_arr) {
+            UBaseType_t filled = uxTaskGetSystemState(task_arr, task_count, nullptr);
+            for (UBaseType_t i = 0; i < filled; i++) {
+                char tbuf[80];
+                const char* state_str = "?";
+                switch (task_arr[i].eCurrentState) {
+                    case eRunning:   state_str = "RUN"; break;
+                    case eReady:     state_str = "RDY"; break;
+                    case eBlocked:   state_str = "BLK"; break;
+                    case eSuspended: state_str = "SUS"; break;
+                    case eDeleted:   state_str = "DEL"; break;
+                    default: break;
+                }
+                snprintf(tbuf, sizeof(tbuf), "%-16s P%u %s  stk:%u",
+                         task_arr[i].pcTaskName,
+                         (unsigned)task_arr[i].uxCurrentPriority,
+                         state_str,
+                         (unsigned)task_arr[i].usStackHighWaterMark);
+                lv_obj_t* tlbl = tritium_theme::createLabel(s_sysmon_task_list, tbuf, true);
+                lv_obj_set_style_text_font(tlbl, tritium_shell::uiSmallFont(), 0);
+                // Color by stack watermark: red if <200, yellow if <500
+                lv_color_t sc = (task_arr[i].usStackHighWaterMark < 200) ? T_MAGENTA :
+                                (task_arr[i].usStackHighWaterMark < 500) ? T_YELLOW : T_GREEN;
+                lv_obj_set_style_text_color(tlbl, sc, 0);
+            }
+            free(task_arr);
+        }
+    }
 
     // Storage
     if (s_sysmon_storage_lbl) {
@@ -1838,6 +1872,24 @@ void sysmon_app_create(lv_obj_t* viewport) {
     s_sysmon_temp_lbl   = tritium_theme::createLabel(cpu_panel, "CPU Temp: --", true);
     s_sysmon_uptime_lbl = tritium_theme::createLabel(cpu_panel, "Uptime: --", true);
     s_sysmon_tasks_lbl  = tritium_theme::createLabel(cpu_panel, "Tasks: --", true);
+
+    // --- Tasks panel ---
+    lv_obj_t* task_panel = tritium_theme::createPanel(viewport, "FREERTOS TASKS");
+    lv_obj_set_width(task_panel, lv_pct(100));
+    lv_obj_set_height(task_panel, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(task_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_top(task_panel, 24, 0);
+    lv_obj_set_style_pad_gap(task_panel, 2, 0);
+
+    s_sysmon_task_list = lv_obj_create(task_panel);
+    lv_obj_set_width(s_sysmon_task_list, lv_pct(100));
+    lv_obj_set_height(s_sysmon_task_list, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(s_sysmon_task_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_sysmon_task_list, 0, 0);
+    lv_obj_set_style_pad_all(s_sysmon_task_list, 0, 0);
+    lv_obj_set_style_pad_gap(s_sysmon_task_list, 1, 0);
+    lv_obj_set_flex_flow(s_sysmon_task_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(s_sysmon_task_list, LV_OBJ_FLAG_SCROLLABLE);
 
     // --- Network panel ---
     lv_obj_t* net_panel = tritium_theme::createPanel(viewport, "NETWORK");

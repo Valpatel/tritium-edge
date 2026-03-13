@@ -1727,6 +1727,45 @@ void WebServerHAL::addApiEndpoints() {
         _server->send(200, "application/json", buf);
     });
 
+    // GET /api/diag/tasks — FreeRTOS task details
+    _server->on("/api/diag/tasks", HTTP_GET, [self]() {
+        self->_requestCount++;
+        UBaseType_t count = uxTaskGetNumberOfTasks();
+        if (count == 0 || count > 32) {
+            _server->send(200, "application/json", "{\"tasks\":[]}");
+            return;
+        }
+        TaskStatus_t* arr = (TaskStatus_t*)malloc(count * sizeof(TaskStatus_t));
+        if (!arr) {
+            _server->send(500, "application/json", "{\"error\":\"alloc\"}");
+            return;
+        }
+        UBaseType_t filled = uxTaskGetSystemState(arr, count, nullptr);
+        char* buf = api_buf();
+        int pos = snprintf(buf, API_BUF_SIZE, "{\"count\":%u,\"tasks\":[", (unsigned)filled);
+        for (UBaseType_t i = 0; i < filled && pos < (int)API_BUF_SIZE - 128; i++) {
+            const char* st = "?";
+            switch (arr[i].eCurrentState) {
+                case eRunning:   st = "run"; break;
+                case eReady:     st = "rdy"; break;
+                case eBlocked:   st = "blk"; break;
+                case eSuspended: st = "sus"; break;
+                case eDeleted:   st = "del"; break;
+                default: break;
+            }
+            pos += snprintf(buf + pos, API_BUF_SIZE - pos,
+                "%s{\"name\":\"%s\",\"pri\":%u,\"state\":\"%s\",\"stack_hwm\":%u}",
+                i > 0 ? "," : "",
+                arr[i].pcTaskName,
+                (unsigned)arr[i].uxCurrentPriority,
+                st,
+                (unsigned)arr[i].usStackHighWaterMark);
+        }
+        pos += snprintf(buf + pos, API_BUF_SIZE - pos, "]}");
+        free(arr);
+        _server->send(200, "application/json", buf);
+    });
+
     // GET /api/logs — recent log entries
     _server->on("/api/logs", HTTP_GET, [self]() {
         self->_requestCount++;
