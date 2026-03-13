@@ -64,6 +64,7 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #include <sys/stat.h>
 #include <dirent.h>
 #include "wifi_classifier.h"
+#include "service_registry.h"
 
 // Shared API response buffer — allocated in PSRAM on first use.
 // Safe because WebServer is single-threaded (one request at a time).
@@ -1261,6 +1262,31 @@ void WebServerHAL::addApiEndpoints() {
             (unsigned long)ESP.getPsramSize(),
             (unsigned long)ESP.getCpuFreqMHz(),
             ESP.getSdkVersion());
+        _server->send(200, "application/json", buf);
+    });
+
+    // GET /api/services — list all registered services and their status
+    _server->on("/api/services", HTTP_GET, [self]() {
+        self->_requestCount++;
+        char* buf = api_buf();
+        if (!buf) { _server->send(500, "text/plain", "OOM"); return; }
+        int n = ServiceRegistry::count();
+        int pos = snprintf(buf, API_BUF_SIZE, "{\"count\":%d,\"services\":[", n);
+        for (int i = 0; i < n && pos < (int)API_BUF_SIZE - 128; i++) {
+            ServiceInterface* svc = ServiceRegistry::at(i);
+            if (!svc) continue;
+            if (i > 0) buf[pos++] = ',';
+            uint8_t caps = svc->capabilities();
+            pos += snprintf(buf + pos, API_BUF_SIZE - pos,
+                "{\"name\":\"%s\",\"priority\":%d,\"caps\":{\"tick\":%s,"
+                "\"cmd\":%s,\"web\":%s,\"shutdown\":%s}}",
+                svc->name(), svc->initPriority(),
+                (caps & SVC_TICK) ? "true" : "false",
+                (caps & SVC_SERIAL_CMD) ? "true" : "false",
+                (caps & SVC_WEB_API) ? "true" : "false",
+                (caps & SVC_SHUTDOWN) ? "true" : "false");
+        }
+        snprintf(buf + pos, API_BUF_SIZE - pos, "]}");
         _server->send(200, "application/json", buf);
     });
 
