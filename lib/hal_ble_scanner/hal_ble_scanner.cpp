@@ -22,6 +22,7 @@ bool is_cache_valid() { return false; }
 uint32_t cache_age_ms() { return 0; }
 int get_rssi_history_json(const uint8_t[6], char* buf, size_t buf_size) { return 0; }
 int get_rssi_history_json_by_mac(const char*, char* buf, size_t buf_size) { return 0; }
+int get_rotation_group_count() { return 0; }
 bool is_active() { return false; }
 }
 
@@ -53,6 +54,22 @@ static bool _running = false;
 static ScanConfig _config;
 static TaskHandle_t _scan_task = nullptr;
 static uint32_t _last_scan_complete_ms = 0;  // millis() when last scan cycle finished
+static int _next_rotation_group = 0;          // Next group ID to assign
+
+// Track recently departed random-MAC devices for rotation correlation.
+// When a random-MAC device disappears (pruned) and a new random-MAC device
+// appears within MAC_ROTATION_WINDOW_MS at similar RSSI, we link them.
+struct DepartedRandomMac {
+    uint8_t addr[6];
+    int8_t last_rssi;
+    uint32_t departed_at;       // millis() when pruned
+    int8_t rotation_group;      // group ID (or -1 if ungrouped)
+    BleDeviceClass device_class;
+    AppleDeviceType apple_type;
+    bool valid;
+};
+static DepartedRandomMac _departed[MAC_ROTATION_MAX_GROUPS];
+static int _departed_count = 0;
 
 // --- Helpers ---
 
@@ -116,18 +133,84 @@ static const char* compute_rssi_trend(const BleDevice& d) {
 
 static void prune_stale() {
     uint32_t now = millis();
+
+    // Expire old departed entries
+    for (int i = 0; i < _departed_count; ) {
+        if ((now - _departed[i].departed_at) > MAC_ROTATION_WINDOW_MS * 3) {
+            _departed[i] = _departed[--_departed_count];
+        } else {
+            i++;
+        }
+    }
+
     int write = 0;
     for (int i = 0; i < _device_count; i++) {
         if ((now - _devices[i].last_seen) < BLE_DEVICE_TIMEOUT_MS) {
             if (write != i) _devices[write] = _devices[i];
             write++;
-        } else if (_devices[i].is_known) {
-            BLE_DIAG_LOG(hal_diag::Severity::INFO,
-                "Known BLE device departed: %s (seen %u times)",
-                _devices[i].name, _devices[i].seen_count);
+        } else {
+            // Track departed random-MAC devices for rotation correlation
+            if (_devices[i].is_random_mac && _departed_count < MAC_ROTATION_MAX_GROUPS) {
+                DepartedRandomMac& dep = _departed[_departed_count++];
+                memcpy(dep.addr, _devices[i].addr, 6);
+                dep.last_rssi = _devices[i].rssi;
+                dep.departed_at = now;
+                dep.rotation_group = _devices[i].rotation_group;
+                dep.device_class = _devices[i].device_class;
+                dep.apple_type = _devices[i].apple_type;
+                dep.valid = true;
+            }
+            if (_devices[i].is_known) {
+                BLE_DIAG_LOG(hal_diag::Severity::INFO,
+                    "Known BLE device departed: %s (seen %u times)",
+                    _devices[i].name, _devices[i].seen_count);
+            }
         }
     }
     _device_count = write;
+}
+
+// Try to correlate a new random-MAC device with a recently departed one.
+// Returns the rotation group ID if correlated, or -1 if no match.
+static int8_t try_correlate_rotation(const BleDevice& new_dev, uint32_t now) {
+    if (!new_dev.is_random_mac) return -1;
+
+    for (int i = 0; i < _departed_count; i++) {
+        if (!_departed[i].valid) continue;
+        uint32_t elapsed = now - _departed[i].departed_at;
+        if (elapsed > MAC_ROTATION_WINDOW_MS) continue;
+
+        // RSSI similarity check
+        int8_t rssi_diff = new_dev.rssi - _departed[i].last_rssi;
+        if (rssi_diff < 0) rssi_diff = -rssi_diff;
+        if (rssi_diff > MAC_ROTATION_RSSI_TOLERANCE) continue;
+
+        // Device class match (if both classified)
+        if (new_dev.device_class != BleDeviceClass::UNKNOWN &&
+            _departed[i].device_class != BleDeviceClass::UNKNOWN &&
+            new_dev.device_class != _departed[i].device_class) continue;
+
+        // Apple type match (if both typed)
+        if (new_dev.apple_type != AppleDeviceType::NONE &&
+            _departed[i].apple_type != AppleDeviceType::NONE &&
+            new_dev.apple_type != _departed[i].apple_type) continue;
+
+        // Correlated: assign or reuse group
+        int8_t group = _departed[i].rotation_group;
+        if (group < 0) {
+            group = _next_rotation_group++;
+            if (_next_rotation_group > 127) _next_rotation_group = 0;
+        }
+        _departed[i].valid = false;  // consumed
+
+        Serial.printf("[ble_scan] MAC rotation detected: group %d, RSSI diff=%d, elapsed=%lums\n",
+            group, rssi_diff, (unsigned long)elapsed);
+        BLE_DIAG_LOG(hal_diag::Severity::INFO,
+            "MAC rotation group %d: new device correlated with departed (dt=%lums)",
+            group, (unsigned long)elapsed);
+        return group;
+    }
+    return -1;
 }
 
 // --- Apple Continuity protocol parsing ---
@@ -303,6 +386,8 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             d.apple_type = AppleDeviceType::NONE;
             d.device_class = BleDeviceClass::UNKNOWN;
             d.device_type[0] = '\0';
+            d.is_random_mac = is_locally_administered(raw);
+            d.rotation_group = -1;
             d.rssi_history_head = 0;
             d.rssi_history_count = 0;
             d.rssi_min = d.rssi;
@@ -323,6 +408,11 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             d.is_known = is_known_device(raw, &label);
             if (d.is_known && label) {
                 strncpy(d.name, label, sizeof(d.name) - 1);
+            }
+
+            // MAC randomization: try to correlate with recently departed device
+            if (d.is_random_mac) {
+                d.rotation_group = try_correlate_rotation(d, now);
             }
 
             _device_count++;
@@ -514,6 +604,13 @@ int get_devices_json(char* buf, size_t buf_size) {
         if (_devices[i].is_known && pos < (int)buf_size - 20) {
             pos += snprintf(buf + pos, buf_size - pos, ",\"known\":true");
         }
+        if (_devices[i].is_random_mac && pos < (int)buf_size - 30) {
+            pos += snprintf(buf + pos, buf_size - pos, ",\"random_mac\":true");
+        }
+        if (_devices[i].rotation_group >= 0 && pos < (int)buf_size - 30) {
+            pos += snprintf(buf + pos, buf_size - pos, ",\"rotation_group\":%d",
+                _devices[i].rotation_group);
+        }
         pos += snprintf(buf + pos, buf_size - pos, "}");
     }
 
@@ -649,6 +746,26 @@ int get_rssi_history_json_by_mac(const char* mac_str, char* buf, size_t buf_size
     uint8_t addr[6] = {(uint8_t)a[0], (uint8_t)a[1], (uint8_t)a[2],
                         (uint8_t)a[3], (uint8_t)a[4], (uint8_t)a[5]};
     return get_rssi_history_json(addr, buf, buf_size);
+}
+
+int get_rotation_group_count() {
+    if (!_mutex) return 0;
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    // Count unique non-negative rotation groups
+    int8_t seen_groups[MAC_ROTATION_MAX_GROUPS];
+    int group_count = 0;
+    for (int i = 0; i < _device_count; i++) {
+        if (_devices[i].rotation_group < 0) continue;
+        bool found = false;
+        for (int j = 0; j < group_count; j++) {
+            if (seen_groups[j] == _devices[i].rotation_group) { found = true; break; }
+        }
+        if (!found && group_count < MAC_ROTATION_MAX_GROUPS) {
+            seen_groups[group_count++] = _devices[i].rotation_group;
+        }
+    }
+    xSemaphoreGive(_mutex);
+    return group_count;
 }
 
 bool is_active() {

@@ -54,6 +54,13 @@ struct RssiReading {
     uint32_t timestamp;     // millis() when recorded
 };
 
+// MAC randomization correlation — groups devices that rotate their MAC.
+// When a device rotates, the old MAC disappears and a new one appears
+// within seconds at a similar RSSI.  We link them via a correlation group ID.
+static constexpr int MAC_ROTATION_MAX_GROUPS = 16;
+static constexpr uint32_t MAC_ROTATION_WINDOW_MS = 5000;  // 5 seconds
+static constexpr int8_t MAC_ROTATION_RSSI_TOLERANCE = 10; // dBm
+
 struct BleDevice {
     uint8_t addr[6];        // MAC address
     int8_t rssi;            // Last RSSI
@@ -66,6 +73,8 @@ struct BleDevice {
     AppleDeviceType apple_type;     // Apple Continuity device type (if detected)
     BleDeviceClass device_class;    // Classified device type
     char device_type[16];           // Human-readable device type string
+    bool is_random_mac;             // true if locally administered bit is set
+    int8_t rotation_group;          // -1 = ungrouped, >= 0 = correlation group ID
 
     // RSSI history — circular buffer of last N readings for trend analysis
     RssiReading rssi_history[BLE_RSSI_HISTORY_SIZE];
@@ -149,6 +158,15 @@ int get_rssi_history_json(const uint8_t addr[6], char* buf, size_t buf_size);
 // Get RSSI history for a device by MAC string "AA:BB:CC:DD:EE:FF".
 // Convenience wrapper around get_rssi_history_json.
 int get_rssi_history_json_by_mac(const char* mac_str, char* buf, size_t buf_size);
+
+// Check if a MAC address is locally administered (randomized).
+// Bit 1 of the first octet indicates locally administered.
+inline bool is_locally_administered(const uint8_t addr[6]) {
+    return (addr[0] & 0x02) != 0;
+}
+
+// Get the count of MAC rotation correlation groups detected.
+int get_rotation_group_count();
 
 // Is scanner running?
 bool is_active();
