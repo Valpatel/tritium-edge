@@ -14,6 +14,25 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 79: Acoustic Feature Extraction (MFCC)
+
+### hal_acoustic MFCC + spectral feature extraction (Build Verified — 49.6% RAM, 29.2% Flash)
+- MFCC extraction: 13 mel-frequency cepstral coefficients via mel filter bank + DCT-II
+- Spectral centroid: center of mass of FFT magnitude spectrum
+- Spectral bandwidth: spread around centroid
+- Spectral rolloff: frequency below which 85% of spectral energy
+- Spectral flatness: geometric/arithmetic mean ratio (tonality measure)
+- Zero-crossing rate: computed from raw PCM samples
+- RMS energy and peak amplitude from time-domain samples
+- `AudioFeatureVector` struct: compact feature representation for MQTT
+- `get_features_json()`: compact JSON format for publishing features to SC
+- `get_mfcc()`: retrieve latest MFCC coefficients
+- `set_features_callback()`: automatic feature publishing on each extraction
+- Updated `get_summary_json()` with MFCC status, ZCR, centroid
+- All math runs on ESP32 without external deps (no numpy, no ML frameworks)
+
+---
+
 ## 2026-03-14 — Wave 77: Fleet Group Command Verification
 
 ### mqtt_sc_bridge group membership check (Code Reviewed)
