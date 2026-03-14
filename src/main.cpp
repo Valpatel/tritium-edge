@@ -32,6 +32,14 @@ TouchHAL touch;
 #define SD_FORMAT_AVAILABLE 0
 #endif
 
+// Device identity — permanent UUID stored in NVS, available to all services
+#if __has_include("hal_identity.h")
+#include "hal_identity.h"
+#define HAS_IDENTITY 1
+#else
+#define HAS_IDENTITY 0
+#endif
+
 // --- Optional background services (enabled via build flags) ---
 #if defined(ENABLE_WIFI) && __has_include("wifi_manager.h")
 #include "wifi_manager.h"
@@ -551,6 +559,18 @@ static inline void boot_show(const char*, const char*, const char* = nullptr) {}
 
 // --- Optional WiFi + Heartbeat background services ---
 static void services_init() {
+    // Device identity — must init before networking so UUID is available
+#if HAS_IDENTITY
+    if (hal_identity::init()) {
+        Serial.printf("[tritium] Identity: %s (%s)\n",
+                      hal_identity::get_uuid(), hal_identity::get_short_id());
+        boot_show("Identity", "ok");
+    } else {
+        Serial.printf("[tritium] Identity: FAILED\n");
+        boot_show("Identity", "fail");
+    }
+#endif
+
     // WiFi is fully deferred to first loop tick so the shell boots instantly.
     // wifi_deferred_init() handles init + connect + wifi-dependent services.
     boot_show("WiFi", "ok", "deferred");
@@ -838,6 +858,8 @@ static void wifi_deferred_init() {
 #endif
 #if defined(DEFAULT_DEVICE_ID)
             hb_cfg.device_id = DEFAULT_DEVICE_ID;
+#elif HAS_IDENTITY
+            hb_cfg.device_id = hal_identity::get_device_name();
 #endif
             hb_cfg.interval_ms = 30000;
             if (hal_heartbeat::init(hb_cfg)) {
@@ -851,6 +873,8 @@ static void wifi_deferred_init() {
             mqtt_sc_bridge::BridgeConfig mqtt_cfg;
 #if defined(DEFAULT_DEVICE_ID)
             mqtt_cfg.device_id = DEFAULT_DEVICE_ID;
+#elif HAS_IDENTITY
+            mqtt_cfg.device_id = hal_identity::get_device_name();
 #endif
 #if defined(DEFAULT_MQTT_BROKER)
             mqtt_cfg.broker = DEFAULT_MQTT_BROKER;
@@ -863,6 +887,8 @@ static void wifi_deferred_init() {
                 const char* ota_device_id = nullptr;
 #if defined(DEFAULT_DEVICE_ID)
                 ota_device_id = DEFAULT_DEVICE_ID;
+#elif HAS_IDENTITY
+                ota_device_id = hal_identity::get_device_name();
 #endif
                 if (ota_device_id && ota_mqtt::init(ota_device_id)) {
                     Serial.printf("[tritium] MQTT OTA: active (topic: tritium/%s/cmd/ota)\n",
@@ -881,6 +907,8 @@ static void wifi_deferred_init() {
 #endif
 #if defined(DEFAULT_DEVICE_ID)
             csync_cfg.device_id = DEFAULT_DEVICE_ID;
+#elif HAS_IDENTITY
+            csync_cfg.device_id = hal_identity::get_device_name();
 #endif
             if (hal_config_sync::init(csync_cfg)) {
                 Serial.printf("[tritium] Config Sync: v%u %s\n",
@@ -904,6 +932,8 @@ static void wifi_deferred_init() {
             hal_cot::CotConfig cot_cfg;
 #if defined(DEFAULT_DEVICE_ID)
             cot_cfg.device_id = DEFAULT_DEVICE_ID;
+#elif HAS_IDENTITY
+            cot_cfg.device_id = hal_identity::get_device_name();
 #endif
             cot_cfg.interval_ms = 60000;
 #if HAS_CAMERA
