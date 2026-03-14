@@ -89,6 +89,7 @@ uint32_t get_interval_ms() { return _interval_ms; }
 
 // ESP-NOW mesh status — use ENABLE_ESPNOW build flag
 #if defined(ENABLE_ESPNOW)
+#include "mesh_manager.h"
 #define HAS_ESPNOW 1
 #else
 #define HAS_ESPNOW 0
@@ -453,8 +454,27 @@ bool send_now() {
                     ",\"transports\":[{\"type\":\"wifi\",\"state\":\"available\",\"rssi\":%d}",
                     WiFi.RSSI());
 #if HAS_ESPNOW
-    pos += snprintf(body + pos, BODY_SIZE - pos,
-                    ",{\"type\":\"esp_now\",\"state\":\"available\"}");
+    {
+        auto& mesh = MeshManager::instance();
+        if (mesh.isReady()) {
+            auto& mstats = mesh.getStats();
+            pos += snprintf(body + pos, BODY_SIZE - pos,
+                ",{\"type\":\"esp_now\",\"state\":\"available\","
+                "\"peers\":%d,\"tx\":%lu,\"rx\":%lu,\"tx_fail\":%lu}",
+                mstats.peer_count,
+                (unsigned long)mstats.tx_count,
+                (unsigned long)mstats.rx_count,
+                (unsigned long)mstats.tx_fail);
+            // Append peer quality array for comm-link visualization
+            if (pos < (int)BODY_SIZE - 200 && mstats.peer_count > 0) {
+                pos += snprintf(body + pos, BODY_SIZE - pos, ",\"mesh_peers\":");
+                pos += mesh.peersToJson(body + pos, BODY_SIZE - pos);
+            }
+        } else {
+            pos += snprintf(body + pos, BODY_SIZE - pos,
+                            ",{\"type\":\"esp_now\",\"state\":\"available\"}");
+        }
+    }
 #endif
 #if HAS_BLE_SCANNER
     if (hal_ble_scanner::is_active()) {

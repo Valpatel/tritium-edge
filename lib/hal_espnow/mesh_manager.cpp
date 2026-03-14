@@ -741,11 +741,18 @@ void MeshManager::updatePeer(const uint8_t* mac, int8_t rssi, uint8_t hopCount) 
 
     int idx = findPeerIdx(mac);
     if (idx >= 0) {
-        _peers[idx].rssi = rssi;
-        _peers[idx].last_seen_ms = millis();
-        if (hopCount < _peers[idx].hop_count) {
-            _peers[idx].hop_count = hopCount;
+        MeshPeerInfo& p = _peers[idx];
+        p.rssi = rssi;
+        p.last_seen_ms = millis();
+        if (hopCount < p.hop_count) {
+            p.hop_count = hopCount;
         }
+        // Update quality tracking
+        p.rssi_sum += rssi;
+        p.rssi_samples++;
+        if (rssi < p.rssi_min) p.rssi_min = rssi;
+        if (rssi > p.rssi_max) p.rssi_max = rssi;
+        p.rx_count++;
     } else if (_peerCount < MESH_MAX_PEERS) {
         MeshPeerInfo& p = _peers[_peerCount];
         memset(&p, 0, sizeof(p));
@@ -753,7 +760,16 @@ void MeshManager::updatePeer(const uint8_t* mac, int8_t rssi, uint8_t hopCount) 
         p.rssi = rssi;
         p.hop_count = hopCount;
         p.last_seen_ms = millis();
+        p.first_seen_ms = millis();
         p.role = MESH_ROLE_RELAY;  // Default until PONG received
+        // Initialize quality tracking
+        p.rssi_sum = rssi;
+        p.rssi_samples = 1;
+        p.rssi_min = rssi;
+        p.rssi_max = rssi;
+        p.rx_count = 1;
+        p.tx_count = 0;
+        p.tx_fail = 0;
         _peerCount++;
 
         DBG_INFO(TAG, "New peer: %02X:%02X:%02X:%02X:%02X:%02X rssi=%d hops=%d",
@@ -776,7 +792,16 @@ void MeshManager::updatePeer(const uint8_t* mac, int8_t rssi, uint8_t hopCount) 
         p.rssi = rssi;
         p.hop_count = hopCount;
         p.last_seen_ms = millis();
+        p.first_seen_ms = millis();
         p.role = MESH_ROLE_RELAY;
+        // Initialize quality tracking
+        p.rssi_sum = rssi;
+        p.rssi_samples = 1;
+        p.rssi_min = rssi;
+        p.rssi_max = rssi;
+        p.rx_count = 1;
+        p.tx_count = 0;
+        p.tx_fail = 0;
 
         DBG_DEBUG(TAG, "Evicted oldest peer, replaced with %02X:%02X:%02X:%02X:%02X:%02X",
                   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -1013,20 +1038,45 @@ int MeshManager::toJson(char* buf, size_t size) const {
 
 int MeshManager::peersToJson(char* buf, size_t size) const {
     int pos = snprintf(buf, size, "[");
-    for (int i = 0; i < _peerCount && pos < (int)size - 256; i++) {
+    for (int i = 0; i < _peerCount && pos < (int)size - 512; i++) {
         char macStr[18];
         macToStr(_peers[i].mac, macStr);
         uint32_t ageSec = (millis() - _peers[i].last_seen_ms) / 1000;
+        // Compute average RSSI and packet loss
+        float rssi_avg = _peers[i].rssi_samples > 0
+            ? (float)_peers[i].rssi_sum / _peers[i].rssi_samples
+            : (float)_peers[i].rssi;
+        float pkt_loss = (_peers[i].tx_count > 0)
+            ? (float)_peers[i].tx_fail * 100.0f / (float)_peers[i].tx_count
+            : 0.0f;
+        // Compute quality score: RSSI component (0-100) minus loss penalty
+        int rssi_score = (int)((rssi_avg + 90.0f) * (100.0f / 60.0f));
+        if (rssi_score < 0) rssi_score = 0;
+        if (rssi_score > 100) rssi_score = 100;
+        int loss_penalty = (int)(pkt_loss * 2.0f);
+        if (loss_penalty > 100) loss_penalty = 100;
+        int quality = rssi_score - loss_penalty;
+        if (quality < 0) quality = 0;
+
         if (i > 0) buf[pos++] = ',';
         pos += snprintf(buf + pos, size - pos,
             "{\"mac\":\"%s\",\"role\":\"%s\",\"rssi\":%d,\"hops\":%u,"
             "\"seen_ago\":%lu,\"name\":\"%s\",\"firmware\":\"%s\","
-            "\"board\":\"%s\",\"battery\":%u,\"is_gateway\":%s}",
+            "\"board\":\"%s\",\"battery\":%u,\"is_gateway\":%s,"
+            "\"quality\":{\"rssi_avg\":%.1f,\"rssi_min\":%d,\"rssi_max\":%d,"
+            "\"pkt_loss\":%.1f,\"tx\":%lu,\"rx\":%lu,\"tx_fail\":%lu,"
+            "\"score\":%d}}",
             macStr, roleToStr(_peers[i].role), _peers[i].rssi,
             _peers[i].hop_count, (unsigned long)ageSec,
             _peers[i].device_name, _peers[i].firmware_version,
             _peers[i].board_type, _peers[i].battery_pct,
-            _peers[i].is_gateway ? "true" : "false");
+            _peers[i].is_gateway ? "true" : "false",
+            rssi_avg, _peers[i].rssi_min, _peers[i].rssi_max,
+            pkt_loss,
+            (unsigned long)_peers[i].tx_count,
+            (unsigned long)_peers[i].rx_count,
+            (unsigned long)_peers[i].tx_fail,
+            quality);
     }
     pos += snprintf(buf + pos, size - pos, "]");
     return pos;

@@ -75,6 +75,16 @@ struct MeshPeerInfo {
     uint8_t  battery_pct;
     char     board_type[MESH_BOARD_TYPE_LEN];
     bool     is_gateway;
+
+    // Peer quality tracking — accumulated over time
+    int32_t  rssi_sum;          // running sum for average
+    uint16_t rssi_samples;      // number of RSSI samples taken
+    int8_t   rssi_min;          // worst RSSI seen
+    int8_t   rssi_max;          // best RSSI seen
+    uint32_t tx_count;          // packets sent to this peer
+    uint32_t rx_count;          // packets received from this peer
+    uint32_t tx_fail;           // failed transmissions to this peer
+    uint32_t first_seen_ms;     // uptime when first discovered
 };
 
 // ── PONG payload — sent as response to PING ─────────────────────────────────
