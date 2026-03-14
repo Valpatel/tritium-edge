@@ -139,6 +139,14 @@ const char* get_group() { return ""; }
 #define HAS_CONFIG_SYNC 0
 #endif
 
+// Optional power consumption tracker — include draw estimates in heartbeat
+#if __has_include("power_tracker.h")
+#include "power_tracker.h"
+#define HAS_POWER_TRACKER 1
+#else
+#define HAS_POWER_TRACKER 0
+#endif
+
 namespace hal_heartbeat {
 
 // Internal state
@@ -536,6 +544,17 @@ bool send_now() {
                 }
             }
             _ota_result_reported = true;
+        }
+    }
+#endif
+
+    // Append power consumption tracking data
+#if HAS_POWER_TRACKER
+    if (pos < (int)BODY_SIZE - 300) {
+        char pwr_json[256];
+        int pwr_n = PowerTracker::instance().toJson(pwr_json, sizeof(pwr_json));
+        if (pwr_n > 0) {
+            pos += snprintf(body + pos, BODY_SIZE - pos, ",\"power_tracking\":%s", pwr_json);
         }
     }
 #endif

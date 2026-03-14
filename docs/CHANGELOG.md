@@ -14,6 +14,23 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 51: Power Consumption Tracking
+
+### Power Consumption Tracker (Code Review Verified)
+- New `hal_power/power_tracker.h` + `.cpp` — estimate and log power consumption
+- `PowerTracker` singleton with consumer registration API
+- `registerConsumer(name, draw_ma)` — register subsystem with estimated current draw
+- `setActive(name, active)` — mark consumer on/off for tracking
+- `tick()` — accumulates mAh based on active consumers (call every second)
+- `getCurrentDrawMa()` — total estimated draw right now (includes 40mA ESP32-S3 baseline)
+- `getConsumedMah()` — accumulated consumption since boot
+- `getEstimatedRuntimeMin()` — predict battery life from current draw + remaining capacity
+- `toJson()` — serialize power data with per-consumer breakdown
+- 9 default consumers registered: display (120mA), wifi (80mA), camera (90mA), speaker (50mA), ble_scan (30mA), espnow (20mA), sdcard (15mA), touch (5mA), imu (3mA)
+- Integrated into PowerService tick loop
+- Heartbeat JSON includes `power_tracking` field when tracker is available
+- Max 24 consumers, guard against huge time gaps (>10s) from sleep
+
 ## 2026-03-14 — Wave 50: Device Group Management
 
 ### hal_heartbeat: Device Group (Code Review Verified)

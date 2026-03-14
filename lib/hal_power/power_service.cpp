@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "power_service.h"
+#include "power_tracker.h"
 
 #if defined(ENABLE_POWER_MGMT) && __has_include("hal_power.h")
 
@@ -129,6 +130,22 @@ bool PowerService::init() {
 
     // Set low battery callback on PowerHAL
     _power.setLowBatteryThreshold(LOW_BATTERY_PCT);
+
+    // Register default power consumers for tracking
+    PowerTracker& tracker = PowerTracker::instance();
+    tracker.registerConsumer("display", 120);   // LCD/AMOLED backlight
+    tracker.registerConsumer("wifi", 80);       // WiFi radio
+    tracker.registerConsumer("ble_scan", 30);   // BLE scanner
+    tracker.registerConsumer("espnow", 20);     // ESP-NOW mesh
+    tracker.registerConsumer("touch", 5);       // Touch controller
+    tracker.registerConsumer("imu", 3);         // IMU sensor
+    tracker.registerConsumer("sdcard", 15);     // SD card access
+    tracker.registerConsumer("camera", 90);     // Camera module
+    tracker.registerConsumer("speaker", 50);    // Audio output
+    // Display and WiFi are typically active from boot
+    tracker.setActive("display", true);
+    tracker.setActive("wifi", true);
+    tracker.setActive("touch", true);
 
     _active = true;
     DBG_INFO(TAG, "Power service ready, profile=%s, battery=%d%%",
@@ -351,6 +368,9 @@ void PowerService::tick() {
         // Re-apply to get emergency defaults
         applyProfile(_resolvedProfile);
     }
+
+    // Tick the power consumption tracker
+    PowerTracker::instance().tick();
 
     // Screen state machine
     uint32_t idle_s = getIdleSeconds();
