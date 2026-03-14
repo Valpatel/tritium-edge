@@ -14,6 +14,15 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 56: BLE Advertisement Fingerprint Hash
+
+### BLE Fingerprint Hash (Build Verified — RAM 49.6%, Flash 29.2%)
+- Added `adv_hash` field to `BleDevice` struct — FNV-1a hash of raw advertisement payload
+- Hash excludes RSSI and timestamps — two scans of the same device produce identical hash
+- Enables deduplication and tracking across MAC address rotations
+- Included in sighting JSON as `"adv_hash":"XXXXXXXX"` (8-char hex string)
+- Added to both `get_devices_json()` and batch JSON output
+
 ## 2026-03-14 — Wave 53: Ollama Integration Stub
 
 ### HAL Ollama (Code Review Verified)

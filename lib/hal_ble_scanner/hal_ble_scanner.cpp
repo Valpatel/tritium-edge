@@ -268,6 +268,19 @@ static const char* device_class_string(BleDeviceClass c) {
     }
 }
 
+// --- FNV-1a hash for advertisement payload fingerprinting ---
+// Stable hash of the advertisement payload excluding RSSI and timestamps.
+// Two scans of the same device produce the same hash, enabling dedup
+// and tracking across MAC address rotations.
+static uint32_t _fnv1a_hash(const uint8_t* data, uint8_t len) {
+    uint32_t hash = 0x811C9DC5;  // FNV offset basis
+    for (uint8_t i = 0; i < len; i++) {
+        hash ^= data[i];
+        hash *= 0x01000193;  // FNV prime
+    }
+    return hash;
+}
+
 // --- Base64 encoder for raw advertisement payload ---
 // Moved early so get_devices_json can use it.
 
@@ -634,6 +647,10 @@ class ScanCallbacks : public NimBLEScanCallbacks {
                     uint8_t copy_len = plen < BLE_RAW_ADV_MAX_LEN ? plen : BLE_RAW_ADV_MAX_LEN;
                     memcpy(d.raw_adv, payload, copy_len);
                     d.raw_adv_len = copy_len;
+                    // Compute stable fingerprint hash for dedup and MAC rotation tracking
+                    d.adv_hash = _fnv1a_hash(payload, copy_len);
+                } else {
+                    d.adv_hash = 0;
                 }
             }
 
@@ -868,6 +885,11 @@ int get_devices_json(char* buf, size_t buf_size) {
             pos += snprintf(buf + pos, buf_size - pos,
                 ",\"raw_adv\":\"%s\"", b64_buf);
         }
+        // Stable advertisement fingerprint hash for dedup and MAC rotation tracking
+        if (_devices[i].adv_hash != 0 && pos < (int)buf_size - 30) {
+            pos += snprintf(buf + pos, buf_size - pos,
+                ",\"adv_hash\":\"%08X\"", _devices[i].adv_hash);
+        }
         pos += snprintf(buf + pos, buf_size - pos, "}");
     }
 
@@ -1076,6 +1098,10 @@ int get_device_extended_json(const uint8_t addr[6], char* buf, size_t buf_size) 
     }
     if (d.rotation_group >= 0) {
         pos += snprintf(buf + pos, buf_size - pos, ",\"rotation_group\":%d", d.rotation_group);
+    }
+    // Stable advertisement fingerprint hash
+    if (d.adv_hash != 0 && pos < (int)buf_size - 30) {
+        pos += snprintf(buf + pos, buf_size - pos, ",\"adv_hash\":\"%08X\"", d.adv_hash);
     }
     pos += snprintf(buf + pos, buf_size - pos, "}");
 

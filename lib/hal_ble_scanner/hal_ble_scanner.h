@@ -84,6 +84,10 @@ struct BleDevice {
     uint8_t raw_adv[BLE_RAW_ADV_MAX_LEN];
     uint8_t raw_adv_len;            // Bytes used in raw_adv (0 = not captured)
 
+    // Stable fingerprint hash of advertisement payload (FNV-1a, excludes RSSI/timestamp)
+    // Two scans of the same device produce the same hash for dedup and MAC rotation tracking
+    uint32_t adv_hash;              // 0 = not computed
+
     // RSSI history — circular buffer of last N readings for trend analysis
     RssiReading rssi_history[BLE_RSSI_HISTORY_SIZE];
     uint8_t rssi_history_head;      // Next write position
