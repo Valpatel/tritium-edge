@@ -61,6 +61,13 @@ tritium/
 | [PLUGIN-SYSTEM.md](PLUGIN-SYSTEM.md) | Server plugin architecture |
 | [api_migration_guide.md](api_migration_guide.md) | API evolution tracking |
 
+### Sensing & Intelligence
+
+| Document | Description |
+|----------|-------------|
+| [BLE_DEVICE_FINGERPRINTING.md](BLE_DEVICE_FINGERPRINTING.md) | BLE device fingerprinting techniques and classification |
+| [DEVICE_FINGERPRINTING.md](DEVICE_FINGERPRINTING.md) | Cross-protocol device fingerprinting strategy |
+
 ### Research & Reference
 
 | Document | Description |
