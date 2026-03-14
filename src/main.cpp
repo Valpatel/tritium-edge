@@ -77,6 +77,14 @@ static bool _mqtt_bridge_enabled = false;
 #define HAS_OTA_MQTT 0
 #endif
 
+// Remote config sync — pulls config from fleet server on boot + MQTT live pushes
+#if defined(ENABLE_MQTT_SC_BRIDGE) && __has_include("hal_config_sync.h")
+#include "hal_config_sync.h"
+#define HAS_CONFIG_SYNC 1
+#else
+#define HAS_CONFIG_SYNC 0
+#endif
+
 #if defined(ENABLE_WEBSERVER) && __has_include("hal_webserver.h")
 #include "hal_webserver.h"
 #include <WiFi.h>
@@ -862,6 +870,32 @@ static void wifi_deferred_init() {
                 }
 #endif
             }
+        }
+#endif
+
+#if HAS_CONFIG_SYNC
+        {
+            hal_config_sync::SyncConfig csync_cfg;
+#if defined(DEFAULT_SERVER_URL)
+            csync_cfg.server_url = DEFAULT_SERVER_URL;
+#endif
+#if defined(DEFAULT_DEVICE_ID)
+            csync_cfg.device_id = DEFAULT_DEVICE_ID;
+#endif
+            if (hal_config_sync::init(csync_cfg)) {
+                Serial.printf("[tritium] Config Sync: v%u %s\n",
+                              hal_config_sync::get_config_version(),
+                              hal_config_sync::is_synced() ? "(synced)" : "(defaults)");
+            }
+
+            // Register MQTT command handler for live config pushes
+#if defined(ENABLE_MQTT_SC_BRIDGE)
+            mqtt_sc_bridge::on_command([](const char* command, const char* payload, size_t len) {
+                if (strcmp(command, "config") == 0) {
+                    hal_config_sync::on_mqtt_config(payload, len);
+                }
+            });
+#endif
         }
 #endif
 

@@ -69,6 +69,14 @@ void on_command(CommandCallback) {}
 #define HAS_RF_MONITOR 0
 #endif
 
+// Remote config sync — report config version in heartbeat
+#if __has_include("hal_config_sync.h")
+#include "hal_config_sync.h"
+#define HAS_CONFIG_SYNC 1
+#else
+#define HAS_CONFIG_SYNC 0
+#endif
+
 namespace mqtt_sc_bridge {
 
 // Internal state
@@ -277,6 +285,16 @@ bool publish_heartbeat() {
         char rf_summary[64];
         hal_rf_monitor::get_summary_json(rf_summary, sizeof(rf_summary));
         pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos, "%s", rf_summary);
+    }
+#endif
+
+    // Append config sync status
+#if HAS_CONFIG_SYNC
+    {
+        char cfg_json[256];
+        hal_config_sync::get_config_json(cfg_json, sizeof(cfg_json));
+        pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,
+            ",\"config_sync\":%s", cfg_json);
     }
 #endif
 
