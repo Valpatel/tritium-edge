@@ -2446,6 +2446,47 @@ void WebServerHAL::addApiEndpoints() {
     });
 #endif
 
+    // ── BLE Devices API ─────────────────────────────────────────────────
+    // GET /api/ble/devices — current BLE scan results as JSON
+    // Fallback for SC when MQTT is unavailable
+    _server->on("/api/ble/devices", HTTP_GET, [self]() {
+        self->_requestCount++;
+        if (self->_bleProvider) {
+            char* buf = api_buf();
+            int len = self->_bleProvider(buf, API_BUF_SIZE);
+            if (len > 0) {
+                _server->sendHeader("Access-Control-Allow-Origin", "*");
+                _server->send(200, "application/json", buf);
+                return;
+            }
+        }
+        _server->send(200, "application/json",
+            "{\"count\":0,\"devices\":[],\"message\":\"BLE scanner not active\"}");
+    });
+
+    // ── RF Motion API ────────────────────────────────────────────────────
+    // GET /api/rf/motion — RF motion detection status and per-peer data
+    // Fallback for SC when MQTT is unavailable
+    _server->on("/api/rf/motion", HTTP_GET, [self]() {
+        self->_requestCount++;
+#if defined(ENABLE_ESPNOW) && __has_include("hal_rf_monitor.h")
+        if (hal_rf_monitor::is_active()) {
+            char* buf = api_buf();
+            int pos = snprintf(buf, API_BUF_SIZE,
+                "{\"active\":true,\"threshold\":%.1f,\"peer_count\":%d,\"peers\":",
+                hal_rf_monitor::get_motion_threshold(),
+                hal_rf_monitor::get_peer_count());
+            pos += hal_rf_monitor::get_peer_rssi_json(buf + pos, API_BUF_SIZE - pos);
+            pos += snprintf(buf + pos, API_BUF_SIZE - pos, "}");
+            _server->sendHeader("Access-Control-Allow-Origin", "*");
+            _server->send(200, "application/json", buf);
+            return;
+        }
+#endif
+        _server->send(200, "application/json",
+            "{\"active\":false,\"peer_count\":0,\"peers\":[],\"message\":\"RF motion monitor not active\"}");
+    });
+
     DBG_INFO("web", "API endpoints added at /api/*");
 }
 
