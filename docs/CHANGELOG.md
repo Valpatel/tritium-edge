@@ -14,6 +14,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 38: Power-Saving Mode
+
+### hal_power_saver — Battery-Aware Scan Interval Manager (Build Verified)
+- New `hal_power_saver` library — automatic power-saving when battery drops below 20%
+- Three power states: NORMAL, POWER_SAVE (<20%), CRITICAL (<10%), CHARGING
+- POWER_SAVE mode: BLE scan 10s->30s, WiFi 30s->120s, heartbeat 30s->120s, brightness 10%
+- CRITICAL mode: BLE 60s, WiFi 5min, heartbeat 5min, brightness minimal
+- Hysteresis: enters at 20%, exits at 25% to prevent oscillation
+- Resumes normal operation when charging/USB detected
+- JSON status output for serial and API reporting
+- Singleton `PowerSaver::instance()` integrates with PowerService tick loop
+
+---
+
 ## 2026-03-14 — Wave 35: BLE Raw Advertisement Capture
 
 ### hal_ble_scanner Raw Advertisement Payload (Build Verified)
