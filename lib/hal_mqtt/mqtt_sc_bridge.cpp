@@ -17,6 +17,7 @@ namespace mqtt_sc_bridge {
 bool init(const BridgeConfig&) { return false; }
 void tick() {}
 bool publish_heartbeat() { return false; }
+bool publish_compact_heartbeat() { return false; }
 bool publish_sightings() { return false; }
 bool publish_capabilities() { return false; }
 bool is_connected() { return false; }
@@ -190,7 +191,10 @@ static MqttHAL _mqtt;
 static char _device_id[64] = {};
 static uint32_t _heartbeat_interval_ms = 30000;
 static uint32_t _sighting_interval_ms = 15000;
+static uint32_t _full_heartbeat_interval_ms = 300000;  // 5 minutes
+static bool _compact_heartbeat_enabled = true;
 static uint32_t _last_heartbeat_ms = 0;
+static uint32_t _last_full_heartbeat_ms = 0;
 static uint32_t _last_sighting_ms = 0;
 static CommandCallback _cmd_cb = nullptr;
 
@@ -248,6 +252,8 @@ bool init(const BridgeConfig& config) {
 
     _heartbeat_interval_ms = config.heartbeat_interval_ms;
     _sighting_interval_ms = config.sighting_interval_ms;
+    _full_heartbeat_interval_ms = config.full_heartbeat_interval_ms;
+    _compact_heartbeat_enabled = config.compact_heartbeat;
 
     // Resolve broker and device_id
     char broker[128] = {};
@@ -348,10 +354,20 @@ void tick() {
 
     uint32_t now = millis();
 
-    // Periodic heartbeat
+    // Periodic heartbeat — full JSON every _full_heartbeat_interval_ms,
+    // compact binary in between to reduce MQTT bandwidth for large fleets
     if (_last_heartbeat_ms == 0 || (now - _last_heartbeat_ms) >= _heartbeat_interval_ms) {
         _last_heartbeat_ms = now;
-        publish_heartbeat();
+
+        bool need_full = (_last_full_heartbeat_ms == 0) ||
+                         (now - _last_full_heartbeat_ms) >= _full_heartbeat_interval_ms;
+
+        if (need_full || !_compact_heartbeat_enabled) {
+            publish_heartbeat();
+            _last_full_heartbeat_ms = now;
+        } else {
+            publish_compact_heartbeat();
+        }
     }
 
     // Periodic sighting data
@@ -455,6 +471,36 @@ bool publish_heartbeat() {
         DBG_DEBUG(TAG, "Heartbeat published (%d bytes)", pos);
     } else {
         DBG_DEBUG(TAG, "Heartbeat publish failed");
+    }
+    return ok;
+}
+
+bool publish_compact_heartbeat() {
+    if (!_active || !_mqtt.isConnected() || !_json_buf) return false;
+
+    // Compact heartbeat: minimal JSON with just essential metrics
+    // ~60-80 bytes vs ~500+ bytes for full heartbeat
+    // SC can parse either format from the same topic (key "c":1 marks compact)
+    int rssi = WiFi.RSSI();
+    uint32_t uptime_s = millis() / 1000;
+    uint32_t free_heap = ESP.getFreeHeap();
+
+    // Sighting count from BLE scanner if available
+    uint16_t sighting_count = 0;
+#if HAS_BLE_SCANNER
+    if (hal_ble_scanner::is_active()) {
+        sighting_count = hal_ble_scanner::get_device_count();
+    }
+#endif
+
+    int pos = snprintf(_json_buf, JSON_BUF_SIZE,
+        "{\"c\":1,\"id\":\"%s\",\"r\":%d,\"u\":%lu,\"h\":%u,\"s\":%u}",
+        _device_id, rssi, (unsigned long)uptime_s,
+        (unsigned)free_heap, (unsigned)sighting_count);
+
+    bool ok = _mqtt.publish(_topic_heartbeat, _json_buf, false, 0);
+    if (ok) {
+        DBG_DEBUG(TAG, "Compact heartbeat published (%d bytes)", pos);
     }
     return ok;
 }
