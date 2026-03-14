@@ -1113,6 +1113,20 @@ void setup() {
     boot_sequence::finish();
 #endif
 
+    // Startup chime — audible boot-complete indicator on boards with audio
+#if defined(HAS_AUDIO_CODEC) && HAS_AUDIO_CODEC
+    if (_audio_ok) {
+        _audio.setSpeakerEnabled(true);
+        // Three ascending tones: C5 -> E5 -> G5 (major triad)
+        _audio.playTone(523, 80);   // C5
+        delay(30);
+        _audio.playTone(659, 80);   // E5
+        delay(30);
+        _audio.playTone(784, 120);  // G5
+        Serial.printf("[tritium] Startup chime played\n");
+    }
+#endif
+
     // Initialize Tritium-OS shell (LVGL window manager with touch)
 #if SHELL_AVAILABLE
     lv_display_t* lv_disp = lvgl_driver::init(panel, w, h);
