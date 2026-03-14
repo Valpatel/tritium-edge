@@ -25,13 +25,48 @@ esp32-hardware/
       backlight.h     # Backlight control (PWM + active-LOW support)
       drivers/        # Per-panel esp_lcd drivers (AXS15231B, RM690B0, etc.)
       boards/         # Per-board display configs (pins, timing, init_cmds)
-    hal_camera/       # OV5640 DVP camera via esp_camera
+    hal_acoustic/     # Acoustic event classification
+    hal_acoustic_modem/ # Acoustic data modem
     hal_audio/        # ES8311 codec + I2S
+    hal_ble/          # BLE device management
+    hal_ble_ota/      # BLE-based OTA updates
+    hal_ble_scanner/  # BLE device scanning
+    hal_ble_serial/   # BLE serial communication
+    hal_camera/       # OV5640 DVP camera via esp_camera
+    hal_config_sync/  # Config sync with command center
+    hal_cot/          # Cursor on Target protocol
+    hal_debug/        # Debug logging and diagnostics
+    hal_diag/         # Hardware diagnostics
+    hal_diaglog/      # Diagnostic log persistence
+    hal_espnow/       # ESP-NOW peer-to-peer mesh
+    hal_fs/           # Filesystem abstraction
+    hal_gis/          # GIS tile management
+    hal_heartbeat/    # MQTT heartbeat publisher
     hal_imu/          # QMI8658 IMU
-    hal_rtc/          # PCF85063 RTC
+    hal_io_expander/  # TCA9554 I/O expander
+    hal_lora/         # LoRa radio driver
+    hal_meshtastic/   # Meshtastic LoRa mesh bridge
+    hal_mqtt/         # MQTT client
+    hal_ntp/          # NTP time sync
+    hal_ota/          # Over-the-air firmware updates
     hal_power/        # AXP2101 PMIC
+    hal_power_saver/  # Dynamic power management profiles
+    hal_provision/    # Device provisioning
+    hal_radio_scheduler/ # BLE/WiFi radio time-division
+    hal_rf_monitor/   # RF environment monitoring (RSSI variance)
+    hal_rtc/          # PCF85063 RTC
+    hal_sdcard/       # SD card storage
+    hal_seed/         # Seed data distribution
+    hal_sighting_buffer/ # BLE/WiFi sighting buffer
+    hal_sleep/        # Deep sleep management
+    hal_touch/        # Touch input driver
+    hal_ui/           # UI framework
+    hal_voice/        # Voice recognition
+    hal_watchdog/     # Watchdog timer
+    hal_webserver/    # On-device web server
     hal_wifi/         # Multi-network WiFi with NVS
-    ...               # See lib/ for full list
+    hal_wifi_probe/   # WiFi probe request capture
+    hal_wifi_scanner/ # WiFi network scanner
   apps/               # App implementations
     starfield/        # Default demo app
     camera/           # Camera preview (3.5B-C only)

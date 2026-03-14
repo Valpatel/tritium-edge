@@ -14,6 +14,13 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 39: Documentation Pass
+
+- CLAUDE.md updated with all 42 HALs in directory structure section
+- Previously undocumented HALs now listed: hal_acoustic, hal_acoustic_modem, hal_ble, hal_ble_ota, hal_ble_scanner, hal_ble_serial, hal_config_sync, hal_cot, hal_debug, hal_diag, hal_diaglog, hal_espnow, hal_fs, hal_gis, hal_heartbeat, hal_io_expander, hal_lora, hal_meshtastic, hal_mqtt, hal_ntp, hal_ota, hal_power_saver, hal_provision, hal_radio_scheduler, hal_rf_monitor, hal_sdcard, hal_seed, hal_sighting_buffer, hal_sleep, hal_touch, hal_ui, hal_voice, hal_watchdog, hal_webserver, hal_wifi_probe, hal_wifi_scanner
+
+---
+
 ## 2026-03-14 — Wave 38: Power-Saving Mode
 
 ### hal_power_saver — Battery-Aware Scan Interval Manager (Build Verified)
