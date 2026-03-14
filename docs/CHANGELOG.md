@@ -14,6 +14,19 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 15: BLE Scanner Enhancements
+
+### BLE Scanner Caching & Batch Publishing
+| Change | Verification |
+|--------|-------------|
+| `hal_ble_scanner` — configurable cache_ttl_ms (30s default) for scan result freshness | Build Verified (RAM 47.9%, Flash 29.0%) |
+| `is_cache_valid()` and `cache_age_ms()` for consumers to check result staleness | Build Verified |
+| `get_devices_json_batch()` for chunked MQTT publishing (configurable batch_size, default 10) | Build Verified |
+| `get_batch_count()` to calculate number of batches needed | Build Verified |
+| ScanConfig extended with `cache_ttl_ms` and `batch_size` fields | Build Verified |
+
+---
+
 ## 2026-03-13
 
 ### MQTT SC Bridge
