@@ -61,6 +61,14 @@ void on_command(CommandCallback) {}
 #define HAS_ESPNOW 0
 #endif
 
+// WiFi probe request capture
+#if __has_include("hal_wifi_probe.h")
+#include "hal_wifi_probe.h"
+#define HAS_WIFI_PROBE 1
+#else
+#define HAS_WIFI_PROBE 0
+#endif
+
 // RF motion monitor
 #if defined(ENABLE_ESPNOW) && __has_include("hal_rf_monitor.h")
 #include "hal_rf_monitor.h"
@@ -278,6 +286,16 @@ bool publish_heartbeat() {
     }
 #endif
 
+    // Append WiFi probe summary if available
+#if HAS_WIFI_PROBE
+    if (hal_wifi_probe::is_active()) {
+        pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos, ",\"wifi_probe\":");
+        char probe_summary[128];
+        hal_wifi_probe::get_summary_json(probe_summary, sizeof(probe_summary));
+        pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos, "%s", probe_summary);
+    }
+#endif
+
     // Append RF motion summary if available
 #if HAS_RF_MONITOR
     if (hal_rf_monitor::is_active()) {
@@ -381,6 +399,27 @@ bool publish_sightings() {
                 DBG_DEBUG(TAG, "WiFi sighting published (%d bytes)", pos);
                 published = true;
             }
+        }
+    }
+#endif
+
+    // WiFi probe sightings — passive device fingerprinting
+#if HAS_WIFI_PROBE
+    if (hal_wifi_probe::is_active() && hal_wifi_probe::get_active_count() > 0) {
+        int pos = snprintf(_json_buf, JSON_BUF_SIZE,
+            "{\"type\":\"wifi_probe\",\"device_id\":\"%s\",\"devices\":", _device_id);
+
+        pos += hal_wifi_probe::get_devices_json(_json_buf + pos, JSON_BUF_SIZE - pos);
+
+        // Append summary
+        char summary[128];
+        hal_wifi_probe::get_summary_json(summary, sizeof(summary));
+        pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,
+            ",\"summary\":%s}", summary);
+
+        if (_mqtt.publish(_topic_sighting, _json_buf, false, 0)) {
+            DBG_DEBUG(TAG, "WiFi probe sighting published (%d bytes)", pos);
+            published = true;
         }
     }
 #endif

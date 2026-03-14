@@ -14,6 +14,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 33: WiFi Probe MQTT Integration
+
+### mqtt_sc_bridge WiFi Probe Integration (Build Verified)
+- Wired `hal_wifi_probe` to `mqtt_sc_bridge` for automatic MQTT publishing
+  - Probe summary included in periodic heartbeat JSON (`wifi_probe` field)
+  - Probe device list published as `wifi_probe` sighting type in `publish_sightings()`
+  - Conditional compilation via `#if HAS_WIFI_PROBE` (auto-detected from header)
+  - Publishes device MAC, RSSI, channel, probe count, randomization flag, probed SSIDs
+  - Flow: ESP32 promiscuous mode -> hal_wifi_probe -> mqtt_sc_bridge -> SC edge_tracker plugin
+
+---
+
 ## 2026-03-14 — Wave 31: WiFi Probe Request Capture
 
 ### WiFi Probe HAL (`lib/hal_wifi_probe/`)
