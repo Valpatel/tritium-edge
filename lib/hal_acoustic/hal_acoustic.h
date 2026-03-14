@@ -97,4 +97,24 @@ int get_summary_json(char* buf, size_t buf_size);
 // Is the acoustic sensor initialized and active?
 bool is_active();
 
+// --- Event classification (sound type detection) ---
+
+// Classify current audio buffer into a SoundClass.
+// Returns the classification and confidence (0.0-1.0).
+SoundClass classify(float* out_confidence = nullptr);
+
+// Get count of classified events since init.
+uint32_t get_event_count();
+
+// Get count of events by class.
+uint32_t get_event_count_for(SoundClass cls);
+
+// Set MQTT publish callback for acoustic events.
+// Callback receives: event JSON string, event type, confidence.
+typedef void (*event_callback_t)(const char* json, SoundClass cls, float confidence);
+void set_event_callback(event_callback_t cb);
+
+// Set minimum confidence threshold for event publishing (default 0.5).
+void set_min_confidence(float threshold);
+
 }  // namespace hal_acoustic
