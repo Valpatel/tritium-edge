@@ -61,6 +61,14 @@ void on_command(CommandCallback) {}
 #define HAS_ESPNOW 0
 #endif
 
+// RF motion monitor
+#if defined(ENABLE_ESPNOW) && __has_include("hal_rf_monitor.h")
+#include "hal_rf_monitor.h"
+#define HAS_RF_MONITOR 1
+#else
+#define HAS_RF_MONITOR 0
+#endif
+
 namespace mqtt_sc_bridge {
 
 // Internal state
@@ -262,6 +270,16 @@ bool publish_heartbeat() {
     }
 #endif
 
+    // Append RF motion summary if available
+#if HAS_RF_MONITOR
+    if (hal_rf_monitor::is_active()) {
+        pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos, ",\"rf_monitor\":");
+        char rf_summary[64];
+        hal_rf_monitor::get_summary_json(rf_summary, sizeof(rf_summary));
+        pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos, "%s", rf_summary);
+    }
+#endif
+
     // Append transports
     pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,
         ",\"transports\":[{\"type\":\"wifi\",\"state\":\"available\",\"rssi\":%d}"
@@ -345,6 +363,27 @@ bool publish_sightings() {
                 DBG_DEBUG(TAG, "WiFi sighting published (%d bytes)", pos);
                 published = true;
             }
+        }
+    }
+#endif
+
+    // RF motion sighting — inter-node RSSI variance data
+#if HAS_RF_MONITOR
+    if (hal_rf_monitor::is_active() && hal_rf_monitor::get_peer_count() > 0) {
+        int pos = snprintf(_json_buf, JSON_BUF_SIZE,
+            "{\"type\":\"rf_motion\",\"device_id\":\"%s\",\"rf_peers\":", _device_id);
+
+        pos += hal_rf_monitor::get_peer_rssi_json(_json_buf + pos, JSON_BUF_SIZE - pos);
+
+        // Append summary
+        char summary[64];
+        hal_rf_monitor::get_summary_json(summary, sizeof(summary));
+        pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,
+            ",\"summary\":%s}", summary);
+
+        if (_mqtt.publish(_topic_sighting, _json_buf, false, 0)) {
+            DBG_DEBUG(TAG, "RF motion sighting published (%d bytes)", pos);
+            published = true;
         }
     }
 #endif

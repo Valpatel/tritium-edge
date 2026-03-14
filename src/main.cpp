@@ -117,6 +117,14 @@ static bool _espnow_enabled = true;
 static bool _espnow_enabled = false;
 #endif
 
+// RF motion monitor — inter-node RSSI variance for motion detection
+#if defined(ENABLE_ESPNOW) && __has_include("hal_rf_monitor.h")
+#include "hal_rf_monitor.h"
+#define HAS_RF_MONITOR 1
+#else
+#define HAS_RF_MONITOR 0
+#endif
+
 // GIS offline map tiles from SD card
 #if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("hal_gis.h")
 #include "hal_gis.h"
@@ -702,6 +710,28 @@ static void services_init() {
 #endif
             // Run initial discovery to find neighbors immediately
             _espnow.meshDiscovery();
+
+#if HAS_RF_MONITOR
+            // Start RF motion monitor (uses ESP-NOW peer RSSI)
+            hal_rf_monitor::RFMonitorConfig rf_cfg;
+            rf_cfg.sample_interval_ms = 1000;
+            rf_cfg.motion_threshold = 5.0f;
+            rf_cfg.peer_provider = [](hal_rf_monitor::RFPeer* out, int max_peers) -> int {
+                EspNowPeer peers[ESPNOW_MAX_PEERS];
+                int n = _espnow.getPeers(peers, ESPNOW_MAX_PEERS);
+                int count = 0;
+                for (int i = 0; i < n && count < max_peers; i++) {
+                    memcpy(out[count].mac, peers[i].mac, 6);
+                    out[count].rssi = peers[i].rssi;
+                    out[count].is_direct = peers[i].is_direct;
+                    count++;
+                }
+                return count;
+            };
+            if (hal_rf_monitor::init(rf_cfg)) {
+                Serial.printf("[tritium] RF Motion Monitor: active\n");
+            }
+#endif
         } else {
             Serial.printf("[tritium] ESP-NOW Mesh: init failed\n");
             boot_show("Mesh", "fail");
@@ -965,6 +995,9 @@ static void services_tick() {
 #endif
 #if defined(ENABLE_ESPNOW)
     _espnow.process();
+#endif
+#if HAS_RF_MONITOR
+    hal_rf_monitor::tick();
 #endif
 #if defined(ENABLE_WEBSERVER) && defined(ENABLE_WIFI)
     if (_wifi_services_started) _webserver.process();

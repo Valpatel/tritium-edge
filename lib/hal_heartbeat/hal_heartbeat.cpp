@@ -111,6 +111,14 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #define HAS_WIFI_SCANNER 0
 #endif
 
+// Optional RF motion monitor — inter-node RSSI variance
+#if defined(ENABLE_ESPNOW) && __has_include("hal_rf_monitor.h")
+#include "hal_rf_monitor.h"
+#define HAS_RF_MONITOR 1
+#else
+#define HAS_RF_MONITOR 0
+#endif
+
 namespace hal_heartbeat {
 
 // Internal state
@@ -387,6 +395,15 @@ bool send_now() {
             type_counts[(int)wifi_classifier::NetworkType::CORPORATE],
             type_counts[(int)wifi_classifier::NetworkType::PUBLIC_OPEN],
             type_counts[(int)wifi_classifier::NetworkType::HIDDEN]);
+    }
+#endif
+
+    // Append RF motion monitor summary if available
+#if HAS_RF_MONITOR
+    if (hal_rf_monitor::is_active()) {
+        char rf_summary[64];
+        hal_rf_monitor::get_summary_json(rf_summary, sizeof(rf_summary));
+        pos += snprintf(body + pos, BODY_SIZE - pos, ",\"rf_monitor\":%s", rf_summary);
     }
 #endif
 
