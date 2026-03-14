@@ -119,6 +119,22 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #define HAS_RF_MONITOR 0
 #endif
 
+// Optional acoustic sensor — include audio analysis status
+#if __has_include("hal_acoustic.h")
+#include "hal_acoustic.h"
+#define HAS_ACOUSTIC 1
+#else
+#define HAS_ACOUSTIC 0
+#endif
+
+// Optional config sync — include config version and sync state
+#if __has_include("hal_config_sync.h")
+#include "hal_config_sync.h"
+#define HAS_CONFIG_SYNC 1
+#else
+#define HAS_CONFIG_SYNC 0
+#endif
+
 namespace hal_heartbeat {
 
 // Internal state
@@ -404,6 +420,24 @@ bool send_now() {
         char rf_summary[64];
         hal_rf_monitor::get_summary_json(rf_summary, sizeof(rf_summary));
         pos += snprintf(body + pos, BODY_SIZE - pos, ",\"rf_monitor\":%s", rf_summary);
+    }
+#endif
+
+    // Append acoustic sensor summary if available
+#if HAS_ACOUSTIC
+    if (hal_acoustic::is_active()) {
+        char acoustic_summary[128];
+        hal_acoustic::get_summary_json(acoustic_summary, sizeof(acoustic_summary));
+        pos += snprintf(body + pos, BODY_SIZE - pos, ",\"acoustic\":%s", acoustic_summary);
+    }
+#endif
+
+    // Append config sync status if available
+#if HAS_CONFIG_SYNC
+    {
+        char cfg_summary[256];
+        hal_config_sync::get_config_json(cfg_summary, sizeof(cfg_summary));
+        pos += snprintf(body + pos, BODY_SIZE - pos, ",\"config_sync\":%s", cfg_summary);
     }
 #endif
 
