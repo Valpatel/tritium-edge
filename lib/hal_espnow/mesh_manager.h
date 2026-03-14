@@ -31,6 +31,16 @@ public:
     bool broadcast(const uint8_t* data, size_t len);
     bool sendTo(const uint8_t* dst_mac, const uint8_t* data, size_t len);
 
+    // Sighting relay — forward BLE/WiFi sightings to gateway via mesh
+    bool relaySighting(const MeshSightingPayload& sighting);
+    bool relaySightingBatch(const MeshSightingPayload* sightings, int count);
+
+    // Sighting receive callback (only fired on gateway nodes)
+    typedef void (*SightingCallback)(const uint8_t* observer_mac,
+                                      const MeshSightingPayload& sighting,
+                                      void* ud);
+    void onSighting(SightingCallback cb, void* user_data = nullptr);
+
     // Message callback
     typedef void (*MeshMessageCallback)(const MeshHeaderEx& hdr,
                                          const uint8_t* payload, void* ud);
@@ -132,6 +142,10 @@ private:
     // Message callback
     MeshMessageCallback _msgCb = nullptr;
     void*               _msgCbUserData = nullptr;
+
+    // Sighting callback (gateway only)
+    SightingCallback    _sightingCb = nullptr;
+    void*               _sightingCbUserData = nullptr;
 
     // Stats
     MeshStats _stats = {};

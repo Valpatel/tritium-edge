@@ -22,6 +22,8 @@ enum MeshMsgTypeEx : uint8_t {
     MESH_EX_OTA_REQUEST   = 0x31,  // Request firmware chunk
     MESH_EX_OTA_CHUNK     = 0x32,  // Firmware data chunk
     MESH_EX_TOPOLOGY      = 0x40,  // Topology announcement (peer list)
+    MESH_EX_SIGHTING      = 0x50,  // Sighting relay (BLE/WiFi device detection)
+    MESH_EX_SIGHTING_ACK  = 0x51,  // Sighting delivery acknowledgment
 };
 
 // ── Mesh roles ──────────────────────────────────────────────────────────────
@@ -130,3 +132,28 @@ struct __attribute__((packed)) MeshTopoPayload {
     uint8_t         neighbor_count;
     MeshTopoNeighbor neighbors[MESH_TOPO_MAX_NEIGHBORS];
 };
+
+// ── Sighting relay payload ──────────────────────────────────────────────────
+// Compact sighting report for mesh relay to gateway.  Nodes without WiFi/MQTT
+// use this to forward BLE/WiFi sightings through the mesh toward a gateway
+// node, which then publishes them to MQTT.
+
+enum MeshSightingType : uint8_t {
+    MESH_SIGHTING_BLE  = 0x01,
+    MESH_SIGHTING_WIFI = 0x02,
+};
+
+struct __attribute__((packed)) MeshSightingPayload {
+    MeshSightingType type;          // BLE or WiFi
+    uint8_t  detected_mac[6];       // MAC of detected device
+    int8_t   rssi;                  // Signal strength
+    uint8_t  device_class;          // BLE device class (0=unknown)
+    uint16_t detection_count;       // Times seen by this node
+    uint32_t first_seen_ms;         // Uptime ms when first detected
+    uint32_t last_seen_ms;          // Uptime ms when last detected
+    uint8_t  name_len;              // Length of optional name (0-31)
+    // Followed by `name_len` bytes of device name (not null-terminated)
+};
+
+// Maximum sightings in a batch relay
+static constexpr int MESH_SIGHTING_BATCH_MAX = 5;

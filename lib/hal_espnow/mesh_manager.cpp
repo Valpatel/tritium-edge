@@ -192,6 +192,60 @@ void MeshManager::onMessage(MeshMessageCallback cb, void* user_data) {
     _msgCbUserData = user_data;
 }
 
+void MeshManager::onSighting(SightingCallback cb, void* user_data) {
+    _sightingCb = cb;
+    _sightingCbUserData = user_data;
+}
+
+bool MeshManager::relaySighting(const MeshSightingPayload& sighting) {
+    return relaySightingBatch(&sighting, 1);
+}
+
+bool MeshManager::relaySightingBatch(const MeshSightingPayload* sightings, int count) {
+    if (!_ready || !sightings || count <= 0) return false;
+    if (count > MESH_SIGHTING_BATCH_MAX) count = MESH_SIGHTING_BATCH_MAX;
+
+    // If we are the gateway, deliver directly to callback
+    if (_role == MESH_ROLE_GATEWAY || _electedGateway) {
+        if (_sightingCb) {
+            for (int i = 0; i < count; i++) {
+                _sightingCb(_mac, sightings[i], _sightingCbUserData);
+            }
+        }
+        return true;
+    }
+
+    // Build sighting relay packet addressed to broadcast (gateway will pick it up)
+    uint8_t buf[250];
+    MeshHeaderEx& hdr = *(MeshHeaderEx*)buf;
+
+    // Calculate payload size
+    size_t payloadSize = 0;
+    for (int i = 0; i < count; i++) {
+        payloadSize += sizeof(MeshSightingPayload) + sightings[i].name_len;
+    }
+    if (payloadSize > 250 - sizeof(MeshHeaderEx)) return false;
+
+    buildHeader(hdr, MESH_EX_SIGHTING, ESPNOW_BROADCAST, (uint8_t)payloadSize);
+
+    uint8_t* payload = buf + sizeof(MeshHeaderEx);
+    size_t offset = 0;
+    for (int i = 0; i < count; i++) {
+        memcpy(payload + offset, &sightings[i], sizeof(MeshSightingPayload));
+        offset += sizeof(MeshSightingPayload);
+        // Name bytes would follow, but for now name_len is typically 0
+        offset += sightings[i].name_len;
+    }
+
+    EspNowHAL* hal = espnow_hal_ptr();
+    if (!hal) return false;
+
+    bool ok = hal->broadcast(buf, sizeof(MeshHeaderEx) + (uint8_t)payloadSize);
+    if (ok) _stats.tx_count++;
+    else _stats.tx_fail++;
+    return ok;
+}
+
 // ── Peer management ─────────────────────────────────────────────────────────
 
 int MeshManager::getPeers(MeshPeerInfo* out, int max_count) const {
@@ -505,6 +559,31 @@ void MeshManager::handlePacket(const uint8_t* senderMac, const uint8_t* data,
             if (!forUs && _role != MESH_ROLE_LEAF && _role != MESH_ROLE_SENSOR) {
                 relayPacket(data, (uint8_t)len);
             }
+            break;
+
+        case MESH_EX_SIGHTING:
+            // Sighting relay — gateway processes, relays forward to gateway
+            if (_role == MESH_ROLE_GATEWAY || _electedGateway) {
+                // We are the gateway — deliver to sighting callback
+                if (_sightingCb && payloadLen >= sizeof(MeshSightingPayload)) {
+                    int offset = 0;
+                    while (offset + (int)sizeof(MeshSightingPayload) <= payloadLen) {
+                        const MeshSightingPayload* sp =
+                            (const MeshSightingPayload*)(payload + offset);
+                        _sightingCb(hdr->src_mac, *sp, _sightingCbUserData);
+                        offset += sizeof(MeshSightingPayload) + sp->name_len;
+                    }
+                }
+            } else {
+                // Not gateway — relay toward gateway
+                if (_role != MESH_ROLE_LEAF && _role != MESH_ROLE_SENSOR) {
+                    relayPacket(data, (uint8_t)len);
+                }
+            }
+            break;
+
+        case MESH_EX_SIGHTING_ACK:
+            // Acknowledgment that gateway received sightings — no-op for now
             break;
     }
 }
@@ -1028,6 +1107,11 @@ bool MeshManager::sendTo(const uint8_t*, const uint8_t*, size_t) { return false;
 void MeshManager::onMessage(MeshMessageCallback cb, void* ud) {
     _msgCb = cb; _msgCbUserData = ud;
 }
+void MeshManager::onSighting(SightingCallback cb, void* ud) {
+    _sightingCb = cb; _sightingCbUserData = ud;
+}
+bool MeshManager::relaySighting(const MeshSightingPayload&) { return false; }
+bool MeshManager::relaySightingBatch(const MeshSightingPayload*, int) { return false; }
 int  MeshManager::getPeers(MeshPeerInfo*, int) const { return 0; }
 int  MeshManager::peerCount() const { return 0; }
 bool MeshManager::pingPeer(const uint8_t*) { return false; }
