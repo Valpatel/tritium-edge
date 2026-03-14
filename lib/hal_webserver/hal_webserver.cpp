@@ -1822,6 +1822,20 @@ void WebServerHAL::addApiEndpoints() {
     });
 #endif
 
+    // GET /api/diag/selftest — run diagnostic self-test checks
+    _server->on("/api/diag/selftest", HTTP_GET, [self]() {
+        self->_requestCount++;
+        auto result = hal_diag::run_self_test();
+        char* buf = (char*)malloc(2048);
+        if (!buf) {
+            _server->send(500, "application/json", "{\"error\":\"alloc\"}");
+            return;
+        }
+        hal_diag::self_test_to_json(result, buf, 2048);
+        _server->send(200, "application/json", buf);
+        free(buf);
+    });
+
     // GET /api/diag/frames — frame timing info for flicker detection
     _server->on("/api/diag/frames", HTTP_GET, [self]() {
         self->_requestCount++;

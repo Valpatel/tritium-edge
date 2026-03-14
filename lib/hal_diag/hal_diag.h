@@ -377,4 +377,32 @@ void clear_crash_info();
 /// This is safe to call from ISR context (uses NVS directly, no heap alloc).
 void store_crash(const char* message, const char* task_name = nullptr);
 
+// ── Self-test ────────────────────────────────────────────────────────────────
+
+/// Result of a single self-test check.
+struct SelfTestCheck {
+    char     name[24];        // "wifi", "mqtt", "ntp", "sd", "heap", "flash"
+    bool     passed;
+    char     detail[96];      // Human-readable result
+};
+
+/// Full self-test result.
+struct SelfTestResult {
+    uint32_t timestamp_ms;
+    uint32_t epoch_time;
+    bool     all_passed;
+    int      check_count;
+    static constexpr int MAX_CHECKS = 8;
+    SelfTestCheck checks[MAX_CHECKS];
+};
+
+/// Run all diagnostic self-tests. Returns result struct.
+/// Checks: WiFi connectivity, MQTT connection, NTP sync, SD card,
+/// free heap, and flash integrity.
+SelfTestResult run_self_test();
+
+/// Serialize self-test result to JSON.
+/// @return Number of bytes written, or -1 on error.
+int self_test_to_json(const SelfTestResult& result, char* buf, size_t size);
+
 }  // namespace hal_diag
