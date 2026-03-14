@@ -335,7 +335,7 @@ bool publish_sightings() {
                     nets[i].bssid[0], nets[i].bssid[1], nets[i].bssid[2],
                     nets[i].bssid[3], nets[i].bssid[4], nets[i].bssid[5],
                     nets[i].rssi, nets[i].channel, nets[i].auth_type,
-                    wifi_classifier::type_name(cl.type));
+                    cl.type_name);
             }
 
             pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,
