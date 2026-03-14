@@ -14,6 +14,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 64: Environment Sensor HAL
+
+### hal_environment (Code Reviewed)
+- New `lib/hal_environment/` — HAL for BME280, BMP280, SHT31, BME680, BH1750, VEML7700
+- `hal_environment.h`: init(), tick(), read_now(), get_temperature_c/humidity/pressure/light
+- `hal_environment.cpp`: stub implementation (no Waveshare boards have onboard env sensors)
+- I2C auto-detect framework ready for when external sensors are connected
+- MQTT publish format matches tritium_lib EnvironmentReading model
+- SensorChip enum for all supported chip types
+
+---
+
 ## 2026-03-14 — Wave 63: Meshtastic E2E Test Script
 
 ### Meshtastic Test Script (Code Reviewed)
