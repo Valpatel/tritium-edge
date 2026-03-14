@@ -59,6 +59,20 @@ public:
             }
             return true;
         }
+        if (strcmp(cmd, "BLE_RSSI") == 0) {
+            if (!args || args[0] == '\0') {
+                Serial.printf("[ble] Usage: BLE_RSSI AA:BB:CC:DD:EE:FF\n");
+                return true;
+            }
+            char json_buf[1024];
+            int len = hal_ble_scanner::get_rssi_history_json_by_mac(args, json_buf, sizeof(json_buf));
+            if (len > 0) {
+                Serial.printf("[ble] RSSI history: %s\n", json_buf);
+            } else {
+                Serial.printf("[ble] Device not found: %s\n", args);
+            }
+            return true;
+        }
         if (strcmp(cmd, "BLE_LIST") == 0) {
             BleDevice devs[16];
             int n = hal_ble_scanner::get_devices(devs, 16);

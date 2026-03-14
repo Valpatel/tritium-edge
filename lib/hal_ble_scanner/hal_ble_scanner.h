@@ -12,6 +12,9 @@ static constexpr int BLE_SCANNER_MAX_DEVICES = 64;
 // How long before a device is considered "gone" (ms)
 static constexpr uint32_t BLE_DEVICE_TIMEOUT_MS = 120000;  // 2 minutes
 
+// RSSI history depth per device (circular buffer)
+static constexpr int BLE_RSSI_HISTORY_SIZE = 30;
+
 // Apple Continuity device types (from manufacturer-specific data, company 0x004C)
 enum class AppleDeviceType : uint8_t {
     NONE        = 0x00,     // Not an Apple device / not parsed
@@ -45,6 +48,12 @@ enum class BleDeviceClass : uint8_t {
     PERIPHERAL,     // keyboard, mouse, gamepad
 };
 
+// RSSI reading with timestamp for trend analysis
+struct RssiReading {
+    int8_t rssi;            // RSSI value in dBm
+    uint32_t timestamp;     // millis() when recorded
+};
+
 struct BleDevice {
     uint8_t addr[6];        // MAC address
     int8_t rssi;            // Last RSSI
@@ -57,6 +66,13 @@ struct BleDevice {
     AppleDeviceType apple_type;     // Apple Continuity device type (if detected)
     BleDeviceClass device_class;    // Classified device type
     char device_type[16];           // Human-readable device type string
+
+    // RSSI history — circular buffer of last N readings for trend analysis
+    RssiReading rssi_history[BLE_RSSI_HISTORY_SIZE];
+    uint8_t rssi_history_head;      // Next write position
+    uint8_t rssi_history_count;     // Entries used (0..BLE_RSSI_HISTORY_SIZE)
+    int8_t rssi_min;                // Minimum RSSI ever recorded
+    int8_t rssi_max;                // Maximum RSSI ever recorded
 };
 
 struct BleDeviceMatch {
@@ -123,6 +139,16 @@ bool is_cache_valid();
 
 // Get milliseconds since last scan completed.
 uint32_t cache_age_ms();
+
+// Get RSSI history for a specific device as JSON.
+// Format: {"mac":"AA:BB:CC:DD:EE:FF","count":N,"min":-80,"max":-40,
+//          "readings":[{"rssi":-50,"age_ms":1234},...],"trend":"approaching"|"departing"|"stable"}
+// Returns bytes written to buf, or 0 if device not found.
+int get_rssi_history_json(const uint8_t addr[6], char* buf, size_t buf_size);
+
+// Get RSSI history for a device by MAC string "AA:BB:CC:DD:EE:FF".
+// Convenience wrapper around get_rssi_history_json.
+int get_rssi_history_json_by_mac(const char* mac_str, char* buf, size_t buf_size);
 
 // Is scanner running?
 bool is_active();

@@ -20,6 +20,8 @@ int get_devices_json_batch(char* buf, size_t buf_size, int, int) { return snprin
 int get_batch_count(int) { return 0; }
 bool is_cache_valid() { return false; }
 uint32_t cache_age_ms() { return 0; }
+int get_rssi_history_json(const uint8_t[6], char* buf, size_t buf_size) { return 0; }
+int get_rssi_history_json_by_mac(const char*, char* buf, size_t buf_size) { return 0; }
 bool is_active() { return false; }
 }
 
@@ -69,6 +71,47 @@ static bool is_known_device(const uint8_t addr[6], const char** label) {
         }
     }
     return false;
+}
+
+static void record_rssi(BleDevice& d, int8_t rssi) {
+    uint32_t now = millis();
+    d.rssi_history[d.rssi_history_head] = {rssi, now};
+    d.rssi_history_head = (d.rssi_history_head + 1) % BLE_RSSI_HISTORY_SIZE;
+    if (d.rssi_history_count < BLE_RSSI_HISTORY_SIZE) {
+        d.rssi_history_count++;
+    }
+    if (rssi < d.rssi_min) d.rssi_min = rssi;
+    if (rssi > d.rssi_max) d.rssi_max = rssi;
+}
+
+// Compute RSSI trend: compare average of first half vs second half of history.
+// Returns "approaching" if signal is strengthening, "departing" if weakening,
+// or "stable" if change is within noise threshold.
+static const char* compute_rssi_trend(const BleDevice& d) {
+    if (d.rssi_history_count < 4) return "stable";
+
+    int half = d.rssi_history_count / 2;
+    int oldest_start = (d.rssi_history_head - d.rssi_history_count + BLE_RSSI_HISTORY_SIZE) % BLE_RSSI_HISTORY_SIZE;
+    long sum_old = 0, sum_new = 0;
+
+    for (int i = 0; i < half; i++) {
+        int idx = (oldest_start + i) % BLE_RSSI_HISTORY_SIZE;
+        sum_old += d.rssi_history[idx].rssi;
+    }
+    for (int i = half; i < d.rssi_history_count; i++) {
+        int idx = (oldest_start + i) % BLE_RSSI_HISTORY_SIZE;
+        sum_new += d.rssi_history[idx].rssi;
+    }
+
+    int new_count = d.rssi_history_count - half;
+    float avg_old = (float)sum_old / half;
+    float avg_new = (float)sum_new / new_count;
+    float delta = avg_new - avg_old;
+
+    // 3 dBm threshold to avoid noise
+    if (delta > 3.0f) return "approaching";
+    if (delta < -3.0f) return "departing";
+    return "stable";
 }
 
 static void prune_stale() {
@@ -238,9 +281,11 @@ class ScanCallbacks : public NimBLEScanCallbacks {
 
         int idx = find_device(raw);
         if (idx >= 0) {
-            _devices[idx].rssi = dev->getRSSI();
+            int8_t new_rssi = dev->getRSSI();
+            _devices[idx].rssi = new_rssi;
             _devices[idx].last_seen = now;
             _devices[idx].seen_count++;
+            record_rssi(_devices[idx], new_rssi);
             // Update Apple classification if not yet classified
             if (_devices[idx].apple_type == AppleDeviceType::NONE &&
                 dev->haveManufacturerData()) {
@@ -258,6 +303,11 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             d.apple_type = AppleDeviceType::NONE;
             d.device_class = BleDeviceClass::UNKNOWN;
             d.device_type[0] = '\0';
+            d.rssi_history_head = 0;
+            d.rssi_history_count = 0;
+            d.rssi_min = d.rssi;
+            d.rssi_max = d.rssi;
+            record_rssi(d, d.rssi);
 
             if (dev->haveName()) {
                 strncpy(d.name, dev->getName().c_str(), sizeof(d.name) - 1);
@@ -548,6 +598,57 @@ bool is_cache_valid() {
 uint32_t cache_age_ms() {
     if (_last_scan_complete_ms == 0) return 0;
     return millis() - _last_scan_complete_ms;
+}
+
+int get_rssi_history_json(const uint8_t addr[6], char* buf, size_t buf_size) {
+    if (!_mutex) return 0;
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+
+    int idx = find_device(addr);
+    if (idx < 0) {
+        xSemaphoreGive(_mutex);
+        return 0;
+    }
+
+    const BleDevice& d = _devices[idx];
+    uint32_t now = millis();
+    int pos = 0;
+
+    pos += snprintf(buf + pos, buf_size - pos,
+        "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"count\":%d,\"min\":%d,\"max\":%d,",
+        d.addr[0], d.addr[1], d.addr[2],
+        d.addr[3], d.addr[4], d.addr[5],
+        d.rssi_history_count, d.rssi_min, d.rssi_max);
+
+    pos += snprintf(buf + pos, buf_size - pos, "\"trend\":\"%s\",", compute_rssi_trend(d));
+    pos += snprintf(buf + pos, buf_size - pos, "\"readings\":[");
+
+    // Output readings from oldest to newest
+    int start = (d.rssi_history_head - d.rssi_history_count + BLE_RSSI_HISTORY_SIZE)
+                % BLE_RSSI_HISTORY_SIZE;
+    for (int i = 0; i < d.rssi_history_count && pos < (int)buf_size - 40; i++) {
+        int ri = (start + i) % BLE_RSSI_HISTORY_SIZE;
+        if (i > 0) buf[pos++] = ',';
+        uint32_t age = now - d.rssi_history[ri].timestamp;
+        pos += snprintf(buf + pos, buf_size - pos,
+            "{\"rssi\":%d,\"age_ms\":%u}",
+            d.rssi_history[ri].rssi, (unsigned)age);
+    }
+
+    pos += snprintf(buf + pos, buf_size - pos, "]}");
+    xSemaphoreGive(_mutex);
+    return pos;
+}
+
+int get_rssi_history_json_by_mac(const char* mac_str, char* buf, size_t buf_size) {
+    unsigned int a[6];
+    if (sscanf(mac_str, "%x:%x:%x:%x:%x:%x",
+               &a[0], &a[1], &a[2], &a[3], &a[4], &a[5]) != 6) {
+        return 0;
+    }
+    uint8_t addr[6] = {(uint8_t)a[0], (uint8_t)a[1], (uint8_t)a[2],
+                        (uint8_t)a[3], (uint8_t)a[4], (uint8_t)a[5]};
+    return get_rssi_history_json(addr, buf, buf_size);
 }
 
 bool is_active() {

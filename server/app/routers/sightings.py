@@ -217,3 +217,66 @@ async def bulk_sighting_upload(
         "ble_received": len(ble_items),
         "wifi_received": len(wifi_items),
     }
+
+
+@router.get("/ble/devices/{mac}/rssi_history")
+async def get_ble_rssi_history(
+    mac: str,
+    request: Request,
+    limit: int = 30,
+):
+    """Return RSSI history for a specific BLE device by MAC address.
+
+    Queries the BleStore for recent sighting records of this device,
+    returning RSSI values over time for trend analysis and distance
+    estimation.  The ``trend`` field indicates whether the device is
+    approaching, departing, or stable.
+    """
+    ble_store = _get_ble_store(request)
+    if ble_store is None:
+        raise HTTPException(status_code=503, detail="BleStore not available")
+
+    # Normalize MAC format (accept both AA:BB:CC and AA-BB-CC)
+    mac_normalized = mac.upper().replace("-", ":")
+
+    # Get device history from store
+    try:
+        history = ble_store.get_device_history(mac_normalized)
+    except Exception:
+        history = []
+
+    if not history:
+        raise HTTPException(status_code=404, detail=f"No history for {mac_normalized}")
+
+    # Extract RSSI readings (most recent first, up to limit)
+    readings = []
+    for entry in history[-limit:]:
+        readings.append({
+            "rssi": entry.get("rssi", -100),
+            "timestamp": entry.get("timestamp", ""),
+            "node_id": entry.get("node_id", ""),
+        })
+
+    # Compute trend from readings
+    trend = "stable"
+    if len(readings) >= 4:
+        half = len(readings) // 2
+        avg_old = sum(r["rssi"] for r in readings[:half]) / half
+        avg_new = sum(r["rssi"] for r in readings[half:]) / (len(readings) - half)
+        delta = avg_new - avg_old
+        if delta > 3:
+            trend = "approaching"
+        elif delta < -3:
+            trend = "departing"
+
+    rssi_values = [r["rssi"] for r in readings]
+
+    return {
+        "mac": mac_normalized,
+        "count": len(readings),
+        "min": min(rssi_values) if rssi_values else 0,
+        "max": max(rssi_values) if rssi_values else 0,
+        "avg": sum(rssi_values) / len(rssi_values) if rssi_values else 0,
+        "trend": trend,
+        "readings": readings,
+    }
