@@ -14,6 +14,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 50: Device Group Management
+
+### hal_heartbeat: Device Group (Code Review Verified)
+- `HeartbeatConfig` gains `device_group` field for initial assignment
+- `set_group(group)` — persists group to NVS, included in heartbeat JSON
+- `get_group()` — returns current group assignment
+- Groups: perimeter, interior, mobile, reserve (or any custom string)
+- HTTP heartbeat JSON includes `"device_group":"<group>"` when set
+- MQTT heartbeat JSON includes `"device_group":"<group>"` when set
+- `set_group` MQTT command handler — SC can assign groups via `tritium/{device_id}/cmd/set_group`
+- Simulator stubs provided for desktop builds
+
 ## 2026-03-14 — Wave 45: Multi-Vendor BLE Ad Parsing
 
 ### hal_ble_scanner enhancement (Code Review Verified)

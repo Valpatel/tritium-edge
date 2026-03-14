@@ -37,6 +37,7 @@ void on_command(CommandCallback) {}
 #include <esp_app_format.h>
 #include "hal_mqtt.h"
 #include "hal_provision.h"
+#include "hal_heartbeat.h"
 
 // Optional BLE scanner integration
 #if __has_include("hal_ble_scanner.h")
@@ -212,7 +213,7 @@ static bool _provision_inited = false;
 // Command handler callback
 // ---------------------------------------------------------------------------
 static void mqtt_cmd_callback(const char* topic, const uint8_t* payload, size_t length) {
-    if (_cmd_cb && length > 0) {
+    if (length > 0) {
         // Null-terminate the payload for safe string handling
         static char cmd_buf[512];
         size_t copy_len = (length < sizeof(cmd_buf) - 1) ? length : sizeof(cmd_buf) - 1;
@@ -224,7 +225,16 @@ static void mqtt_cmd_callback(const char* topic, const uint8_t* payload, size_t 
         if (cmd_part) cmd_part++;
         else cmd_part = "unknown";
 
-        _cmd_cb(cmd_part, cmd_buf, copy_len);
+        // Handle built-in commands before forwarding to user callback
+        if (strcmp(cmd_part, "set_group") == 0) {
+            hal_heartbeat::set_group(cmd_buf);
+            DBG_INFO(TAG, "Group set via MQTT: '%s'", cmd_buf);
+        }
+
+        // Forward to user callback
+        if (_cmd_cb) {
+            _cmd_cb(cmd_part, cmd_buf, copy_len);
+        }
     }
 }
 
@@ -414,6 +424,15 @@ bool publish_heartbeat() {
             ",\"config_sync\":%s", cfg_json);
     }
 #endif
+
+    // Append device group if assigned
+    {
+        const char* grp = hal_heartbeat::get_group();
+        if (grp && grp[0] != '\0') {
+            pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,
+                            ",\"device_group\":\"%s\"", grp);
+        }
+    }
 
     // Append transports
     pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,

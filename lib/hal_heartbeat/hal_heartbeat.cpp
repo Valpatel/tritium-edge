@@ -30,6 +30,8 @@ bool tick() { return false; }
 bool send_now() { return false; }
 bool is_active() { return false; }
 uint32_t get_interval_ms() { return _interval_ms; }
+void set_group(const char*) {}
+const char* get_group() { return ""; }
 
 }  // namespace hal_heartbeat
 
@@ -41,6 +43,7 @@ uint32_t get_interval_ms() { return _interval_ms; }
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <Preferences.h>
 #include <esp_ota_ops.h>
 #include <esp_app_format.h>
 #include <esp_partition.h>
@@ -151,6 +154,9 @@ static char _device_id[64] = {};
 static char _fw_version[32] = {};
 static char _fw_hash[65] = {};
 static const char* _board_name = nullptr;
+
+// Device group assignment (perimeter, interior, mobile, reserve)
+static char _device_group[32] = {};
 
 // Provisioning instance (shared, lightweight)
 static ProvisionHAL _provision;
@@ -287,6 +293,21 @@ bool init(const HeartbeatConfig& config) {
     // Cache firmware info (version, hash, board)
     cacheFirmwareInfo();
 
+    // Device group — from config or NVS
+    if (config.device_group && config.device_group[0] != '\0') {
+        strncpy(_device_group, config.device_group, sizeof(_device_group) - 1);
+    } else if (_provision_inited) {
+        // Try to load from NVS (persisted via set_group())
+        Preferences prefs;
+        if (prefs.begin("tritium", true)) {
+            String grp = prefs.getString("device_group", "");
+            if (grp.length() > 0) {
+                strncpy(_device_group, grp.c_str(), sizeof(_device_group) - 1);
+            }
+            prefs.end();
+        }
+    }
+
     // Initialize CoT if requested
     _cot_enabled = config.cot_enabled;
 #if HAS_COT
@@ -373,6 +394,12 @@ bool send_now() {
              _server_url,
              WiFi.SSID().c_str(),
              _fw_version);
+
+    // Append device group assignment if set
+    if (_device_group[0] != '\0') {
+        pos += snprintf(body + pos, BODY_SIZE - pos,
+                        ",\"device_group\":\"%s\"", _device_group);
+    }
 
     // Append BLE scanner data if available
 #if HAS_BLE_SCANNER
@@ -671,6 +698,26 @@ bool is_active() {
 
 uint32_t get_interval_ms() {
     return _interval_ms;
+}
+
+void set_group(const char* group) {
+    if (group && group[0] != '\0') {
+        strncpy(_device_group, group, sizeof(_device_group) - 1);
+        _device_group[sizeof(_device_group) - 1] = '\0';
+    } else {
+        _device_group[0] = '\0';
+    }
+    // Persist to NVS
+    Preferences prefs;
+    if (prefs.begin("tritium", false)) {
+        prefs.putString("device_group", _device_group);
+        prefs.end();
+        DBG_INFO(TAG, "Device group set: '%s' (persisted)", _device_group);
+    }
+}
+
+const char* get_group() {
+    return _device_group;
 }
 
 }  // namespace hal_heartbeat

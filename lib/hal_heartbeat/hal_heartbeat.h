@@ -12,6 +12,7 @@ struct HeartbeatConfig {
     const char* device_id = nullptr;   // e.g., "esp32-aabbccddeeff"
     uint32_t interval_ms = 60000;      // Default 60s
     bool cot_enabled = false;          // Also send CoT position on each heartbeat tick
+    const char* device_group = nullptr;  // Group assignment: "perimeter", "interior", "mobile", "reserve"
 };
 
 // Initialize heartbeat system. Call once after WiFi is connected.
@@ -32,5 +33,12 @@ bool is_active();
 
 // Get the server-recommended interval (may differ from config).
 uint32_t get_interval_ms();
+
+// Set device group assignment. Valid groups: perimeter, interior, mobile, reserve.
+// Persists to NVS so it survives reboot. Included in heartbeat JSON.
+void set_group(const char* group);
+
+// Get current device group (empty string if unassigned).
+const char* get_group();
 
 }  // namespace hal_heartbeat
