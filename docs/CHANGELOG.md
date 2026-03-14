@@ -14,6 +14,21 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 45: Multi-Vendor BLE Ad Parsing
+
+### hal_ble_scanner enhancement (Code Review Verified)
+- Added manufacturer-specific BLE advertising data parsing for non-Apple vendors
+- Samsung (0x0075, 0x01D5): Galaxy phone/watch/buds/tab classification from type hint byte
+- Google Fast Pair (0x00E0, 0x02E0): Model ID extraction, audio device classification
+- Microsoft CDP (0x0006): Windows Desktop, Xbox, Surface Hub, HoloLens, WinPhone, WinIoT
+- Fitbit (0x0224): Fitness tracker vs smartwatch classification from product type byte
+- New `manufacturer` field in BleDevice struct — "Apple", "Samsung", "Google", "Microsoft", "Fitbit"
+- Manufacturer included in get_devices_json() and get_device_extended_json() output
+- Non-Apple parsing runs after Apple Continuity parser, only if device_class is still UNKNOWN
+- Integrated into both new-device discovery and existing-device update paths
+
+---
+
 ## 2026-03-14 — Wave 44: LED Status Indicator HAL
 
 ### hal_led (Code Review Verified)

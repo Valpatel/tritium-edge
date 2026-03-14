@@ -76,6 +76,7 @@ struct BleDevice {
     AppleDeviceType apple_type;     // Apple Continuity device type (if detected)
     BleDeviceClass device_class;    // Classified device type
     char device_type[16];           // Human-readable device type string
+    char manufacturer[16];          // Manufacturer name (Apple, Samsung, Google, Microsoft, Fitbit)
     bool is_random_mac;             // true if locally administered bit is set
     int8_t rotation_group;          // -1 = ungrouped, >= 0 = correlation group ID
 

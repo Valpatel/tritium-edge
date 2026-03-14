@@ -371,6 +371,208 @@ static void parse_apple_continuity(const NimBLEAdvertisedDevice* dev, BleDevice&
         const char* type_str = apple_type_string(d.apple_type);
         strncpy(d.device_type, type_str, sizeof(d.device_type) - 1);
         d.device_type[sizeof(d.device_type) - 1] = '\0';
+        strncpy(d.manufacturer, "Apple", sizeof(d.manufacturer) - 1);
+        d.manufacturer[sizeof(d.manufacturer) - 1] = '\0';
+    }
+}
+
+// --- Non-Apple manufacturer-specific data parsing ---
+// Samsung, Google, Microsoft, and Fitbit each use their own company IDs
+// and advertising formats. Parse these to extract device hints.
+
+// Company IDs (Bluetooth SIG assigned)
+static constexpr uint16_t COMPANY_APPLE     = 0x004C;
+static constexpr uint16_t COMPANY_SAMSUNG   = 0x0075;
+static constexpr uint16_t COMPANY_GOOGLE    = 0x00E0;
+static constexpr uint16_t COMPANY_MICROSOFT = 0x0006;
+static constexpr uint16_t COMPANY_FITBIT    = 0x0224;
+static constexpr uint16_t COMPANY_GOOGLE_2  = 0x02E0; // Google alternate
+static constexpr uint16_t COMPANY_SAMSUNG_2 = 0x01D5; // Samsung alternate
+
+// Parse Samsung manufacturer-specific data.
+// Samsung Galaxy phones, watches, and earbuds use company ID 0x0075.
+// Format varies but the first data byte often hints at device category.
+static void parse_samsung_mfr(const uint8_t* data, size_t len, BleDevice& d) {
+    if (d.device_class != BleDeviceClass::UNKNOWN) return;
+    if (len < 1) return;
+
+    // Samsung Continuity-like: first byte after company ID is a type hint
+    uint8_t type_hint = data[0];
+
+    switch (type_hint & 0xF0) {
+        case 0x40:  // Galaxy phone
+        case 0x20:
+            d.device_class = BleDeviceClass::PHONE;
+            strncpy(d.device_type, "Galaxy", sizeof(d.device_type) - 1);
+            break;
+        case 0x10:  // Galaxy Watch
+            d.device_class = BleDeviceClass::WATCH;
+            strncpy(d.device_type, "GalaxyWatch", sizeof(d.device_type) - 1);
+            break;
+        case 0x80:  // Galaxy Buds
+            d.device_class = BleDeviceClass::HEADPHONES;
+            strncpy(d.device_type, "GalaxyBuds", sizeof(d.device_type) - 1);
+            break;
+        case 0x30:  // Galaxy Tab
+            d.device_class = BleDeviceClass::TABLET;
+            strncpy(d.device_type, "GalaxyTab", sizeof(d.device_type) - 1);
+            break;
+        default:
+            // Still Samsung but type unknown
+            strncpy(d.device_type, "Samsung", sizeof(d.device_type) - 1);
+            break;
+    }
+    d.device_type[sizeof(d.device_type) - 1] = '\0';
+}
+
+// Parse Google manufacturer-specific data.
+// Google Fast Pair uses company ID 0x00E0.
+// The service data contains a model ID that maps to device type.
+static void parse_google_mfr(const uint8_t* data, size_t len, BleDevice& d) {
+    if (d.device_class != BleDeviceClass::UNKNOWN) return;
+    if (len < 2) return;
+
+    // Google Fast Pair: first byte is version/type
+    uint8_t version = data[0];
+
+    if (version == 0x00 || version == 0x06) {
+        // Fast Pair v1/v2 — next 3 bytes are model ID
+        // Can't decode exact model without a database, but the
+        // presence of Fast Pair strongly suggests a phone or earbuds
+        if (len >= 4) {
+            uint32_t model_id = ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8) | data[3];
+            // Common ranges: headphones tend to have specific model IDs
+            // For now, classify as generic Google device
+            if (model_id > 0) {
+                d.device_class = BleDeviceClass::HEADPHONES; // Most Fast Pair devices are audio
+                strncpy(d.device_type, "GoogleFP", sizeof(d.device_type) - 1);
+            }
+        }
+    } else {
+        // Other Google advertisement
+        strncpy(d.device_type, "Google", sizeof(d.device_type) - 1);
+    }
+    d.device_type[sizeof(d.device_type) - 1] = '\0';
+}
+
+// Parse Microsoft manufacturer-specific data.
+// Microsoft uses company ID 0x0006 for Surface, Xbox, and Windows devices.
+// The CDPv2 (Connected Devices Platform) protocol encodes device type.
+static void parse_microsoft_mfr(const uint8_t* data, size_t len, BleDevice& d) {
+    if (d.device_class != BleDeviceClass::UNKNOWN) return;
+    if (len < 2) return;
+
+    // Microsoft CDP beacon: first byte is scenario type, second is device type
+    uint8_t scenario = data[0];
+
+    if (scenario == 0x01) {
+        // CDP v1 Bluetooth LE beacon
+        if (len >= 3) {
+            uint8_t dev_type = data[1];
+            switch (dev_type) {
+                case 1:  // Xbox
+                    d.device_class = BleDeviceClass::TV_DONGLE;
+                    strncpy(d.device_type, "Xbox", sizeof(d.device_type) - 1);
+                    break;
+                case 6:  // Apple (interop)
+                    break;
+                case 7:  // Android (interop)
+                    break;
+                case 8:  // Windows 10 Desktop
+                    d.device_class = BleDeviceClass::LAPTOP;
+                    strncpy(d.device_type, "Windows", sizeof(d.device_type) - 1);
+                    break;
+                case 9:  // Windows 10 Phone
+                    d.device_class = BleDeviceClass::PHONE;
+                    strncpy(d.device_type, "WinPhone", sizeof(d.device_type) - 1);
+                    break;
+                case 11: // Windows IoT
+                    d.device_class = BleDeviceClass::IOT_DEVICE;
+                    strncpy(d.device_type, "WinIoT", sizeof(d.device_type) - 1);
+                    break;
+                case 13: // Surface Hub
+                    d.device_class = BleDeviceClass::LAPTOP;
+                    strncpy(d.device_type, "SurfaceHub", sizeof(d.device_type) - 1);
+                    break;
+                case 14: // Xbox One
+                    d.device_class = BleDeviceClass::TV_DONGLE;
+                    strncpy(d.device_type, "XboxOne", sizeof(d.device_type) - 1);
+                    break;
+                case 15: // HoloLens
+                    d.device_class = BleDeviceClass::PERIPHERAL;
+                    strncpy(d.device_type, "HoloLens", sizeof(d.device_type) - 1);
+                    break;
+                default:
+                    strncpy(d.device_type, "Microsoft", sizeof(d.device_type) - 1);
+                    break;
+            }
+        }
+    } else {
+        strncpy(d.device_type, "Microsoft", sizeof(d.device_type) - 1);
+    }
+    d.device_type[sizeof(d.device_type) - 1] = '\0';
+}
+
+// Parse Fitbit manufacturer-specific data.
+// Fitbit uses company ID 0x0224 for fitness trackers and smartwatches.
+static void parse_fitbit_mfr(const uint8_t* data, size_t len, BleDevice& d) {
+    if (d.device_class != BleDeviceClass::UNKNOWN) return;
+
+    // Fitbit devices are always fitness trackers or watches
+    if (len >= 2) {
+        uint8_t product_type = data[0];
+        if (product_type >= 0x20 && product_type <= 0x30) {
+            d.device_class = BleDeviceClass::WATCH;
+            strncpy(d.device_type, "FitbitWatch", sizeof(d.device_type) - 1);
+        } else {
+            d.device_class = BleDeviceClass::FITNESS;
+            strncpy(d.device_type, "Fitbit", sizeof(d.device_type) - 1);
+        }
+    } else {
+        d.device_class = BleDeviceClass::FITNESS;
+        strncpy(d.device_type, "Fitbit", sizeof(d.device_type) - 1);
+    }
+    d.device_type[sizeof(d.device_type) - 1] = '\0';
+}
+
+// Master function to parse all known manufacturer-specific data.
+// Called for non-Apple devices (Apple is already handled by parse_apple_continuity).
+static void parse_manufacturer_data(const NimBLEAdvertisedDevice* dev, BleDevice& d) {
+    std::string mfr = dev->getManufacturerData();
+    if (mfr.size() < 3) return;  // Need company ID (2) + at least 1 data byte
+
+    uint16_t company_id = (uint8_t)mfr[0] | ((uint8_t)mfr[1] << 8);
+    const uint8_t* data = (const uint8_t*)mfr.data() + 2;
+    size_t data_len = mfr.size() - 2;
+
+    switch (company_id) {
+        case COMPANY_APPLE:
+            // Already handled by parse_apple_continuity
+            break;
+        case COMPANY_SAMSUNG:
+        case COMPANY_SAMSUNG_2:
+            parse_samsung_mfr(data, data_len, d);
+            strncpy(d.manufacturer, "Samsung", sizeof(d.manufacturer) - 1);
+            d.manufacturer[sizeof(d.manufacturer) - 1] = '\0';
+            break;
+        case COMPANY_GOOGLE:
+        case COMPANY_GOOGLE_2:
+            parse_google_mfr(data, data_len, d);
+            strncpy(d.manufacturer, "Google", sizeof(d.manufacturer) - 1);
+            d.manufacturer[sizeof(d.manufacturer) - 1] = '\0';
+            break;
+        case COMPANY_MICROSOFT:
+            parse_microsoft_mfr(data, data_len, d);
+            strncpy(d.manufacturer, "Microsoft", sizeof(d.manufacturer) - 1);
+            d.manufacturer[sizeof(d.manufacturer) - 1] = '\0';
+            break;
+        case COMPANY_FITBIT:
+            parse_fitbit_mfr(data, data_len, d);
+            strncpy(d.manufacturer, "Fitbit", sizeof(d.manufacturer) - 1);
+            d.manufacturer[sizeof(d.manufacturer) - 1] = '\0';
+            break;
+        default:
+            break;
     }
 }
 
@@ -392,10 +594,14 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             _devices[idx].last_seen = now;
             _devices[idx].seen_count++;
             record_rssi(_devices[idx], new_rssi);
-            // Update Apple classification if not yet classified
-            if (_devices[idx].apple_type == AppleDeviceType::NONE &&
+            // Update classification if not yet classified
+            if (_devices[idx].device_class == BleDeviceClass::UNKNOWN &&
                 dev->haveManufacturerData()) {
                 parse_apple_continuity(dev, _devices[idx]);
+                // Try non-Apple manufacturer parsing if Apple didn't classify
+                if (_devices[idx].device_class == BleDeviceClass::UNKNOWN) {
+                    parse_manufacturer_data(dev, _devices[idx]);
+                }
             }
         } else if (_device_count < BLE_SCANNER_MAX_DEVICES) {
             BleDevice& d = _devices[_device_count];
@@ -409,6 +615,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             d.apple_type = AppleDeviceType::NONE;
             d.device_class = BleDeviceClass::UNKNOWN;
             d.device_type[0] = '\0';
+            d.manufacturer[0] = '\0';
             d.is_random_mac = is_locally_administered(raw);
             d.rotation_group = -1;
             d.rssi_history_head = 0;
@@ -435,9 +642,12 @@ class ScanCallbacks : public NimBLEScanCallbacks {
                 d.name[sizeof(d.name) - 1] = '\0';
             }
 
-            // Parse Apple Continuity protocol
+            // Parse manufacturer-specific data: Apple first, then Samsung/Google/MS/Fitbit
             if (dev->haveManufacturerData()) {
                 parse_apple_continuity(dev, d);
+                if (d.device_class == BleDeviceClass::UNKNOWN) {
+                    parse_manufacturer_data(dev, d);
+                }
             }
 
             const char* label = nullptr;
@@ -640,6 +850,10 @@ int get_devices_json(char* buf, size_t buf_size) {
         if (_devices[i].is_known && pos < (int)buf_size - 20) {
             pos += snprintf(buf + pos, buf_size - pos, ",\"known\":true");
         }
+        if (_devices[i].manufacturer[0] && pos < (int)buf_size - 40) {
+            pos += snprintf(buf + pos, buf_size - pos,
+                ",\"manufacturer\":\"%s\"", _devices[i].manufacturer);
+        }
         if (_devices[i].is_random_mac && pos < (int)buf_size - 30) {
             pos += snprintf(buf + pos, buf_size - pos, ",\"random_mac\":true");
         }
@@ -839,6 +1053,11 @@ int get_device_extended_json(const uint8_t addr[6], char* buf, size_t buf_size) 
     if (d.device_class != BleDeviceClass::UNKNOWN && pos < (int)buf_size - 40) {
         pos += snprintf(buf + pos, buf_size - pos,
             ",\"class\":\"%s\"", device_class_string(d.device_class));
+    }
+
+    if (d.manufacturer[0] && pos < (int)buf_size - 40) {
+        pos += snprintf(buf + pos, buf_size - pos,
+            ",\"manufacturer\":\"%s\"", d.manufacturer);
     }
 
     // Raw advertisement payload as base64
