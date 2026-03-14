@@ -1,6 +1,8 @@
 #include "hal_power.h"
 #include "debug_log.h"
 
+#include <cstdio>
+
 #if __has_include("hal_diag.h")
 #include "hal_diag.h"
 #define HAS_HAL_DIAG 1
@@ -26,6 +28,9 @@ PowerInfo PowerHAL::getInfo() {
     info.is_usb_powered = true;
     info.has_battery = true;
     info.source = PowerSource::USB;
+    info.charge_state = ChargeState::NOT_CHARGING;
+    info.charge_current_ma = 0.0f;
+    info.pmic_temp_c = -999.0f;
     return info;
 }
 
@@ -33,6 +38,7 @@ float PowerHAL::getBatteryVoltage() { return 3.85f; }
 int PowerHAL::getBatteryLevel() { return 72; }
 bool PowerHAL::isCharging() { return false; }
 bool PowerHAL::setChargeCurrent(uint16_t mA) { return false; }
+ChargeState PowerHAL::getChargeState() { return ChargeState::NOT_CHARGING; }
 void PowerHAL::poll() {}
 
 #else // ESP32
@@ -168,6 +174,9 @@ PowerInfo PowerHAL::getInfo() {
     PowerInfo info = {};
     info.source = PowerSource::UNKNOWN;
     info.percentage = -1;
+    info.charge_state = ChargeState::UNKNOWN;
+    info.charge_current_ma = 0.0f;
+    info.pmic_temp_c = -999.0f;
 
     if (_has_pmic) {
         info.voltage = axp_getBatteryVoltage();
@@ -176,6 +185,9 @@ PowerInfo PowerHAL::getInfo() {
         info.is_usb_powered = true;
         info.source = info.has_battery ? PowerSource::BATTERY : PowerSource::USB;
         if (info.has_battery) info.percentage = getBatteryLevel();
+        info.charge_current_ma = axp_getChargeCurrent();
+        info.pmic_temp_c = axp_getPMICTemp();
+        info.charge_state = getChargeState();
     } else if (_has_adc) {
         info.voltage = adc_getBatteryVoltage();
         info.has_battery = (info.voltage > 2.5f);
@@ -183,16 +195,46 @@ PowerInfo PowerHAL::getInfo() {
         if (info.has_battery) info.percentage = getBatteryLevel();
 #if defined(BAT_STAT_PIN) && BAT_STAT_PIN >= 0
         info.is_charging = (::digitalRead(BAT_STAT_PIN) == LOW);
+        info.charge_state = info.is_charging ? ChargeState::CONSTANT_CURRENT : ChargeState::NOT_CHARGING;
+#else
+        info.charge_state = ChargeState::NOT_CHARGING;
 #endif
     } else {
         info.is_usb_powered = true;
         info.source = PowerSource::USB;
+        info.charge_state = ChargeState::NOT_CHARGING;
 #if defined(BAT_STAT_PIN) && BAT_STAT_PIN >= 0
         info.is_charging = (::digitalRead(BAT_STAT_PIN) == LOW);
         info.has_battery = true;
+        info.charge_state = info.is_charging ? ChargeState::CONSTANT_CURRENT : ChargeState::NOT_CHARGING;
 #endif
     }
     return info;
+}
+
+ChargeState PowerHAL::getChargeState() {
+    if (!_has_pmic) {
+#if defined(BAT_STAT_PIN) && BAT_STAT_PIN >= 0
+        return (::digitalRead(BAT_STAT_PIN) == LOW) ? ChargeState::CONSTANT_CURRENT : ChargeState::NOT_CHARGING;
+#else
+        return ChargeState::NOT_CHARGING;
+#endif
+    }
+    // AXP2101 STATUS2 register bits [6:5] = charge status
+    // 00 = not charging, 01 = pre-charge, 10 = CC, 11 = CV
+    // Bit 3 = charge done
+    uint8_t status2 = readReg(AXP2101_STATUS2);
+    uint8_t charge_bits = (status2 >> 5) & 0x03;
+    bool charge_done = (status2 >> 3) & 0x01;
+
+    if (charge_done) return ChargeState::CHARGE_DONE;
+    switch (charge_bits) {
+        case 0x00: return ChargeState::NOT_CHARGING;
+        case 0x01: return ChargeState::PRE_CHARGE;
+        case 0x02: return ChargeState::CONSTANT_CURRENT;
+        case 0x03: return ChargeState::CONSTANT_VOLTAGE;
+        default:   return ChargeState::UNKNOWN;
+    }
 }
 
 float PowerHAL::getBatteryVoltage() {
@@ -234,6 +276,9 @@ bool PowerHAL::setChargeCurrent(uint16_t mA) {
 void PowerHAL::poll() {
     PowerInfo info = getInfo();
     int level = info.percentage;
+
+    // Record battery history for trend analysis
+    _recordHistory(info);
 
     // Low-battery callback (existing behavior)
     if (_low_cb && level >= 0) {
@@ -417,3 +462,70 @@ float PowerHAL::adc_getBatteryVoltage() {
 }
 
 #endif // SIMULATOR
+
+// ---------------------------------------------------------------------------
+// Platform-independent: battery history ring buffer
+// ---------------------------------------------------------------------------
+
+void PowerHAL::_recordHistory(const PowerInfo& info) {
+    if (info.percentage < 0) return;  // No valid battery data
+#ifdef ARDUINO
+    uint32_t now = millis();
+    if (_history_count > 0 && (now - _last_history_ms) < HISTORY_INTERVAL_MS) return;
+    _last_history_ms = now;
+#else
+    uint32_t now = 0;
+#endif
+
+    BatteryReading& r = _history[_history_head];
+    r.voltage = info.voltage;
+    r.percentage = info.percentage;
+    r.is_charging = info.is_charging;
+    r.timestamp_ms = now;
+
+    _history_head = (_history_head + 1) % BATTERY_HISTORY_SIZE;
+    if (_history_count < BATTERY_HISTORY_SIZE) _history_count++;
+}
+
+int PowerHAL::getBatteryHistory(BatteryReading* out, int max_count) const {
+    if (!out || max_count <= 0) return 0;
+    int count = (_history_count < max_count) ? _history_count : max_count;
+
+    // Read oldest-first from ring buffer
+    int start = (_history_count < BATTERY_HISTORY_SIZE)
+        ? 0
+        : _history_head;
+
+    for (int i = 0; i < count; i++) {
+        int idx = (start + (_history_count - count) + i) % BATTERY_HISTORY_SIZE;
+        out[i] = _history[idx];
+    }
+    return count;
+}
+
+int PowerHAL::getBatteryHistoryCount() const {
+    return _history_count;
+}
+
+int PowerHAL::getBatteryHistoryJson(char* buf, size_t size) const {
+    if (!buf || size < 3) return 0;
+    int pos = snprintf(buf, size, "[");
+
+    // Output oldest-first
+    int start = (_history_count < BATTERY_HISTORY_SIZE)
+        ? 0
+        : _history_head;
+
+    for (int i = 0; i < _history_count && pos < (int)size - 64; i++) {
+        int idx = (start + i) % BATTERY_HISTORY_SIZE;
+        const BatteryReading& r = _history[idx];
+        if (i > 0) buf[pos++] = ',';
+        pos += snprintf(buf + pos, size - pos,
+            "{\"v\":%.2f,\"p\":%d,\"c\":%s,\"t\":%lu}",
+            r.voltage, r.percentage,
+            r.is_charging ? "true" : "false",
+            (unsigned long)r.timestamp_ms);
+    }
+    pos += snprintf(buf + pos, size - pos, "]");
+    return pos;
+}
