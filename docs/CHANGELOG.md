@@ -14,6 +14,25 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 31: WiFi Probe Request Capture
+
+### WiFi Probe HAL (`lib/hal_wifi_probe/`)
+- New HAL for passive WiFi probe request capture (Build Verified)
+  - Uses ESP32 promiscuous mode to capture management frames
+  - Extracts source MAC and probed SSIDs from probe requests
+  - Detects MAC randomization (locally administered bit)
+  - Tracks RSSI min/max range per device
+  - Up to 8 probed SSIDs tracked per device
+  - 10-minute device timeout, 64 device capacity
+  - Optional channel hopping (1-13) for broader coverage
+- `wifi_probe_service.h` — ServiceInterface adapter (Build Verified)
+  - Priority 55 (after WiFi + MQTT)
+  - Periodic MQTT publishing of wifi_probe sightings
+  - Serial commands: `WIFI_PROBE_STATUS`, `WIFI_PROBE_LIST`
+  - JSON API for web dashboard summary
+
+---
+
 ## 2026-03-14 — Wave 26: BLE RSSI History
 
 ### BLE Scanner
