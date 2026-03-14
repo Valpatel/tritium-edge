@@ -72,6 +72,8 @@ struct ScanConfig {
     uint32_t scan_duration_s = 5;     // Duration per scan cycle
     uint32_t pause_between_ms = 5000; // Pause between scans
     bool active_scan = false;         // false=passive (less intrusive)
+    uint32_t cache_ttl_ms = 30000;    // How long cached results stay valid (30s default)
+    uint8_t batch_size = 10;          // Devices per batch in batch JSON output
 };
 
 // Initialize BLE scanner. Starts background scanning task.
@@ -105,6 +107,22 @@ int get_summary_json(char* buf, size_t buf_size);
 // Format: [{"mac":"AA:BB:CC:DD:EE:FF","rssi":-50,"name":"...","known":true},...]
 // Returns bytes written to buf.
 int get_devices_json(char* buf, size_t buf_size);
+
+// Get JSON array of devices in batches for MQTT publishing.
+// Returns up to batch_size devices per call. Call repeatedly with offset.
+// offset: start index into visible device list. Returns 0 when no more.
+int get_devices_json_batch(char* buf, size_t buf_size, int offset, int batch_size = 0);
+
+// Get count of batches needed to send all visible devices.
+// Uses configured batch_size or override.
+int get_batch_count(int batch_size = 0);
+
+// Check if cached scan results are still valid (within cache_ttl_ms).
+// Returns true if results are fresh, false if stale.
+bool is_cache_valid();
+
+// Get milliseconds since last scan completed.
+uint32_t cache_age_ms();
 
 // Is scanner running?
 bool is_active();

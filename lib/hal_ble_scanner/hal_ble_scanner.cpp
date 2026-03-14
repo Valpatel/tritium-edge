@@ -16,6 +16,10 @@ int get_known_visible_count() { return 0; }
 bool is_device_visible(const uint8_t[6]) { return false; }
 int get_summary_json(char* buf, size_t buf_size) { return snprintf(buf, buf_size, "{}"); }
 int get_devices_json(char* buf, size_t buf_size) { return snprintf(buf, buf_size, "[]"); }
+int get_devices_json_batch(char* buf, size_t buf_size, int, int) { return snprintf(buf, buf_size, "[]"); }
+int get_batch_count(int) { return 0; }
+bool is_cache_valid() { return false; }
+uint32_t cache_age_ms() { return 0; }
 bool is_active() { return false; }
 }
 
@@ -46,6 +50,7 @@ static int _known_count = 0;
 static bool _running = false;
 static ScanConfig _config;
 static TaskHandle_t _scan_task = nullptr;
+static uint32_t _last_scan_complete_ms = 0;  // millis() when last scan cycle finished
 
 // --- Helpers ---
 
@@ -301,9 +306,10 @@ static void scan_task(void* param) {
         Serial.printf("[ble_scan] Scanning for %lus...\n", (unsigned long)_config.scan_duration_s);
         scan->start(_config.scan_duration_s, false);
 
-        // Prune stale devices
+        // Prune stale devices and mark cache as fresh
         if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             prune_stale();
+            _last_scan_complete_ms = millis();
             xSemaphoreGive(_mutex);
         }
 
@@ -464,6 +470,84 @@ int get_devices_json(char* buf, size_t buf_size) {
     pos += snprintf(buf + pos, buf_size - pos, "]");
     xSemaphoreGive(_mutex);
     return pos;
+}
+
+int get_devices_json_batch(char* buf, size_t buf_size, int offset, int batch_size) {
+    if (!_mutex) return snprintf(buf, buf_size, "[]");
+    int bs = (batch_size > 0) ? batch_size : _config.batch_size;
+    if (bs <= 0) bs = 10;
+
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+
+    uint32_t now = millis();
+    int pos = 0;
+    pos += snprintf(buf + pos, buf_size - pos, "[");
+
+    bool first = true;
+    int visible_idx = 0;
+    int written = 0;
+
+    for (int i = 0; i < _device_count && pos < (int)buf_size - 120; i++) {
+        if ((now - _devices[i].last_seen) >= BLE_DEVICE_TIMEOUT_MS) continue;
+
+        // Skip devices before offset
+        if (visible_idx < offset) {
+            visible_idx++;
+            continue;
+        }
+
+        // Stop after batch_size devices
+        if (written >= bs) break;
+
+        if (!first) pos += snprintf(buf + pos, buf_size - pos, ",");
+        first = false;
+        pos += snprintf(buf + pos, buf_size - pos,
+            "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"rssi\":%d,\"seen\":%u",
+            _devices[i].addr[0], _devices[i].addr[1], _devices[i].addr[2],
+            _devices[i].addr[3], _devices[i].addr[4], _devices[i].addr[5],
+            _devices[i].rssi, (unsigned)_devices[i].seen_count);
+        if (_devices[i].name[0] && pos < (int)buf_size - 60) {
+            pos += snprintf(buf + pos, buf_size - pos,
+                ",\"name\":\"%s\"", _devices[i].name);
+        }
+        if (_devices[i].device_type[0] && pos < (int)buf_size - 40) {
+            pos += snprintf(buf + pos, buf_size - pos,
+                ",\"device_type\":\"%s\"", _devices[i].device_type);
+        }
+        if (_devices[i].device_class != BleDeviceClass::UNKNOWN && pos < (int)buf_size - 40) {
+            pos += snprintf(buf + pos, buf_size - pos,
+                ",\"class\":\"%s\"", device_class_string(_devices[i].device_class));
+        }
+        if (_devices[i].is_known && pos < (int)buf_size - 20) {
+            pos += snprintf(buf + pos, buf_size - pos, ",\"known\":true");
+        }
+        pos += snprintf(buf + pos, buf_size - pos, "}");
+
+        visible_idx++;
+        written++;
+    }
+
+    pos += snprintf(buf + pos, buf_size - pos, "]");
+    xSemaphoreGive(_mutex);
+    return pos;
+}
+
+int get_batch_count(int batch_size) {
+    int bs = (batch_size > 0) ? batch_size : _config.batch_size;
+    if (bs <= 0) bs = 10;
+    int visible = get_visible_count();
+    return (visible + bs - 1) / bs;  // ceiling division
+}
+
+bool is_cache_valid() {
+    if (!_running || _last_scan_complete_ms == 0) return false;
+    uint32_t age = millis() - _last_scan_complete_ms;
+    return age < _config.cache_ttl_ms;
+}
+
+uint32_t cache_age_ms() {
+    if (_last_scan_complete_ms == 0) return 0;
+    return millis() - _last_scan_complete_ms;
 }
 
 bool is_active() {
