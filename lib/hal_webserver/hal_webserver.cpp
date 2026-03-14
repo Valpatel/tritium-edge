@@ -86,6 +86,14 @@ WebServerHAL::TestResult WebServerHAL::runTest() {
 #define HAS_SHELL 0
 #endif
 
+#if defined(ENABLE_ESPNOW) && __has_include("hal_rf_monitor.h")
+#include "hal_rf_monitor.h"
+#endif
+
+#if __has_include("hal_config_sync.h")
+#include "hal_config_sync.h"
+#endif
+
 // Shared API response buffer — allocated in PSRAM on first use.
 // Safe because WebServer is single-threaded (one request at a time).
 static const size_t API_BUF_SIZE = 8192;
@@ -309,10 +317,35 @@ static const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
 <tr><td class="label">Devices</td><td id="ble_count">%BLE_COUNT%</td></tr>
 </table>
 </div>
+<div class="card" id="rf_card" style="display:none">
+<h2>RF Motion Monitor</h2>
+<table>
+<tr><td class="label">Status</td><td id="rf_status">--</td></tr>
+<tr><td class="label">Motion</td><td id="rf_motion">--</td></tr>
+<tr><td class="label">Variance</td><td id="rf_variance">--</td></tr>
+<tr><td class="label">Peers</td><td id="rf_peers">--</td></tr>
+</table>
+</div>
+<div class="card" id="ota_card" style="display:none">
+<h2>OTA Status</h2>
+<table>
+<tr><td class="label">State</td><td id="ota_state">--</td></tr>
+<tr><td class="label">Progress</td><td><div class="bar-bg" style="width:200px"><div class="bar-fill" id="ota_bar" style="width:0%"></div></div></td></tr>
+<tr><td class="label">Version</td><td id="ota_version">--</td></tr>
+</table>
+</div>
+<div class="card" id="cfg_card" style="display:none">
+<h2>Config Sync</h2>
+<table>
+<tr><td class="label">Synced</td><td id="cfg_synced">--</td></tr>
+<tr><td class="label">Version</td><td id="cfg_version">--</td></tr>
+<tr><td class="label">Heartbeat</td><td id="cfg_hb">--</td></tr>
+</table>
+</div>
 <script>
 function fmt(n){return n>1048576?(n/1048576).toFixed(1)+'M':n>1024?(n/1024).toFixed(0)+'K':n}
 function uptimeFmt(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d+'d '+h+'h '+m+'m'}
-setInterval(function(){
+function pollDash(){
   fetch('/api/status').then(r=>r.json()).then(d=>{
     document.getElementById('v_uptime').textContent=uptimeFmt(d.uptime_s);
     document.getElementById('v_heap').textContent=fmt(d.free_heap);
@@ -331,6 +364,28 @@ setInterval(function(){
     }
     var pct=Math.min(100,Math.max(0,2*(d.rssi+100)));
     document.getElementById('v_rssi_bar').style.width=pct+'%';
+    if(d.rf_monitor){
+      document.getElementById('rf_card').style.display='block';
+      document.getElementById('rf_status').textContent=d.rf_monitor.active?'Active':'Inactive';
+      document.getElementById('rf_motion').textContent=d.rf_monitor.motion?'DETECTED':'Clear';
+      document.getElementById('rf_motion').style.color=d.rf_monitor.motion?'#ff2a6d':'#05ffa1';
+      document.getElementById('rf_variance').textContent=(d.rf_monitor.variance||0).toFixed(1)+' dBm';
+      document.getElementById('rf_peers').textContent=d.rf_monitor.peers||0;
+    }
+    if(d.ota){
+      document.getElementById('ota_card').style.display='block';
+      var states=['IDLE','CHECKING','DOWNLOADING','WRITING','VERIFYING','READY','FAILED'];
+      document.getElementById('ota_state').textContent=states[d.ota.state]||'IDLE';
+      document.getElementById('ota_bar').style.width=(d.ota.progress||0)+'%';
+      document.getElementById('ota_version').textContent=d.ota.version||'--';
+    }
+    if(d.config_sync){
+      document.getElementById('cfg_card').style.display='block';
+      document.getElementById('cfg_synced').textContent=d.config_sync.synced?'Yes':'No';
+      document.getElementById('cfg_synced').style.color=d.config_sync.synced?'#05ffa1':'#fcee0a';
+      document.getElementById('cfg_version').textContent='v'+d.config_sync.version;
+      document.getElementById('cfg_hb').textContent=(d.config_sync.heartbeat_interval_s||'--')+'s';
+    }
   });
   fetch('/api/ble').then(r=>r.json()).then(d=>{
     if(d.active!==undefined){
@@ -338,7 +393,8 @@ setInterval(function(){
       document.getElementById('ble_count').textContent=d.total+' total, '+d.known+' known';
     }
   }).catch(()=>{});
-},3000);
+}
+pollDash();setInterval(pollDash,3000);
 </script>
 </body></html>
 )rawliteral";
@@ -1333,12 +1389,12 @@ void WebServerHAL::addApiEndpoints() {
         }
         uint32_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         uint32_t min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        snprintf(buf, API_BUF_SIZE,
+        int pos = snprintf(buf, API_BUF_SIZE,
             "{\"uptime_s\":%lu,\"free_heap\":%lu,\"min_free_heap\":%lu,"
             "\"largest_block\":%lu,\"psram_free\":%lu,"
             "\"rssi\":%d,\"ip\":\"%s\",\"requests\":%lu,"
             "\"ssid\":\"%s\",\"temp_c\":%s,"
-            "\"fw_version\":\"%s\",\"cpu_freq\":%lu,\"tasks\":%u}",
+            "\"fw_version\":\"%s\",\"cpu_freq\":%lu,\"tasks\":%u",
             (unsigned long)(millis() / 1000),
             (unsigned long)ESP.getFreeHeap(),
             (unsigned long)min_free,
@@ -1352,6 +1408,36 @@ void WebServerHAL::addApiEndpoints() {
             fwVer,
             (unsigned long)ESP.getCpuFreqMHz(),
             (unsigned)uxTaskGetNumberOfTasks());
+        // Append RF motion monitor status
+#if defined(ENABLE_ESPNOW) && __has_include("hal_rf_monitor.h")
+        if (hal_rf_monitor::is_active()) {
+            char rf_json[64];
+            hal_rf_monitor::get_summary_json(rf_json, sizeof(rf_json));
+            pos += snprintf(buf + pos, API_BUF_SIZE - pos, ",\"rf_monitor\":%s", rf_json);
+        }
+#endif
+        // Append OTA status
+#if OTA_MANAGER_AVAILABLE
+        {
+            const auto& ost = ota_manager::getStatus();
+            pos += snprintf(buf + pos, API_BUF_SIZE - pos,
+                ",\"ota\":{\"state\":%u,\"progress\":%u,\"version\":\"%s\"}",
+                (unsigned)ost.state, (unsigned)ost.progress_pct, ost.current_version);
+        }
+#endif
+        // Append config sync status
+#if __has_include("hal_config_sync.h")
+        {
+            char cfg_json[256];
+            hal_config_sync::get_config_json(cfg_json, sizeof(cfg_json));
+            pos += snprintf(buf + pos, API_BUF_SIZE - pos, ",\"config_sync\":%s", cfg_json);
+        }
+#endif
+        // Close JSON
+        if (pos < (int)API_BUF_SIZE - 1) {
+            buf[pos++] = '}';
+            buf[pos] = '\0';
+        }
         _server->send(200, "application/json", buf);
     });
 
