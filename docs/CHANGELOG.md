@@ -14,6 +14,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 35: BLE Raw Advertisement Capture
+
+### hal_ble_scanner Raw Advertisement Payload (Build Verified)
+- Added `raw_adv[62]` and `raw_adv_len` fields to `BleDevice` struct
+- Captures full BLE advertisement payload on first detection via `getPayload()`
+- Raw data included as base64 in `get_devices_json()` output (`raw_adv` field)
+- New `get_device_extended_json()` API for per-device detailed JSON with raw adv
+- New `BLE_EXT AA:BB:CC:DD:EE:FF` serial command for extended device info
+- Embedded base64 encoder (`_base64_enc`) for compact binary-to-text conversion
+- Simulator stubs updated for new API
+- Enables SC-side deep parsing of manufacturer-specific data without firmware updates
+
+---
+
 ## 2026-03-14 — Wave 33: WiFi Probe MQTT Integration
 
 ### mqtt_sc_bridge WiFi Probe Integration (Build Verified)

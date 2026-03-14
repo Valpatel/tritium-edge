@@ -61,6 +61,9 @@ static constexpr int MAC_ROTATION_MAX_GROUPS = 16;
 static constexpr uint32_t MAC_ROTATION_WINDOW_MS = 5000;  // 5 seconds
 static constexpr int8_t MAC_ROTATION_RSSI_TOLERANCE = 10; // dBm
 
+// Maximum raw advertisement payload size (BLE spec max = 31 bytes, extended = 255)
+static constexpr int BLE_RAW_ADV_MAX_LEN = 62;
+
 struct BleDevice {
     uint8_t addr[6];        // MAC address
     int8_t rssi;            // Last RSSI
@@ -75,6 +78,10 @@ struct BleDevice {
     char device_type[16];           // Human-readable device type string
     bool is_random_mac;             // true if locally administered bit is set
     int8_t rotation_group;          // -1 = ungrouped, >= 0 = correlation group ID
+
+    // Raw advertisement payload for SC-side deep parsing
+    uint8_t raw_adv[BLE_RAW_ADV_MAX_LEN];
+    uint8_t raw_adv_len;            // Bytes used in raw_adv (0 = not captured)
 
     // RSSI history — circular buffer of last N readings for trend analysis
     RssiReading rssi_history[BLE_RSSI_HISTORY_SIZE];
@@ -167,6 +174,10 @@ inline bool is_locally_administered(const uint8_t addr[6]) {
 
 // Get the count of MAC rotation correlation groups detected.
 int get_rotation_group_count();
+
+// Get extended JSON for a device including raw advertisement payload (base64).
+// Returns bytes written to buf, or 0 if device not found.
+int get_device_extended_json(const uint8_t addr[6], char* buf, size_t buf_size);
 
 // Is scanner running?
 bool is_active();

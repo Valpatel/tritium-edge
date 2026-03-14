@@ -23,6 +23,7 @@ uint32_t cache_age_ms() { return 0; }
 int get_rssi_history_json(const uint8_t[6], char* buf, size_t buf_size) { return 0; }
 int get_rssi_history_json_by_mac(const char*, char* buf, size_t buf_size) { return 0; }
 int get_rotation_group_count() { return 0; }
+int get_device_extended_json(const uint8_t[6], char* buf, size_t buf_size) { return 0; }
 bool is_active() { return false; }
 }
 
@@ -267,6 +268,28 @@ static const char* device_class_string(BleDeviceClass c) {
     }
 }
 
+// --- Base64 encoder for raw advertisement payload ---
+// Moved early so get_devices_json can use it.
+
+static const char _b64_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static int _base64_enc(const uint8_t* data, int len, char* out, int out_size) {
+    int pos = 0;
+    for (int i = 0; i < len && pos < out_size - 4; i += 3) {
+        uint32_t val = ((uint32_t)data[i]) << 16;
+        if (i + 1 < len) val |= ((uint32_t)data[i + 1]) << 8;
+        if (i + 2 < len) val |= (uint32_t)data[i + 2];
+
+        out[pos++] = _b64_table[(val >> 18) & 0x3F];
+        out[pos++] = _b64_table[(val >> 12) & 0x3F];
+        out[pos++] = (i + 1 < len) ? _b64_table[(val >> 6) & 0x3F] : '=';
+        out[pos++] = (i + 2 < len) ? _b64_table[val & 0x3F] : '=';
+    }
+    out[pos] = '\0';
+    return pos;
+}
+
 // Parse Apple manufacturer-specific data from BLE advertisement.
 // Apple company ID = 0x004C (little-endian in BLE: 0x4C, 0x00).
 // Continuity message format: [type_byte] [length] [payload...]
@@ -392,7 +415,20 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             d.rssi_history_count = 0;
             d.rssi_min = d.rssi;
             d.rssi_max = d.rssi;
+            d.raw_adv_len = 0;
+            memset(d.raw_adv, 0, sizeof(d.raw_adv));
             record_rssi(d, d.rssi);
+
+            // Capture raw advertisement payload for SC-side deep parsing
+            {
+                const uint8_t* payload = dev->getPayload();
+                uint8_t plen = dev->getPayloadLength();
+                if (payload && plen > 0) {
+                    uint8_t copy_len = plen < BLE_RAW_ADV_MAX_LEN ? plen : BLE_RAW_ADV_MAX_LEN;
+                    memcpy(d.raw_adv, payload, copy_len);
+                    d.raw_adv_len = copy_len;
+                }
+            }
 
             if (dev->haveName()) {
                 strncpy(d.name, dev->getName().c_str(), sizeof(d.name) - 1);
@@ -611,6 +647,13 @@ int get_devices_json(char* buf, size_t buf_size) {
             pos += snprintf(buf + pos, buf_size - pos, ",\"rotation_group\":%d",
                 _devices[i].rotation_group);
         }
+        // Include raw advertisement payload as base64 for SC-side deep parsing
+        if (_devices[i].raw_adv_len > 0 && pos < (int)buf_size - 200) {
+            char b64_buf[128];
+            _base64_enc(_devices[i].raw_adv, _devices[i].raw_adv_len, b64_buf, sizeof(b64_buf));
+            pos += snprintf(buf + pos, buf_size - pos,
+                ",\"raw_adv\":\"%s\"", b64_buf);
+        }
         pos += snprintf(buf + pos, buf_size - pos, "}");
     }
 
@@ -766,6 +809,59 @@ int get_rotation_group_count() {
     }
     xSemaphoreGive(_mutex);
     return group_count;
+}
+
+int get_device_extended_json(const uint8_t addr[6], char* buf, size_t buf_size) {
+    if (!_mutex) return 0;
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+
+    int idx = find_device(addr);
+    if (idx < 0) {
+        xSemaphoreGive(_mutex);
+        return 0;
+    }
+
+    const BleDevice& d = _devices[idx];
+    int pos = 0;
+
+    pos += snprintf(buf + pos, buf_size - pos,
+        "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"rssi\":%d,\"seen\":%u",
+        d.addr[0], d.addr[1], d.addr[2],
+        d.addr[3], d.addr[4], d.addr[5],
+        d.rssi, (unsigned)d.seen_count);
+
+    if (d.name[0] && pos < (int)buf_size - 60) {
+        pos += snprintf(buf + pos, buf_size - pos, ",\"name\":\"%s\"", d.name);
+    }
+    if (d.device_type[0] && pos < (int)buf_size - 40) {
+        pos += snprintf(buf + pos, buf_size - pos, ",\"device_type\":\"%s\"", d.device_type);
+    }
+    if (d.device_class != BleDeviceClass::UNKNOWN && pos < (int)buf_size - 40) {
+        pos += snprintf(buf + pos, buf_size - pos,
+            ",\"class\":\"%s\"", device_class_string(d.device_class));
+    }
+
+    // Raw advertisement payload as base64
+    if (d.raw_adv_len > 0 && pos < (int)buf_size - 200) {
+        char b64_buf[128];  // 62 bytes -> 84 base64 chars max
+        _base64_enc(d.raw_adv, d.raw_adv_len, b64_buf, sizeof(b64_buf));
+        pos += snprintf(buf + pos, buf_size - pos,
+            ",\"raw_adv\":\"%s\",\"raw_adv_len\":%d", b64_buf, d.raw_adv_len);
+    }
+
+    if (d.is_known) {
+        pos += snprintf(buf + pos, buf_size - pos, ",\"known\":true");
+    }
+    if (d.is_random_mac) {
+        pos += snprintf(buf + pos, buf_size - pos, ",\"random_mac\":true");
+    }
+    if (d.rotation_group >= 0) {
+        pos += snprintf(buf + pos, buf_size - pos, ",\"rotation_group\":%d", d.rotation_group);
+    }
+    pos += snprintf(buf + pos, buf_size - pos, "}");
+
+    xSemaphoreGive(_mutex);
+    return pos;
 }
 
 bool is_active() {

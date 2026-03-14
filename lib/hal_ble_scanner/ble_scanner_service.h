@@ -73,6 +73,28 @@ public:
             }
             return true;
         }
+        if (strcmp(cmd, "BLE_EXT") == 0) {
+            if (!args || args[0] == '\0') {
+                Serial.printf("[ble] Usage: BLE_EXT AA:BB:CC:DD:EE:FF\n");
+                return true;
+            }
+            unsigned int a[6];
+            if (sscanf(args, "%x:%x:%x:%x:%x:%x",
+                       &a[0], &a[1], &a[2], &a[3], &a[4], &a[5]) == 6) {
+                uint8_t addr[6] = {(uint8_t)a[0],(uint8_t)a[1],(uint8_t)a[2],
+                                    (uint8_t)a[3],(uint8_t)a[4],(uint8_t)a[5]};
+                char json_buf[512];
+                int len = hal_ble_scanner::get_device_extended_json(addr, json_buf, sizeof(json_buf));
+                if (len > 0) {
+                    Serial.printf("[ble] Extended: %s\n", json_buf);
+                } else {
+                    Serial.printf("[ble] Device not found\n");
+                }
+            } else {
+                Serial.printf("[ble] Usage: BLE_EXT AA:BB:CC:DD:EE:FF\n");
+            }
+            return true;
+        }
         if (strcmp(cmd, "BLE_LIST") == 0) {
             BleDevice devs[16];
             int n = hal_ble_scanner::get_devices(devs, 16);
