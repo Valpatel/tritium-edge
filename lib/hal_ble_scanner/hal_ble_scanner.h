@@ -111,6 +111,12 @@ struct ScanConfig {
     bool active_scan = false;         // false=passive (less intrusive)
     uint32_t cache_ttl_ms = 30000;    // How long cached results stay valid (30s default)
     uint8_t batch_size = 10;          // Devices per batch in batch JSON output
+
+    // Burst mode — works with hal_radio_scheduler for WiFi/BLE time-division.
+    // When enabled, scanner does a quick active scan burst then yields the radio.
+    bool burst_mode = false;              // Enable burst scan mode
+    uint32_t burst_scan_ms = 5000;        // Burst scan duration (default 5s)
+    uint32_t burst_interval_ms = 30000;   // Time between bursts (default 30s)
 };
 
 // Initialize BLE scanner. Starts background scanning task.
@@ -186,5 +192,25 @@ int get_device_extended_json(const uint8_t addr[6], char* buf, size_t buf_size);
 
 // Is scanner running?
 bool is_active();
+
+// --- Burst mode API (for radio scheduler integration) ---
+
+// Trigger an immediate burst scan. If burst_mode is enabled in config,
+// the scanner does a quick active scan for burst_scan_ms then stops,
+// leaving the radio free for WiFi. Call this from the radio scheduler
+// when a BLE time slot starts.
+//
+// Returns true if the burst was started, false if scanner is not initialized
+// or a burst is already in progress.
+bool start_burst();
+
+// Check if a burst scan is currently in progress.
+bool is_burst_active();
+
+// Get milliseconds remaining in the current burst, or 0 if no burst active.
+uint32_t burst_remaining_ms();
+
+// Get number of completed burst cycles since init.
+uint32_t get_burst_count();
 
 }  // namespace hal_ble_scanner

@@ -25,6 +25,10 @@ int get_rssi_history_json_by_mac(const char*, char* buf, size_t buf_size) { retu
 int get_rotation_group_count() { return 0; }
 int get_device_extended_json(const uint8_t[6], char* buf, size_t buf_size) { return 0; }
 bool is_active() { return false; }
+bool start_burst() { return false; }
+bool is_burst_active() { return false; }
+uint32_t burst_remaining_ms() { return 0; }
+uint32_t get_burst_count() { return 0; }
 }
 
 #else
@@ -1111,6 +1115,74 @@ int get_device_extended_json(const uint8_t addr[6], char* buf, size_t buf_size) 
 
 bool is_active() {
     return _running;
+}
+
+// --- Burst mode implementation ---
+
+static bool _burst_active = false;
+static uint32_t _burst_start_ms = 0;
+static uint32_t _burst_count = 0;
+
+bool start_burst() {
+    if (!_running) return false;
+    if (_burst_active) return false;
+    if (!_config.burst_mode) return false;
+
+    _burst_active = true;
+    _burst_start_ms = millis();
+    _burst_count++;
+
+    // Trigger an immediate active scan for burst_scan_ms
+    NimBLEScan* scan = NimBLEDevice::getScan();
+    scan->setActiveScan(true);  // Burst always uses active scan
+    scan->setInterval(100);
+    scan->setWindow(80);        // Wider window for burst
+
+    uint32_t burst_secs = (_config.burst_scan_ms + 999) / 1000;
+    if (burst_secs < 1) burst_secs = 1;
+
+    Serial.printf("[ble_scan] Burst scan #%lu for %lus\n",
+                  (unsigned long)_burst_count, (unsigned long)burst_secs);
+
+    // Start non-blocking scan
+    scan->start(burst_secs, false);
+
+    // Schedule burst end
+    // The scan task loop will detect burst completion via is_burst_active()
+    return true;
+}
+
+bool is_burst_active() {
+    if (!_burst_active) return false;
+
+    // Check if burst time has elapsed
+    uint32_t elapsed = millis() - _burst_start_ms;
+    if (elapsed >= _config.burst_scan_ms) {
+        _burst_active = false;
+        _last_scan_complete_ms = millis();
+
+        // Restore normal scan settings
+        NimBLEScan* scan = NimBLEDevice::getScan();
+        scan->stop();
+        scan->setActiveScan(_config.active_scan);
+        scan->setInterval(_config.scan_interval_ms);
+        scan->setWindow(_config.scan_window_ms);
+
+        Serial.printf("[ble_scan] Burst complete. Found %d devices\n", get_visible_count());
+        return false;
+    }
+    return true;
+}
+
+uint32_t burst_remaining_ms() {
+    if (!_burst_active) return 0;
+    uint32_t elapsed = millis() - _burst_start_ms;
+    if (elapsed >= _config.burst_scan_ms) return 0;
+    return _config.burst_scan_ms - elapsed;
+}
+
+uint32_t get_burst_count() {
+    return _burst_count;
 }
 
 }  // namespace hal_ble_scanner

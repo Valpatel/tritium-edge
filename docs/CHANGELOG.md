@@ -14,6 +14,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 59: BLE Scanner Burst Mode
+
+### BLE Burst Scan (Code Reviewed)
+- ScanConfig extended with burst_mode, burst_scan_ms (5s), burst_interval_ms (30s)
+- New API: start_burst(), is_burst_active(), burst_remaining_ms(), get_burst_count()
+- Burst does 5-second active scan then releases radio for WiFi
+- Integrates with radio scheduler via ENABLE_RADIO_SCHEDULER flag
+- BleScannerService auto-configures burst when radio scheduler enabled
+- Simulator stubs for all burst functions
+
+---
+
 ## 2026-03-14 — Wave 56: BLE Advertisement Fingerprint Hash
 
 ### BLE Fingerprint Hash (Build Verified — RAM 49.6%, Flash 29.2%)

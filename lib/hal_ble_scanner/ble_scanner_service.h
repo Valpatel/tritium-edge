@@ -24,6 +24,18 @@ public:
         ble_cfg.scan_duration_s = 5;
         ble_cfg.pause_between_ms = 10000;  // Scan every 10s
         ble_cfg.active_scan = false;       // Passive — less intrusive
+
+        // Enable burst mode for WiFi/BLE time-division coexistence.
+        // When radio scheduler is active, BLE does 5s burst scans every 30s
+        // instead of continuous scanning, leaving the radio free for WiFi.
+#if defined(ENABLE_RADIO_SCHEDULER)
+        ble_cfg.burst_mode = true;
+        ble_cfg.burst_scan_ms = 5000;      // 5 second burst
+        ble_cfg.burst_interval_ms = 30000; // Every 30 seconds
+        ble_cfg.active_scan = true;        // Active scan during burst for max results
+        Serial.printf("[tritium] BLE Scanner: burst mode (5s/30s)\n");
+#endif
+
         if (hal_ble_scanner::init(ble_cfg)) {
             Serial.printf("[tritium] BLE Scanner: active\n");
             _active = true;
