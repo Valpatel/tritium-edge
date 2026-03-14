@@ -14,6 +14,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 63: Meshtastic E2E Test Script
+
+### Meshtastic Test Script (Code Reviewed)
+- New `scripts/meshtastic-test.py` — end-to-end LoRa message test
+- Sends test message with unique ID from local radio (e.g., Heltec LoRa V3)
+- Optional remote verification via SSH to gb10-02 T-LoRa Pager
+- Configurable via env vars: LOCAL_PORT, REMOTE_HOST, REMOTE_PORT, TIMEOUT
+- Auto-detects available serial ports if configured port not found
+
+---
+
 ## 2026-03-14 — Wave 59: BLE Scanner Burst Mode
 
 ### BLE Burst Scan (Code Reviewed)
