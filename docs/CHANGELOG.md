@@ -14,6 +14,23 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 26: BLE RSSI History
+
+### BLE Scanner
+| Change | Verification |
+|--------|-------------|
+| RSSI history: circular buffer of 30 readings per BleDevice with timestamps | Build Verified |
+| Trend analysis: approaching/departing/stable based on 3dBm threshold | Build Verified |
+| New API: `get_rssi_history_json()` and `get_rssi_history_json_by_mac()` | Build Verified |
+| New serial command: `BLE_RSSI AA:BB:CC:DD:EE:FF` | Build Verified |
+
+### Fleet Server
+| Change | Verification |
+|--------|-------------|
+| `GET /api/ble/devices/{mac}/rssi_history` — RSSI history with min/max/avg/trend | Unit Tested |
+
+---
+
 ## 2026-03-14 — Wave 25: Maintenance & Quality
 
 ### Documentation
