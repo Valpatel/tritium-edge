@@ -14,6 +14,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 73: WiFi RSSI Fingerprint Collection HAL
+
+### hal_wifi_fingerprint (Code Reviewed)
+- New `lib/hal_wifi_fingerprint/` — WiFi RSSI fingerprint collection for indoor positioning
+- `hal_wifi_fingerprint.h`: Fingerprint struct (lat, lon, floor, room_id, BSSID/RSSI readings), collection API
+- `hal_wifi_fingerprint.cpp`: Multi-scan averaged RSSI recording, local storage, JSON output for MQTT
+- `wifi_fingerprint_service.h`: ServiceInterface wrapper with serial commands (FINGERPRINT_START/STOP/RECORD/LIST/PUBLISH/CLEAR)
+- Walk-through workflow: enable collection, record at known positions, auto-publish via MQTT
+- Desktop stub for simulation builds
+- Supports up to 100 stored fingerprints, 32 APs per point, 3-scan averaging
+- MQTT topic: `tritium/{device_id}/wifi_fingerprint`
+
+---
+
 ## 2026-03-14 — Wave 71: BLE Feature Extraction HAL
 
 ### hal_ble_features (Code Reviewed)
