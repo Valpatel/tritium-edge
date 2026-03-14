@@ -62,6 +62,13 @@ static bool _lora_enabled = true;
 static bool _lora_enabled = false;
 #endif
 
+#if defined(ENABLE_MQTT_SC_BRIDGE) && __has_include("mqtt_sc_bridge.h")
+#include "mqtt_sc_bridge.h"
+static bool _mqtt_bridge_enabled = true;
+#else
+static bool _mqtt_bridge_enabled = false;
+#endif
+
 #if defined(ENABLE_WEBSERVER) && __has_include("hal_webserver.h")
 #include "hal_webserver.h"
 #include <WiFi.h>
@@ -793,6 +800,23 @@ static void wifi_deferred_init() {
         }
 #endif
 
+#if defined(ENABLE_MQTT_SC_BRIDGE)
+        {
+            mqtt_sc_bridge::BridgeConfig mqtt_cfg;
+#if defined(DEFAULT_DEVICE_ID)
+            mqtt_cfg.device_id = DEFAULT_DEVICE_ID;
+#endif
+#if defined(DEFAULT_MQTT_BROKER)
+            mqtt_cfg.broker = DEFAULT_MQTT_BROKER;
+#endif
+            mqtt_cfg.heartbeat_interval_ms = 30000;
+            mqtt_cfg.sighting_interval_ms = 15000;
+            if (mqtt_sc_bridge::init(mqtt_cfg)) {
+                Serial.printf("[tritium] MQTT SC Bridge: active\n");
+            }
+        }
+#endif
+
 #if defined(ENABLE_COT)
         if (wifi.isConnected()) {
             hal_cot::CotConfig cot_cfg;
@@ -929,6 +953,9 @@ static void services_tick() {
 #endif
 #if defined(ENABLE_HEARTBEAT)
     hal_heartbeat::tick();
+#endif
+#if defined(ENABLE_MQTT_SC_BRIDGE)
+    mqtt_sc_bridge::tick();
 #endif
 #if defined(ENABLE_DIAG)
     hal_diag::tick();

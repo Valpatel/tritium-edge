@@ -16,6 +16,23 @@ void MqttAIBridge::onAudioResponse(const uint8_t*, size_t) {}
 void MqttAIBridge::onServerCommand(const char*, const uint8_t*, size_t) {}
 const char* MqttAIBridge::buildTopic(const char*, const char*) { return ""; }
 
+#elif !__has_include("hal_audio.h")
+
+// hal_audio not available — stub out the AI bridge
+bool MqttAIBridge::init(MqttHAL*, AudioHAL*, const char*) { return false; }
+void MqttAIBridge::setConfig(const AIBridgeConfig&) {}
+bool MqttAIBridge::startVoiceQuery() { return false; }
+void MqttAIBridge::stopVoiceQuery() {}
+bool MqttAIBridge::sendTextPrompt(const char*) { return false; }
+bool MqttAIBridge::sendSensorData(const char*, const char*) { return false; }
+AIResponse MqttAIBridge::getResponse() { return {}; }
+void MqttAIBridge::process() {}
+void MqttAIBridge::publishAudioChunk() {}
+void MqttAIBridge::onTextResponse(const uint8_t*, size_t) {}
+void MqttAIBridge::onAudioResponse(const uint8_t*, size_t) {}
+void MqttAIBridge::onServerCommand(const char*, const uint8_t*, size_t) {}
+const char* MqttAIBridge::buildTopic(const char*, const char*) { return ""; }
+
 #else
 
 #include <Arduino.h>
