@@ -14,6 +14,16 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 25: Maintenance & Quality
+
+### Documentation
+| Change | Verification |
+|--------|-------------|
+| READMEs added for hal_rf_monitor, hal_config_sync, hal_radio_scheduler, hal_sighting_buffer, hal_cot | Documented |
+| Verified Apple Continuity data (device_type, class) present in BLE sighting JSON | Code Verified |
+
+---
+
 ## 2026-03-14 — Wave 15: BLE Scanner Enhancements
 
 ### BLE Scanner Caching & Batch Publishing
