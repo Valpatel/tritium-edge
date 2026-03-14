@@ -14,6 +14,21 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 53: Ollama Integration Stub
+
+### HAL Ollama (Code Review Verified)
+- New `lib/hal_ollama/hal_ollama.h` + `.cpp` — HTTP client for local Ollama LLM queries
+- Configurable endpoint, model, timeout, temperature, max_tokens
+- `classify()` — send device classification prompts with fixed system prompt
+- `generate()` — flexible prompt + system_prompt interface
+- `test_connection()` — health check via `/api/tags` endpoint
+- Stats tracking: request count, success/failure count, average latency
+- Minimal JSON parsing (no ArduinoJson dependency)
+- Simulator stub returns false for all operations
+- Default model: `qwen2.5:0.5b` (smallest available for edge devices)
+
+---
+
 ## 2026-03-14 — Wave 51: Power Consumption Tracking
 
 ### Power Consumption Tracker (Code Review Verified)
