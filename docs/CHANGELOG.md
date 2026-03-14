@@ -14,6 +14,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 71: BLE Feature Extraction HAL
+
+### hal_ble_features (Code Reviewed)
+- New `lib/hal_ble_features/` — BLE feature vector extraction for edge-to-cloud ML pipeline
+- Extracts 14-feature compact vector from BleDevice: OUI hash, name stats, RSSI histogram (near/mid/far), service UUID presence bits, device class, random MAC flag, adv length
+- `hal_ble_features::extract()` — compute feature vector from BLE scan result
+- `hal_ble_features::to_json()` — serialize feature vector to JSON object
+- `hal_ble_features::to_json_array()` — serialize batch with MACs for MQTT publishing
+- Classification feedback cache: `cache_feedback()`, `get_cached_classification()` — stores SC-provided classifications for inclusion in future sightings
+- `ble_features_service.h` — ServiceInterface adapter (priority 55, after BLE scanner)
+- Serial commands: BLE_FEATURES (dump feature vectors), BLE_FEEDBACK_COUNT
+
+---
+
 ## 2026-03-14 — Wave 67: Fleet Deployment Script
 
 ### deploy-fleet.sh (Code Reviewed)
