@@ -12,6 +12,39 @@ static constexpr int BLE_SCANNER_MAX_DEVICES = 64;
 // How long before a device is considered "gone" (ms)
 static constexpr uint32_t BLE_DEVICE_TIMEOUT_MS = 120000;  // 2 minutes
 
+// Apple Continuity device types (from manufacturer-specific data, company 0x004C)
+enum class AppleDeviceType : uint8_t {
+    NONE        = 0x00,     // Not an Apple device / not parsed
+    IPHONE      = 0x02,     // iPhone
+    IPAD        = 0x06,     // iPad
+    WATCH       = 0x0E,     // Apple Watch
+    MACBOOK     = 0x03,     // MacBook
+    AIRPODS     = 0x0A,     // AirPods / AirPods Pro / AirPods Max
+    HOMEPOD     = 0x09,     // HomePod / HomePod mini
+    APPLE_TV    = 0x05,     // Apple TV
+    PENCIL      = 0x0F,     // Apple Pencil
+    AIRTAG      = 0x12,     // AirTag (Find My)
+    UNKNOWN_APPLE = 0xFF,   // Apple device but unknown subtype
+};
+
+// BLE device type classification (vendor-independent)
+enum class BleDeviceClass : uint8_t {
+    UNKNOWN = 0,
+    PHONE,
+    WATCH,
+    TABLET,
+    LAPTOP,
+    HEADPHONES,
+    SPEAKER,
+    TV_DONGLE,
+    TRACKER,        // AirTag, Tile, etc.
+    IOT_DEVICE,
+    BEACON,
+    MEDICAL,
+    FITNESS,
+    PERIPHERAL,     // keyboard, mouse, gamepad
+};
+
 struct BleDevice {
     uint8_t addr[6];        // MAC address
     int8_t rssi;            // Last RSSI
@@ -21,6 +54,9 @@ struct BleDevice {
     uint16_t seen_count;    // How many times seen this session
     char name[32];          // Local name (if advertised)
     bool is_known;          // Matches a known device list
+    AppleDeviceType apple_type;     // Apple Continuity device type (if detected)
+    BleDeviceClass device_class;    // Classified device type
+    char device_type[16];           // Human-readable device type string
 };
 
 struct BleDeviceMatch {

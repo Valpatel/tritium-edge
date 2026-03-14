@@ -82,6 +82,144 @@ static void prune_stale() {
     _device_count = write;
 }
 
+// --- Apple Continuity protocol parsing ---
+// Apple uses company ID 0x004C in manufacturer-specific BLE advertisement data.
+// The Continuity protocol encodes device type in the data payload.
+
+static const char* apple_type_string(AppleDeviceType t) {
+    switch (t) {
+        case AppleDeviceType::IPHONE:       return "iPhone";
+        case AppleDeviceType::IPAD:         return "iPad";
+        case AppleDeviceType::WATCH:        return "Watch";
+        case AppleDeviceType::MACBOOK:      return "MacBook";
+        case AppleDeviceType::AIRPODS:      return "AirPods";
+        case AppleDeviceType::HOMEPOD:      return "HomePod";
+        case AppleDeviceType::APPLE_TV:     return "AppleTV";
+        case AppleDeviceType::PENCIL:       return "Pencil";
+        case AppleDeviceType::AIRTAG:       return "AirTag";
+        case AppleDeviceType::UNKNOWN_APPLE: return "Apple";
+        default:                            return "";
+    }
+}
+
+static BleDeviceClass apple_type_to_class(AppleDeviceType t) {
+    switch (t) {
+        case AppleDeviceType::IPHONE:       return BleDeviceClass::PHONE;
+        case AppleDeviceType::IPAD:         return BleDeviceClass::TABLET;
+        case AppleDeviceType::WATCH:        return BleDeviceClass::WATCH;
+        case AppleDeviceType::MACBOOK:      return BleDeviceClass::LAPTOP;
+        case AppleDeviceType::AIRPODS:      return BleDeviceClass::HEADPHONES;
+        case AppleDeviceType::HOMEPOD:      return BleDeviceClass::SPEAKER;
+        case AppleDeviceType::APPLE_TV:     return BleDeviceClass::TV_DONGLE;
+        case AppleDeviceType::PENCIL:       return BleDeviceClass::PERIPHERAL;
+        case AppleDeviceType::AIRTAG:       return BleDeviceClass::TRACKER;
+        default:                            return BleDeviceClass::UNKNOWN;
+    }
+}
+
+static const char* device_class_string(BleDeviceClass c) {
+    switch (c) {
+        case BleDeviceClass::PHONE:         return "phone";
+        case BleDeviceClass::WATCH:         return "watch";
+        case BleDeviceClass::TABLET:        return "tablet";
+        case BleDeviceClass::LAPTOP:        return "laptop";
+        case BleDeviceClass::HEADPHONES:    return "headphones";
+        case BleDeviceClass::SPEAKER:       return "speaker";
+        case BleDeviceClass::TV_DONGLE:     return "tv_dongle";
+        case BleDeviceClass::TRACKER:       return "tracker";
+        case BleDeviceClass::IOT_DEVICE:    return "iot";
+        case BleDeviceClass::BEACON:        return "beacon";
+        case BleDeviceClass::MEDICAL:       return "medical";
+        case BleDeviceClass::FITNESS:       return "fitness";
+        case BleDeviceClass::PERIPHERAL:    return "peripheral";
+        default:                            return "unknown";
+    }
+}
+
+// Parse Apple manufacturer-specific data from BLE advertisement.
+// Apple company ID = 0x004C (little-endian in BLE: 0x4C, 0x00).
+// Continuity message format: [type_byte] [length] [payload...]
+// The type byte indicates the device/message type.
+static void parse_apple_continuity(const NimBLEAdvertisedDevice* dev, BleDevice& d) {
+    // getManufacturerData() returns the raw manufacturer data after the company ID
+    // In NimBLE v2, company ID 0x004C is Apple
+    std::string mfr = dev->getManufacturerData();
+    if (mfr.size() < 4) return;  // Need at least company ID (2) + type (1) + len (1)
+
+    // First two bytes are company ID (little-endian)
+    uint16_t company_id = (uint8_t)mfr[0] | ((uint8_t)mfr[1] << 8);
+    if (company_id != 0x004C) return;  // Not Apple
+
+    // Parse Continuity message types starting at byte 2
+    // Multiple TLV records can follow: [type][length][data...]
+    size_t offset = 2;
+    while (offset + 1 < mfr.size()) {
+        uint8_t msg_type = (uint8_t)mfr[offset];
+        uint8_t msg_len = (uint8_t)mfr[offset + 1];
+
+        // Map known Continuity message types to Apple device types
+        // 0x01 = Nearby Action (various devices)
+        // 0x02 = iBeacon
+        // 0x05 = AirDrop
+        // 0x07 = AirPods (Proximity Pairing)
+        // 0x09 = AirPlay target
+        // 0x0C = Handoff
+        // 0x0F = Nearby Info (contains device type in status byte)
+        // 0x10 = Nearby Action
+        // 0x12 = Find My (AirTag / Find My network)
+
+        switch (msg_type) {
+            case 0x07:  // Proximity Pairing — AirPods/Beats
+                d.apple_type = AppleDeviceType::AIRPODS;
+                break;
+            case 0x09:  // AirPlay target — Apple TV / HomePod
+                d.apple_type = AppleDeviceType::APPLE_TV;
+                break;
+            case 0x0F:  // Nearby Info — contains device type in upper nibble of status
+                if (msg_len >= 1 && offset + 2 < mfr.size()) {
+                    uint8_t status_byte = (uint8_t)mfr[offset + 2];
+                    uint8_t dev_type = (status_byte >> 4) & 0x0F;
+                    // Device type nibble mapping:
+                    // 1=iPhone, 2=iPad, 3=MacBook, 4=Watch, 5=AirPods, 6=AppleTV, 7=HomePod
+                    switch (dev_type) {
+                        case 1: d.apple_type = AppleDeviceType::IPHONE; break;
+                        case 2: d.apple_type = AppleDeviceType::IPAD; break;
+                        case 3: d.apple_type = AppleDeviceType::MACBOOK; break;
+                        case 4: d.apple_type = AppleDeviceType::WATCH; break;
+                        case 5: d.apple_type = AppleDeviceType::AIRPODS; break;
+                        case 6: d.apple_type = AppleDeviceType::APPLE_TV; break;
+                        case 7: d.apple_type = AppleDeviceType::HOMEPOD; break;
+                        default: d.apple_type = AppleDeviceType::UNKNOWN_APPLE; break;
+                    }
+                }
+                break;
+            case 0x12:  // Find My network — AirTag
+                d.apple_type = AppleDeviceType::AIRTAG;
+                break;
+            case 0x0C:  // Handoff — Mac/iPhone/iPad
+                if (d.apple_type == AppleDeviceType::NONE) {
+                    d.apple_type = AppleDeviceType::UNKNOWN_APPLE;
+                }
+                break;
+            default:
+                if (d.apple_type == AppleDeviceType::NONE) {
+                    d.apple_type = AppleDeviceType::UNKNOWN_APPLE;
+                }
+                break;
+        }
+
+        offset += 2 + msg_len;
+    }
+
+    // Set device class and type string from Apple type
+    if (d.apple_type != AppleDeviceType::NONE) {
+        d.device_class = apple_type_to_class(d.apple_type);
+        const char* type_str = apple_type_string(d.apple_type);
+        strncpy(d.device_type, type_str, sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+    }
+}
+
 // --- NimBLE scan callback ---
 
 class ScanCallbacks : public NimBLEScanCallbacks {
@@ -98,6 +236,11 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             _devices[idx].rssi = dev->getRSSI();
             _devices[idx].last_seen = now;
             _devices[idx].seen_count++;
+            // Update Apple classification if not yet classified
+            if (_devices[idx].apple_type == AppleDeviceType::NONE &&
+                dev->haveManufacturerData()) {
+                parse_apple_continuity(dev, _devices[idx]);
+            }
         } else if (_device_count < BLE_SCANNER_MAX_DEVICES) {
             BleDevice& d = _devices[_device_count];
             memcpy(d.addr, raw, 6);
@@ -107,10 +250,18 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             d.last_seen = now;
             d.seen_count = 1;
             d.name[0] = '\0';
+            d.apple_type = AppleDeviceType::NONE;
+            d.device_class = BleDeviceClass::UNKNOWN;
+            d.device_type[0] = '\0';
 
             if (dev->haveName()) {
                 strncpy(d.name, dev->getName().c_str(), sizeof(d.name) - 1);
                 d.name[sizeof(d.name) - 1] = '\0';
+            }
+
+            // Parse Apple Continuity protocol
+            if (dev->haveManufacturerData()) {
+                parse_apple_continuity(dev, d);
             }
 
             const char* label = nullptr;
@@ -126,6 +277,9 @@ class ScanCallbacks : public NimBLEScanCallbacks {
                     d.name, raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], d.rssi);
                 BLE_DIAG_LOG(hal_diag::Severity::INFO,
                     "Known BLE device arrived: %s RSSI=%d", d.name, d.rssi);
+            } else if (d.apple_type != AppleDeviceType::NONE) {
+                Serial.printf("[ble_scan] Apple %s (%02X:%02X:%02X:%02X:%02X:%02X) RSSI=%d\n",
+                    d.device_type, raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], d.rssi);
             }
         }
 
@@ -280,23 +434,31 @@ int get_devices_json(char* buf, size_t buf_size) {
     pos += snprintf(buf + pos, buf_size - pos, "[");
 
     bool first = true;
-    for (int i = 0; i < _device_count && pos < (int)buf_size - 80; i++) {
+    for (int i = 0; i < _device_count && pos < (int)buf_size - 120; i++) {
         if ((now - _devices[i].last_seen) >= BLE_DEVICE_TIMEOUT_MS) continue;
         if (!first) pos += snprintf(buf + pos, buf_size - pos, ",");
         first = false;
         pos += snprintf(buf + pos, buf_size - pos,
-            "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"rssi\":%d,\"seen\":%u%s%s%s}",
+            "{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"rssi\":%d,\"seen\":%u",
             _devices[i].addr[0], _devices[i].addr[1], _devices[i].addr[2],
             _devices[i].addr[3], _devices[i].addr[4], _devices[i].addr[5],
-            _devices[i].rssi, (unsigned)_devices[i].seen_count,
-            _devices[i].name[0] ? ",\"name\":\"" : "",
-            _devices[i].name[0] ? _devices[i].name : "",
-            _devices[i].name[0] ? "\"" : "");
-        if (_devices[i].is_known && pos < (int)buf_size - 20) {
-            // Overwrite last } and add known flag
-            pos--;  // back over }
-            pos += snprintf(buf + pos, buf_size - pos, ",\"known\":true}");
+            _devices[i].rssi, (unsigned)_devices[i].seen_count);
+        if (_devices[i].name[0] && pos < (int)buf_size - 60) {
+            pos += snprintf(buf + pos, buf_size - pos,
+                ",\"name\":\"%s\"", _devices[i].name);
         }
+        if (_devices[i].device_type[0] && pos < (int)buf_size - 40) {
+            pos += snprintf(buf + pos, buf_size - pos,
+                ",\"device_type\":\"%s\"", _devices[i].device_type);
+        }
+        if (_devices[i].device_class != BleDeviceClass::UNKNOWN && pos < (int)buf_size - 40) {
+            pos += snprintf(buf + pos, buf_size - pos,
+                ",\"class\":\"%s\"", device_class_string(_devices[i].device_class));
+        }
+        if (_devices[i].is_known && pos < (int)buf_size - 20) {
+            pos += snprintf(buf + pos, buf_size - pos, ",\"known\":true");
+        }
+        pos += snprintf(buf + pos, buf_size - pos, "}");
     }
 
     pos += snprintf(buf + pos, buf_size - pos, "]");
