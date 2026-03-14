@@ -405,4 +405,13 @@ void on_command(CommandCallback cb) {
 
 }  // namespace mqtt_sc_bridge
 
+// Accessor for camera_mqtt_publisher and other subsystems that need
+// direct MQTT publish access (e.g., binary frame data).
+// Note: _mqtt is file-static inside the namespace, so this accessor
+// is defined in the same translation unit where it has visibility.
+extern "C" MqttHAL* mqtt_sc_bridge_get_client() {
+    if (!mqtt_sc_bridge::_active) return nullptr;
+    return &mqtt_sc_bridge::_mqtt;
+}
+
 #endif  // SIMULATOR
