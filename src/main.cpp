@@ -69,6 +69,14 @@ static bool _mqtt_bridge_enabled = true;
 static bool _mqtt_bridge_enabled = false;
 #endif
 
+// MQTT OTA — remote firmware push from SC dashboard + auto-rollback
+#if defined(ENABLE_MQTT_SC_BRIDGE) && __has_include("ota_mqtt.h")
+#include "ota_mqtt.h"
+#define HAS_OTA_MQTT 1
+#else
+#define HAS_OTA_MQTT 0
+#endif
+
 #if defined(ENABLE_WEBSERVER) && __has_include("hal_webserver.h")
 #include "hal_webserver.h"
 #include <WiFi.h>
@@ -843,6 +851,16 @@ static void wifi_deferred_init() {
             mqtt_cfg.sighting_interval_ms = 15000;
             if (mqtt_sc_bridge::init(mqtt_cfg)) {
                 Serial.printf("[tritium] MQTT SC Bridge: active\n");
+#if HAS_OTA_MQTT
+                const char* ota_device_id = nullptr;
+#if defined(DEFAULT_DEVICE_ID)
+                ota_device_id = DEFAULT_DEVICE_ID;
+#endif
+                if (ota_device_id && ota_mqtt::init(ota_device_id)) {
+                    Serial.printf("[tritium] MQTT OTA: active (topic: tritium/%s/cmd/ota)\n",
+                                  ota_device_id);
+                }
+#endif
             }
         }
 #endif
@@ -987,6 +1005,9 @@ static void services_tick() {
 #if defined(ENABLE_MQTT_SC_BRIDGE)
     mqtt_sc_bridge::tick();
 #endif
+#if HAS_OTA_MQTT
+    ota_mqtt::tick();
+#endif
 #if defined(ENABLE_DIAG)
     hal_diag::tick();
 #endif
@@ -1015,6 +1036,11 @@ void setup() {
     delay(500);
 
     Serial.printf("[tritium] Tritium-Edge booting...\n");
+
+    // Auto-rollback: if firmware fails to boot 3 times, revert to previous
+#if HAS_OTA_MQTT
+    ota_mqtt::checkAutoRollback(3);
+#endif
 
     esp_err_t ret = display_init();
     if (ret != ESP_OK) {
