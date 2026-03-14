@@ -14,6 +14,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 67: Fleet Deployment Script
+
+### deploy-fleet.sh (Code Reviewed)
+- New `scripts/deploy-fleet.sh` — automated fleet flashing and registration
+- Auto-detects all connected ESP32 boards via USB (ttyUSB*, ttyACM*, cu.usb*)
+- Builds firmware once, flashes to all boards sequentially
+- Registers each device with SC fleet server via REST API
+- Flags: `--env`, `--wifi SSID PASS`, `--mqtt host:port`, `--sc-url`, `--dry-run`, `--list`, `--monitor`
+- Supports macOS and Linux serial port patterns
+
+---
+
 ## 2026-03-14 — Wave 64: Environment Sensor HAL
 
 ### hal_environment (Code Reviewed)
