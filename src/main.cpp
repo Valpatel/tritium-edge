@@ -1141,6 +1141,33 @@ void setup() {
 #endif
 
     Serial.printf("[tritium] Ready.\n");
+
+    // ---------------------------------------------------------------
+    // Boot diagnostics summary — one-glance system status
+    // ---------------------------------------------------------------
+    Serial.printf("\n");
+    Serial.printf("========================================\n");
+    Serial.printf("  TRITIUM-OS BOOT SUMMARY\n");
+    Serial.printf("========================================\n");
+    Serial.printf("  Board    : %s\n", DISPLAY_DRIVER);
+    Serial.printf("  Display  : %dx%d\n", w, h);
+    Serial.printf("  Firmware : v%s\n", TRITIUM_VERSION);
+    Serial.printf("  Heap free: %lu KB\n", (unsigned long)(ESP.getFreeHeap() / 1024));
+#ifdef BOARD_HAS_PSRAM
+    Serial.printf("  PSRAM    : %lu KB free\n", (unsigned long)(ESP.getFreePsram() / 1024));
+#endif
+    Serial.printf("  Flash    : %lu KB used / %lu KB total\n",
+                  (unsigned long)(ESP.getSketchSize() / 1024),
+                  (unsigned long)(ESP.getFlashChipSize() / 1024));
+    Serial.printf("  WiFi     : %s\n", _wifi_enabled ? "enabled (deferred)" : "disabled");
+    Serial.printf("  BLE      : %s\n", _ble_scanner_enabled ? "enabled" : "disabled");
+    Serial.printf("  MQTT     : %s\n", _mqtt_bridge_enabled ? "enabled (deferred)" : "disabled");
+    Serial.printf("  LoRa     : %s\n", _lora_enabled ? "enabled" : "disabled");
+    Serial.printf("  ESP-NOW  : %s\n", _espnow_enabled ? "enabled" : "disabled");
+    Serial.printf("  CoT/TAK  : %s\n", _cot_enabled ? "enabled" : "disabled");
+    Serial.printf("  Webserver: %s\n", _webserver_enabled ? "enabled" : "disabled");
+    Serial.printf("  Diag     : %s\n", _diag_enabled ? "enabled" : "disabled");
+    Serial.printf("========================================\n\n");
 }
 
 // Shell status bar — poll services every ~1s and push live data to LVGL
