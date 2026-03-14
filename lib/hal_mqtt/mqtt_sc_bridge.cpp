@@ -216,6 +216,18 @@ static bool _provision_inited = false;
 // ---------------------------------------------------------------------------
 // Command handler callback
 // ---------------------------------------------------------------------------
+// Check if this device belongs to the specified target group.
+// Returns true if the device should execute the command.
+static bool verify_group_membership(const char* target_group) {
+    if (!target_group || target_group[0] == '\0') return true;  // No group filter
+    if (strcmp(target_group, "__all__") == 0) return true;  // Broadcast to all
+
+    const char* my_group = hal_heartbeat::get_group();
+    if (!my_group || my_group[0] == '\0') return false;  // Not in any group
+
+    return strcmp(my_group, target_group) == 0;
+}
+
 static void mqtt_cmd_callback(const char* topic, const uint8_t* payload, size_t length) {
     if (length > 0) {
         // Null-terminate the payload for safe string handling
@@ -233,6 +245,31 @@ static void mqtt_cmd_callback(const char* topic, const uint8_t* payload, size_t 
         if (strcmp(cmd_part, "set_group") == 0) {
             hal_heartbeat::set_group(cmd_buf);
             DBG_INFO(TAG, "Group set via MQTT: '%s'", cmd_buf);
+        }
+
+        // For fleet group commands, verify membership before executing.
+        // The payload may contain a JSON "target_group" field — parse it
+        // with a lightweight string search (no full JSON parser needed).
+        const char* tg_key = "\"target_group\":\"";
+        const char* tg_start = strstr(cmd_buf, tg_key);
+        if (tg_start) {
+            tg_start += strlen(tg_key);
+            // Extract group name until closing quote
+            static char target_group[32];
+            int i = 0;
+            while (tg_start[i] != '\0' && tg_start[i] != '"' && i < 31) {
+                target_group[i] = tg_start[i];
+                i++;
+            }
+            target_group[i] = '\0';
+
+            if (!verify_group_membership(target_group)) {
+                DBG_DEBUG(TAG, "Ignoring group cmd for '%s' (my group: '%s')",
+                         target_group, hal_heartbeat::get_group());
+                return;  // Not for this device
+            }
+            DBG_INFO(TAG, "Group cmd accepted: target='%s', cmd='%s'",
+                     target_group, cmd_part);
         }
 
         // Forward to user callback

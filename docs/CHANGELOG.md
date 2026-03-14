@@ -14,6 +14,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 77: Fleet Group Command Verification
+
+### mqtt_sc_bridge group membership check (Code Reviewed)
+- Added `verify_group_membership()` to mqtt_sc_bridge.cpp
+- Group commands with `target_group` in payload are verified against device's NVS group
+- Devices ignore commands not targeting their group (or `__all__`)
+- Lightweight JSON field extraction (no full parser needed on ESP32)
+- Works with existing `hal_heartbeat::set_group()` / `get_group()` NVS persistence
+
+---
+
 ## 2026-03-14 — Wave 73: WiFi RSSI Fingerprint Collection HAL
 
 ### hal_wifi_fingerprint (Code Reviewed)
