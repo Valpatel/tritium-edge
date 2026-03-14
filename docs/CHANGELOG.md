@@ -14,6 +14,20 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 44: LED Status Indicator HAL
+
+### hal_led (Code Review Verified)
+- `hal_led.h/cpp` — Low-level LED driver for WS2812/NeoPixel via ESP32-S3 RMT peripheral
+- Status colors: GREEN (connected), BLUE (scanning), RED (error), YELLOW (OTA), PURPLE (motion), CYAN (MQTT), WHITE (boot)
+- `set_status()`, `set_rgb()`, `pulse()`, `off()`, `set_brightness()`
+- Simple GPIO LED fallback for boards without addressable LEDs
+- `led_service.h/cpp` — High-level integration with system status
+- Auto-detect via HAS_NEOPIXEL/BOARD_LED_PIN/LED_BUILTIN defines
+- Priority-based color selection with override/expiry support
+- `update(SystemStatus)` called from main loop
+
+---
+
 ## 2026-03-14 — Wave 39: Documentation Pass
 
 - CLAUDE.md updated with all 42 HALs in directory structure section
