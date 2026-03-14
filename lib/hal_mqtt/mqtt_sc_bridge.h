@@ -46,6 +46,11 @@ bool is_connected();
 // Check if bridge is initialized (may not be connected yet).
 bool is_active();
 
+// Publish a capabilities advertisement listing all compiled-in HALs.
+// Called automatically on first connect, but can be called manually
+// e.g. after radio scheduler changes modes.
+bool publish_capabilities();
+
 // Command callback — called when SC sends a command
 typedef void (*CommandCallback)(const char* command, const char* payload, size_t len);
 void on_command(CommandCallback cb);

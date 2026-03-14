@@ -18,6 +18,7 @@ bool init(const BridgeConfig&) { return false; }
 void tick() {}
 bool publish_heartbeat() { return false; }
 bool publish_sightings() { return false; }
+bool publish_capabilities() { return false; }
 bool is_connected() { return false; }
 bool is_active() { return false; }
 void on_command(CommandCallback) {}
@@ -85,6 +86,100 @@ void on_command(CommandCallback) {}
 #define HAS_CONFIG_SYNC 0
 #endif
 
+// Optional HAL detection for capability advertisement
+#if __has_include("hal_camera.h")
+#define HAS_CAMERA 1
+#else
+#define HAS_CAMERA 0
+#endif
+
+#if __has_include("hal_audio.h")
+#define HAS_AUDIO 1
+#else
+#define HAS_AUDIO 0
+#endif
+
+#if __has_include("hal_acoustic.h")
+#include "hal_acoustic.h"
+#define HAS_ACOUSTIC 1
+#else
+#define HAS_ACOUSTIC 0
+#endif
+
+#if __has_include("hal_gis.h")
+#define HAS_GIS 1
+#else
+#define HAS_GIS 0
+#endif
+
+#if __has_include("hal_imu.h")
+#define HAS_IMU 1
+#else
+#define HAS_IMU 0
+#endif
+
+#if __has_include("hal_lora.h")
+#include "hal_lora.h"
+#define HAS_LORA 1
+#else
+#define HAS_LORA 0
+#endif
+
+#if __has_include("hal_meshtastic.h")
+#define HAS_MESHTASTIC 1
+#else
+#define HAS_MESHTASTIC 0
+#endif
+
+#if __has_include("hal_sdcard.h")
+#define HAS_SDCARD 1
+#else
+#define HAS_SDCARD 0
+#endif
+
+#if __has_include("hal_rtc.h")
+#define HAS_RTC 1
+#else
+#define HAS_RTC 0
+#endif
+
+#if __has_include("hal_power.h")
+#define HAS_POWER 1
+#else
+#define HAS_POWER 0
+#endif
+
+#if __has_include("hal_ota.h") || __has_include("ota_manager.h")
+#define HAS_OTA 1
+#else
+#define HAS_OTA 0
+#endif
+
+#if __has_include("hal_diaglog.h")
+#include "hal_diaglog.h"
+#define HAS_DIAGLOG 1
+#else
+#define HAS_DIAGLOG 0
+#endif
+
+#if __has_include("hal_webserver.h")
+#define HAS_WEBSERVER 1
+#else
+#define HAS_WEBSERVER 0
+#endif
+
+#if __has_include("hal_radio_scheduler.h")
+#define HAS_RADIO_SCHEDULER 1
+#else
+#define HAS_RADIO_SCHEDULER 0
+#endif
+
+#if __has_include("hal_sleep.h")
+#define HAS_SLEEP 1
+#else
+#define HAS_SLEEP 0
+#endif
+
 namespace mqtt_sc_bridge {
 
 // Internal state
@@ -102,6 +197,7 @@ static CommandCallback _cmd_cb = nullptr;
 static char _topic_status[128] = {};
 static char _topic_heartbeat[128] = {};
 static char _topic_sighting[128] = {};
+static char _topic_capabilities[128] = {};
 static char _topic_cmd[128] = {};
 
 // PSRAM JSON buffer
@@ -185,6 +281,7 @@ bool init(const BridgeConfig& config) {
     snprintf(_topic_heartbeat, sizeof(_topic_heartbeat), "tritium/%s/heartbeat", _device_id);
     snprintf(_topic_sighting, sizeof(_topic_sighting), "tritium/%s/sighting", _device_id);
     snprintf(_topic_cmd, sizeof(_topic_cmd), "tritium/%s/cmd/#", _device_id);
+    snprintf(_topic_capabilities, sizeof(_topic_capabilities), "tritium/%s/capabilities", _device_id);
 
     // Allocate JSON buffer in PSRAM
     _json_buf = (char*)heap_caps_malloc(JSON_BUF_SIZE, MALLOC_CAP_SPIRAM);
@@ -225,13 +322,15 @@ void tick() {
     // Process MQTT (handles connect/reconnect/message dispatch)
     _mqtt.process();
 
-    // Publish online status on first connect
+    // Publish online status and capabilities on first connect
     if (_mqtt.isConnected()) {
         static bool _status_published = false;
         if (!_status_published) {
             _mqtt.publish(_topic_status, "{\"online\":true}", true, 1);
             _status_published = true;
             DBG_INFO(TAG, "Published online status");
+            // Publish capability advertisement on first connect
+            publish_capabilities();
         }
     } else {
         return;  // Not connected yet, skip publishing
@@ -446,6 +545,121 @@ bool publish_sightings() {
 #endif
 
     return published;
+}
+
+bool publish_capabilities() {
+    if (!_active || !_mqtt.isConnected() || !_json_buf) return false;
+
+    const esp_app_desc_t* desc = esp_app_get_description();
+    const char* version = desc ? desc->version : "unknown";
+
+#ifdef DISPLAY_DRIVER
+    const char* board = DISPLAY_DRIVER;
+#else
+    const char* board = "unknown";
+#endif
+
+    int pos = snprintf(_json_buf, JSON_BUF_SIZE,
+        "{\"device_id\":\"%s\",\"board\":\"%s\",\"firmware_version\":\"%s\","
+        "\"capabilities\":[",
+        _device_id, board, version);
+
+    // Macro to append a capability entry
+    bool first = true;
+#define APPEND_CAP(type_str) do { \
+    if (!first) pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos, ","); \
+    pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos, \
+        "{\"cap_type\":\"%s\",\"version\":\"1.0\",\"enabled\":true}", type_str); \
+    first = false; \
+} while(0)
+
+    // Core capabilities — always present
+    APPEND_CAP("heartbeat");
+
+    // WiFi — always present on ESP32
+    APPEND_CAP("wifi_scanner");
+
+    // Conditional capabilities based on compiled-in HALs
+#if HAS_BLE_SCANNER
+    APPEND_CAP("ble_scanner");
+#endif
+#if HAS_WIFI_PROBE
+    APPEND_CAP("wifi_probe");
+#endif
+#if HAS_CAMERA
+    APPEND_CAP("camera");
+#endif
+#if HAS_AUDIO
+    APPEND_CAP("audio");
+#endif
+#if HAS_ACOUSTIC
+    APPEND_CAP("acoustic");
+#endif
+#if HAS_IMU
+    APPEND_CAP("imu");
+#endif
+#if HAS_ESPNOW
+    APPEND_CAP("mesh_espnow");
+#endif
+#if HAS_LORA
+    APPEND_CAP("mesh_lora");
+#endif
+#if HAS_MESHTASTIC
+    APPEND_CAP("meshtastic");
+#endif
+#if HAS_SDCARD
+    APPEND_CAP("sdcard");
+#endif
+#if HAS_RTC
+    APPEND_CAP("rtc");
+#endif
+#if HAS_POWER
+    APPEND_CAP("power_mgmt");
+#endif
+#if HAS_OTA
+    APPEND_CAP("ota");
+#endif
+#if HAS_RF_MONITOR
+    APPEND_CAP("rf_monitor");
+#endif
+#if HAS_CONFIG_SYNC
+    APPEND_CAP("config_sync");
+#endif
+#if HAS_DIAGLOG
+    APPEND_CAP("diaglog");
+#endif
+#if HAS_WEBSERVER
+    APPEND_CAP("webserver");
+#endif
+#if HAS_RADIO_SCHEDULER
+    APPEND_CAP("radio_scheduler");
+#endif
+#if HAS_SLEEP
+    APPEND_CAP("sleep");
+#endif
+#if HAS_GIS
+    APPEND_CAP("gis");
+#endif
+
+    // Display capability (all boards with a display driver)
+#ifdef DISPLAY_DRIVER
+    APPEND_CAP("display");
+#endif
+
+#undef APPEND_CAP
+
+    // Close capabilities array and add timestamp
+    pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,
+        "],\"timestamp\":%lu}", (unsigned long)(millis() / 1000));
+
+    // Publish as retained so SC sees it even if it connects later
+    bool ok = _mqtt.publish(_topic_capabilities, _json_buf, true, 1);
+    if (ok) {
+        DBG_INFO(TAG, "Capabilities published (%d bytes, %s)", pos, _topic_capabilities);
+    } else {
+        DBG_WARN(TAG, "Capabilities publish failed");
+    }
+    return ok;
 }
 
 bool is_connected() {
