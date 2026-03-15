@@ -168,4 +168,134 @@ StatusColor get_current_status() {
     return _current;
 }
 
+// ---------------------------------------------------------------------------
+// Blink pattern engine
+// ---------------------------------------------------------------------------
+
+static BlinkPattern _active_pattern = BlinkPattern::SOLID;
+static StatusColor  _pattern_color  = StatusColor::OFF;
+static bool         _pattern_running = false;
+static unsigned long _pattern_start_ms = 0;
+
+// Timer-driven pattern update — call from loop() or a Ticker
+static void _update_pattern() {
+    if (!_pattern_running || !_initialized) return;
+
+    unsigned long elapsed = millis() - _pattern_start_ms;
+    RGBColor base = status_to_rgb(_pattern_color);
+    float brightness_factor = 1.0f;
+
+    switch (_active_pattern) {
+        case BlinkPattern::SOLID:
+            // Always on — no modulation
+            brightness_factor = 1.0f;
+            break;
+
+        case BlinkPattern::SLOW_BLINK: {
+            // 1 Hz: 500ms on / 500ms off
+            uint32_t phase = elapsed % 1000;
+            brightness_factor = (phase < 500) ? 1.0f : 0.0f;
+            break;
+        }
+
+        case BlinkPattern::FAST_BLINK: {
+            // 4 Hz: 125ms on / 125ms off
+            uint32_t phase = elapsed % 250;
+            brightness_factor = (phase < 125) ? 1.0f : 0.0f;
+            break;
+        }
+
+        case BlinkPattern::PULSE: {
+            // Smooth sine-wave pulse, ~2s cycle
+            float t = (float)(elapsed % 2000) / 2000.0f;
+            // sin goes 0->1->0 over half period
+            brightness_factor = (sinf(t * 2.0f * 3.14159f) + 1.0f) / 2.0f;
+            break;
+        }
+
+        case BlinkPattern::DOUBLE_FLASH: {
+            // Two 80ms flashes separated by 80ms gap, then 760ms off
+            // Total cycle: 1000ms
+            uint32_t phase = elapsed % 1000;
+            if (phase < 80 || (phase >= 160 && phase < 240)) {
+                brightness_factor = 1.0f;
+            } else {
+                brightness_factor = 0.0f;
+            }
+            break;
+        }
+
+        case BlinkPattern::BREATHE: {
+            // Slow sine-wave, ~4s cycle, never fully off (min 5%)
+            float t = (float)(elapsed % 4000) / 4000.0f;
+            brightness_factor = (sinf(t * 2.0f * 3.14159f) + 1.0f) / 2.0f;
+            brightness_factor = 0.05f + brightness_factor * 0.95f;
+            break;
+        }
+    }
+
+    if (_config.is_neopixel) {
+        uint8_t r = (uint8_t)(base.r * brightness_factor);
+        uint8_t g = (uint8_t)(base.g * brightness_factor);
+        uint8_t b = (uint8_t)(base.b * brightness_factor);
+        _send_neopixel_color(r, g, b);
+    } else {
+        // Simple GPIO: on if brightness > 50%
+        digitalWrite(_config.gpio_pin, brightness_factor > 0.5f ? HIGH : LOW);
+    }
+}
+
+void start_pattern(StatusColor color, BlinkPattern pattern) {
+    if (!_initialized) return;
+
+    _pattern_color = color;
+    _active_pattern = pattern;
+    _pattern_start_ms = millis();
+    _pattern_running = true;
+
+    // Immediate first update
+    _update_pattern();
+}
+
+void stop_pattern() {
+    _pattern_running = false;
+    // Leave LED in whatever state it's in
+}
+
+void set_operational_status(StatusColor status) {
+    switch (status) {
+        case StatusColor::GREEN:
+            start_pattern(StatusColor::GREEN, BlinkPattern::SOLID);
+            break;
+        case StatusColor::BLUE:
+            start_pattern(StatusColor::BLUE, BlinkPattern::SLOW_BLINK);
+            break;
+        case StatusColor::YELLOW:
+            start_pattern(StatusColor::YELLOW, BlinkPattern::FAST_BLINK);
+            break;
+        case StatusColor::RED:
+            start_pattern(StatusColor::RED, BlinkPattern::SOLID);
+            break;
+        case StatusColor::PURPLE:
+            start_pattern(StatusColor::PURPLE, BlinkPattern::PULSE);
+            break;
+        case StatusColor::CYAN:
+            start_pattern(StatusColor::CYAN, BlinkPattern::DOUBLE_FLASH);
+            break;
+        case StatusColor::WHITE:
+            start_pattern(StatusColor::WHITE, BlinkPattern::BREATHE);
+            break;
+        case StatusColor::OFF:
+        default:
+            stop_pattern();
+            off();
+            break;
+    }
+    _current = status;
+}
+
+bool pattern_active() {
+    return _pattern_running;
+}
+
 }  // namespace hal_led

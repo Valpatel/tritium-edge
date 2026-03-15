@@ -92,4 +92,40 @@ bool is_available();
 /// Get current status color.
 StatusColor get_current_status();
 
+// ---------------------------------------------------------------------------
+// Blink pattern engine — distinct patterns visible from distance
+// ---------------------------------------------------------------------------
+
+/// Blink pattern types for status indication at range.
+enum class BlinkPattern : uint8_t {
+    SOLID        = 0,   // Constant on (no blinking)
+    SLOW_BLINK   = 1,   // 1 Hz  — 500ms on / 500ms off
+    FAST_BLINK   = 2,   // 4 Hz  — 125ms on / 125ms off
+    PULSE        = 3,   // Smooth fade in/out (~2s cycle)
+    DOUBLE_FLASH = 4,   // Two quick flashes then pause
+    BREATHE      = 5,   // Slow sine-wave brightness
+};
+
+/// Start a repeating blink pattern with a given color.
+/// The pattern runs in the background until replaced by another
+/// call or stopped with stop_pattern().
+/// Uses a lightweight timer — no extra thread.
+void start_pattern(StatusColor color, BlinkPattern pattern);
+
+/// Stop any active blink pattern and leave LED in current state.
+void stop_pattern();
+
+/// Convenience: set status LED with a standard operational pattern.
+///   GREEN  SOLID        = online, connected, idle
+///   BLUE   SLOW_BLINK   = scanning (BLE/WiFi)
+///   YELLOW FAST_BLINK   = OTA update in progress
+///   RED    SOLID         = error state
+///   PURPLE PULSE         = RF motion detected
+///   CYAN   DOUBLE_FLASH  = MQTT message received
+///   WHITE  BREATHE       = boot / initializing
+void set_operational_status(StatusColor status);
+
+/// Check if a blink pattern is currently running.
+bool pattern_active();
+
 }  // namespace hal_led
