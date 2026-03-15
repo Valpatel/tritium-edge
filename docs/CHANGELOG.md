@@ -14,6 +14,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 91: Autonomous Alert HAL
+
+| Change | Verification |
+|--------|-------------|
+| hal_autonomous_alert — local threshold-based alerting without SC | Code Review |
+| NVS-backed alert rules (max 16), configurable thresholds | Code Review |
+| Feeds: BLE sighting, RF motion, acoustic events | Code Review |
+| Default rules: unknown BLE (RSSI > -60dBm), RF motion (variance > 8.0), acoustic (confidence >= 0.8) | Code Review |
+| MQTT output: tritium/{device_id}/alert/autonomous JSON decisions | Code Review |
+| Stats JSON for heartbeat inclusion | Code Review |
+
 ## 2026-03-14 — Wave 89: Diagnostic Dump Command
 
 ### hal_diag_dump (Code Review)
