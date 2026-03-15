@@ -276,6 +276,12 @@ static void mqtt_cmd_callback(const char* topic, const uint8_t* payload, size_t 
             DBG_INFO(TAG, "Group set via MQTT: '%s'", cmd_buf);
         }
 
+        // Lifecycle state change via MQTT command
+        if (strcmp(cmd_part, "set_lifecycle_state") == 0) {
+            hal_heartbeat::set_lifecycle_state(cmd_buf);
+            DBG_INFO(TAG, "Lifecycle state set via MQTT: '%s'", cmd_buf);
+        }
+
         // Diagnostic dump — publish full device snapshot for remote troubleshooting
         if (strcmp(cmd_part, "dump") == 0) {
 #if HAS_DIAG_DUMP
@@ -561,6 +567,15 @@ bool publish_heartbeat() {
         if (grp && grp[0] != '\0') {
             pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,
                             ",\"device_group\":\"%s\"", grp);
+        }
+    }
+
+    // Append device lifecycle state
+    {
+        const char* lcs = hal_heartbeat::get_lifecycle_state();
+        if (lcs && lcs[0] != '\0') {
+            pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,
+                            ",\"lifecycle_state\":\"%s\"", lcs);
         }
     }
 

@@ -56,4 +56,10 @@ void set_group(const char* group);
 // Get current device group (empty string if unassigned).
 const char* get_group();
 
+// Device lifecycle state management.
+// Valid states: "provisioning", "active", "maintenance", "retired", "error".
+// Persists to NVS so it survives reboot. Included in heartbeat JSON.
+void set_lifecycle_state(const char* state);
+const char* get_lifecycle_state();
+
 }  // namespace hal_heartbeat

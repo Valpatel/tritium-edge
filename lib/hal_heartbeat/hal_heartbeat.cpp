@@ -34,6 +34,8 @@ bool is_active() { return false; }
 uint32_t get_interval_ms() { return _interval_ms; }
 void set_group(const char*) {}
 const char* get_group() { return ""; }
+void set_lifecycle_state(const char*) {}
+const char* get_lifecycle_state() { return "active"; }
 
 }  // namespace hal_heartbeat
 
@@ -211,6 +213,9 @@ static const char* _board_name = nullptr;
 // Device group assignment (perimeter, interior, mobile, reserve)
 static char _device_group[32] = {};
 
+// Device lifecycle state (provisioning, active, maintenance, retired, error)
+static char _lifecycle_state[16] = "active";
+
 // Provisioning instance (shared, lightweight)
 static ProvisionHAL _provision;
 static bool _provision_inited = false;
@@ -356,6 +361,18 @@ bool init(const HeartbeatConfig& config) {
             String grp = prefs.getString("device_group", "");
             if (grp.length() > 0) {
                 strncpy(_device_group, grp.c_str(), sizeof(_device_group) - 1);
+            }
+            prefs.end();
+        }
+    }
+
+    // Device lifecycle state — load from NVS
+    if (_provision_inited) {
+        Preferences prefs;
+        if (prefs.begin("tritium", true)) {
+            String lcs = prefs.getString("lifecycle_state", "active");
+            if (lcs.length() > 0) {
+                strncpy(_lifecycle_state, lcs.c_str(), sizeof(_lifecycle_state) - 1);
             }
             prefs.end();
         }
@@ -816,6 +833,40 @@ void set_group(const char* group) {
 
 const char* get_group() {
     return _device_group;
+}
+
+void set_lifecycle_state(const char* state) {
+    if (state && state[0] != '\0') {
+        // Validate allowed states
+        const char* valid[] = {"provisioning", "active", "maintenance", "retired", "error"};
+        bool is_valid = false;
+        for (int i = 0; i < 5; i++) {
+            if (strcmp(state, valid[i]) == 0) {
+                is_valid = true;
+                break;
+            }
+        }
+        if (!is_valid) {
+            DBG_WARN(TAG, "Invalid lifecycle state: '%s'", state);
+            return;
+        }
+        strncpy(_lifecycle_state, state, sizeof(_lifecycle_state) - 1);
+        _lifecycle_state[sizeof(_lifecycle_state) - 1] = '\0';
+    } else {
+        strncpy(_lifecycle_state, "active", sizeof(_lifecycle_state) - 1);
+    }
+
+    // Persist to NVS
+    Preferences prefs;
+    if (prefs.begin("tritium", false)) {
+        prefs.putString("lifecycle_state", _lifecycle_state);
+        prefs.end();
+        DBG_INFO(TAG, "Lifecycle state set: '%s' (persisted)", _lifecycle_state);
+    }
+}
+
+const char* get_lifecycle_state() {
+    return _lifecycle_state;
 }
 
 }  // namespace hal_heartbeat
