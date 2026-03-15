@@ -7,6 +7,21 @@
 
 namespace hal_heartbeat {
 
+// Capabilities bitfield — 1 byte encoding which HALs are compiled in.
+// SC decodes this to build the device capability matrix without parsing JSON keys.
+// Bit assignments:
+static constexpr uint8_t CAP_WIFI          = 0x01;  // bit 0: WiFi networking
+static constexpr uint8_t CAP_BLE           = 0x02;  // bit 1: BLE scanner
+static constexpr uint8_t CAP_ESPNOW        = 0x04;  // bit 2: ESP-NOW mesh
+static constexpr uint8_t CAP_LORA          = 0x08;  // bit 3: LoRa radio
+static constexpr uint8_t CAP_MQTT          = 0x10;  // bit 4: MQTT bridge
+static constexpr uint8_t CAP_CAMERA        = 0x20;  // bit 5: Camera
+static constexpr uint8_t CAP_ACOUSTIC      = 0x40;  // bit 6: Acoustic sensor
+static constexpr uint8_t CAP_COT           = 0x80;  // bit 7: CoT/TAK
+
+// Get the capabilities bitfield for this build.
+uint8_t get_capabilities();
+
 struct HeartbeatConfig {
     const char* server_url = nullptr;  // e.g., "http://192.168.1.100:8080"
     const char* device_id = nullptr;   // e.g., "esp32-aabbccddeeff"

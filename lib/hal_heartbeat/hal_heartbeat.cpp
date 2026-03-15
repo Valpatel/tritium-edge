@@ -20,6 +20,8 @@ namespace hal_heartbeat {
 static bool _active = false;
 static uint32_t _interval_ms = 60000;
 
+uint8_t get_capabilities() { return 0; }
+
 bool init(const HeartbeatConfig& config) {
     (void)config;
     DBG_INFO(TAG, "Heartbeat init (simulator stub)");
@@ -148,6 +150,37 @@ const char* get_group() { return ""; }
 #endif
 
 namespace hal_heartbeat {
+
+// --- Capabilities bitfield — computed at compile time via HAS_* flags ---
+uint8_t get_capabilities() {
+    uint8_t caps = 0;
+    // WiFi is always available on ESP32 builds
+    caps |= CAP_WIFI;
+#if HAS_BLE_SCANNER
+    caps |= CAP_BLE;
+#endif
+#if HAS_ESPNOW
+    caps |= CAP_ESPNOW;
+#endif
+#if HAS_LORA
+    caps |= CAP_LORA;
+#endif
+    // MQTT — check if PubSubClient is available (always for builds with ENABLE_MQTT_SC_BRIDGE)
+#if __has_include("mqtt_sc_bridge.h")
+    caps |= CAP_MQTT;
+#endif
+    // Camera
+#if __has_include("hal_camera.h") && defined(HAS_CAMERA) && HAS_CAMERA
+    caps |= CAP_CAMERA;
+#endif
+#if HAS_ACOUSTIC
+    caps |= CAP_ACOUSTIC;
+#endif
+#if HAS_COT
+    caps |= CAP_COT;
+#endif
+    return caps;
+}
 
 // Internal state
 static bool _initialized = false;
@@ -408,6 +441,10 @@ bool send_now() {
         pos += snprintf(body + pos, BODY_SIZE - pos,
                         ",\"device_group\":\"%s\"", _device_group);
     }
+
+    // Append compact capabilities bitfield — 1 byte encoding which HALs are compiled in
+    pos += snprintf(body + pos, BODY_SIZE - pos,
+                    ",\"caps\":%u", (unsigned)get_capabilities());
 
     // Append BLE scanner data if available
 #if HAS_BLE_SCANNER
