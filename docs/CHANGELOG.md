@@ -14,6 +14,15 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 111: Compact Heartbeat Mode
+
+| Change | Verification |
+|--------|-------------|
+| hal_heartbeat: compact heartbeat mode — alternates full (~1-3KB) and compact (~120 bytes) heartbeats when enabled | Code reviewed |
+| Compact heartbeat fields: version, uptime_s, free_heap, rssi, caps, compact flag — target <200 bytes | Code reviewed |
+| API: set_compact_mode(bool), is_compact_mode() with simulator stubs | Code reviewed |
+| Heartbeat size logging: DBG_DEBUG with byte count and mode label for monitoring | Code reviewed |
+
 ## 2026-03-14 — Wave 108: LED Blink Pattern Engine
 
 | Change | Verification |
