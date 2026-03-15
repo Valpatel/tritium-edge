@@ -14,6 +14,16 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 108: LED Blink Pattern Engine
+
+| Change | Verification |
+|--------|-------------|
+| hal_led: BlinkPattern enum — SOLID, SLOW_BLINK, FAST_BLINK, PULSE, DOUBLE_FLASH, BREATHE | Build Verified |
+| hal_led: start_pattern() / stop_pattern() / pattern_active() for background LED patterns | Build Verified |
+| hal_led: set_operational_status() maps StatusColor to canonical blink patterns | Build Verified |
+| Patterns: Green=solid online, Blue=slow blink scanning, Yellow=fast blink OTA, Red=solid error, Purple=pulse motion, Cyan=double flash MQTT, White=breathe boot | Build Verified |
+| Build: RAM 49.8%, Flash 29.4% | Build Verified |
+
 ## 2026-03-14 — Wave 105: Radio Scheduler + Tamper Detect Integration
 
 | Change | Verification |
