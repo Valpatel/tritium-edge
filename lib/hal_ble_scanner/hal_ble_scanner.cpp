@@ -593,6 +593,210 @@ static void parse_manufacturer_data(const NimBLEAdvertisedDevice* dev, BleDevice
     }
 }
 
+// --- BLE Appearance value classification ---
+// BLE GAP appearance values (Bluetooth SIG Assigned Numbers, Section 2.6)
+// These are 16-bit values advertised by devices to indicate their category.
+
+static void classify_by_appearance(const NimBLEAdvertisedDevice* dev, BleDevice& d) {
+    if (d.device_class != BleDeviceClass::UNKNOWN) return;
+    if (!dev->haveAppearance()) return;
+
+    uint16_t appearance = dev->getAppearance();
+    uint16_t category = appearance >> 6;  // Top 10 bits = category
+
+    switch (category) {
+        case 0x01:  // Phone (64-127)
+            d.device_class = BleDeviceClass::PHONE;
+            strncpy(d.device_type, "phone", sizeof(d.device_type) - 1);
+            break;
+        case 0x02:  // Computer (128-191)
+            d.device_class = BleDeviceClass::LAPTOP;
+            strncpy(d.device_type, "computer", sizeof(d.device_type) - 1);
+            break;
+        case 0x03:  // Watch (192-255)
+            d.device_class = BleDeviceClass::WATCH;
+            strncpy(d.device_type, "watch", sizeof(d.device_type) - 1);
+            break;
+        case 0x0F:  // HID — keyboard/mouse/gamepad (960-1023)
+            d.device_class = BleDeviceClass::PERIPHERAL;
+            strncpy(d.device_type, "peripheral", sizeof(d.device_type) - 1);
+            break;
+        case 0x31:  // Pulse Oximeter (3136+)
+        case 0x32:  // Blood Pressure (3200+)
+        case 0x33:  // Thermometer (3264+)
+        case 0x34:  // Weight Scale (3328+)
+        case 0x35:  // Glucose Meter (3392+)
+            d.device_class = BleDeviceClass::MEDICAL;
+            strncpy(d.device_type, "medical", sizeof(d.device_type) - 1);
+            break;
+        case 0x04:  // Clock (256-319)
+        case 0x05:  // Display (320-383)
+            d.device_class = BleDeviceClass::IOT_DEVICE;
+            strncpy(d.device_type, "display", sizeof(d.device_type) - 1);
+            break;
+        case 0x15:  // Sensor (1344+) — generic sensor
+            d.device_class = BleDeviceClass::IOT_DEVICE;
+            strncpy(d.device_type, "sensor", sizeof(d.device_type) - 1);
+            break;
+        case 0x0C:  // Tag (768+) — asset tag/beacon
+            d.device_class = BleDeviceClass::TRACKER;
+            strncpy(d.device_type, "tag", sizeof(d.device_type) - 1);
+            break;
+        default:
+            break;
+    }
+    d.device_type[sizeof(d.device_type) - 1] = '\0';
+
+    // Specific appearance sub-values for audio
+    if (appearance == 0x0941 || appearance == 0x0942 || appearance == 0x0943 ||
+        appearance == 0x0944) {
+        // Headset, earbuds, headphones, speaker (category 0x25 = audio output)
+        d.device_class = BleDeviceClass::HEADPHONES;
+        strncpy(d.device_type, "earbuds", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+    }
+    if (category == 0x08) {  // Speaker (512+)
+        d.device_class = BleDeviceClass::SPEAKER;
+        strncpy(d.device_type, "speaker", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+    }
+}
+
+// --- BLE device name pattern classification ---
+// Fallback classification by matching common device name patterns.
+// Only runs if manufacturer data and appearance didn't classify.
+
+static void classify_by_name(BleDevice& d) {
+    if (d.device_class != BleDeviceClass::UNKNOWN) return;
+    if (d.name[0] == '\0') return;
+
+    // Lowercase copy for pattern matching
+    char lower[32];
+    for (int i = 0; i < 31 && d.name[i]; i++) {
+        lower[i] = (d.name[i] >= 'A' && d.name[i] <= 'Z') ? d.name[i] + 32 : d.name[i];
+        lower[i + 1] = '\0';
+    }
+
+    // --- Earbuds / headphones ---
+    if (strstr(lower, "airpod") || strstr(lower, "buds") ||
+        strstr(lower, "earbuds") || strstr(lower, "jabra") ||
+        strstr(lower, "beats") || strstr(lower, "jbl") ||
+        strstr(lower, "sony wf") || strstr(lower, "sony wh") ||
+        strstr(lower, "bose") || strstr(lower, "soundcore") ||
+        strstr(lower, "earfun") || strstr(lower, "anker") ||
+        strstr(lower, "sennheiser") || strstr(lower, "headphone") ||
+        strstr(lower, "plantronics") || strstr(lower, "skullcandy")) {
+        d.device_class = BleDeviceClass::HEADPHONES;
+        strncpy(d.device_type, "earbuds", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+        return;
+    }
+
+    // --- Watches / fitness bands ---
+    if (strstr(lower, "watch") || strstr(lower, "band") ||
+        strstr(lower, "fitbit") || strstr(lower, "garmin") ||
+        strstr(lower, "amazfit") || strstr(lower, "mi band") ||
+        strstr(lower, "vivoactive") || strstr(lower, "forerunner") ||
+        strstr(lower, "fenix") || strstr(lower, "suunto") ||
+        strstr(lower, "whoop") || strstr(lower, "oura")) {
+        d.device_class = BleDeviceClass::WATCH;
+        strncpy(d.device_type, "watch", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+        return;
+    }
+
+    // --- Fitness trackers ---
+    if (strstr(lower, "fitness") || strstr(lower, "tracker") ||
+        strstr(lower, "hr ") || strstr(lower, "peloton")) {
+        d.device_class = BleDeviceClass::FITNESS;
+        strncpy(d.device_type, "fitness", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+        return;
+    }
+
+    // --- Speakers ---
+    if (strstr(lower, "speaker") || strstr(lower, "soundbar") ||
+        strstr(lower, "echo") || strstr(lower, "homepod") ||
+        strstr(lower, "sonos") || strstr(lower, "marshall") ||
+        strstr(lower, "ue boom") || strstr(lower, "flip")) {
+        d.device_class = BleDeviceClass::SPEAKER;
+        strncpy(d.device_type, "speaker", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+        return;
+    }
+
+    // --- Trackers / beacons ---
+    if (strstr(lower, "tile") || strstr(lower, "airtag") ||
+        strstr(lower, "chipolo") || strstr(lower, "smarttag") ||
+        strstr(lower, "beacon") || strstr(lower, "ibeacon")) {
+        d.device_class = BleDeviceClass::TRACKER;
+        strncpy(d.device_type, "tracker", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+        return;
+    }
+
+    // --- Peripherals (keyboard, mouse) ---
+    if (strstr(lower, "keyboard") || strstr(lower, "mouse") ||
+        strstr(lower, "gamepad") || strstr(lower, "controller") ||
+        strstr(lower, "remote") || strstr(lower, "logitech") ||
+        strstr(lower, "magic ")) {
+        d.device_class = BleDeviceClass::PERIPHERAL;
+        strncpy(d.device_type, "peripheral", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+        return;
+    }
+
+    // --- Phones ---
+    if (strstr(lower, "phone") || strstr(lower, "iphone") ||
+        strstr(lower, "pixel") || strstr(lower, "galaxy s") ||
+        strstr(lower, "oneplus") || strstr(lower, "redmi")) {
+        d.device_class = BleDeviceClass::PHONE;
+        strncpy(d.device_type, "phone", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+        return;
+    }
+
+    // --- Laptops / tablets ---
+    if (strstr(lower, "macbook") || strstr(lower, "laptop") ||
+        strstr(lower, "surface") || strstr(lower, "thinkpad") ||
+        strstr(lower, "chromebook")) {
+        d.device_class = BleDeviceClass::LAPTOP;
+        strncpy(d.device_type, "laptop", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+        return;
+    }
+    if (strstr(lower, "ipad") || strstr(lower, "tablet") ||
+        strstr(lower, "tab ")) {
+        d.device_class = BleDeviceClass::TABLET;
+        strncpy(d.device_type, "tablet", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+        return;
+    }
+
+    // --- TV dongles ---
+    if (strstr(lower, "chromecast") || strstr(lower, "firestick") ||
+        strstr(lower, "roku") || strstr(lower, "apple tv") ||
+        strstr(lower, "shield")) {
+        d.device_class = BleDeviceClass::TV_DONGLE;
+        strncpy(d.device_type, "tv_dongle", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+        return;
+    }
+
+    // --- IoT / smart home ---
+    if (strstr(lower, "smart") || strstr(lower, "bulb") ||
+        strstr(lower, "plug") || strstr(lower, "switch") ||
+        strstr(lower, "thermostat") || strstr(lower, "nest") ||
+        strstr(lower, "hue") || strstr(lower, "wled") ||
+        strstr(lower, "tuya") || strstr(lower, "tasmota") ||
+        strstr(lower, "shelly") || strstr(lower, "govee")) {
+        d.device_class = BleDeviceClass::IOT_DEVICE;
+        strncpy(d.device_type, "iot", sizeof(d.device_type) - 1);
+        d.device_type[sizeof(d.device_type) - 1] = '\0';
+        return;
+    }
+}
+
 // --- NimBLE scan callback ---
 
 class ScanCallbacks : public NimBLEScanCallbacks {
@@ -612,13 +816,17 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             _devices[idx].seen_count++;
             record_rssi(_devices[idx], new_rssi);
             // Update classification if not yet classified
-            if (_devices[idx].device_class == BleDeviceClass::UNKNOWN &&
-                dev->haveManufacturerData()) {
-                parse_apple_continuity(dev, _devices[idx]);
-                // Try non-Apple manufacturer parsing if Apple didn't classify
-                if (_devices[idx].device_class == BleDeviceClass::UNKNOWN) {
-                    parse_manufacturer_data(dev, _devices[idx]);
+            if (_devices[idx].device_class == BleDeviceClass::UNKNOWN) {
+                if (dev->haveManufacturerData()) {
+                    parse_apple_continuity(dev, _devices[idx]);
+                    if (_devices[idx].device_class == BleDeviceClass::UNKNOWN) {
+                        parse_manufacturer_data(dev, _devices[idx]);
+                    }
                 }
+                // Fallback: BLE appearance value
+                classify_by_appearance(dev, _devices[idx]);
+                // Fallback: name pattern matching
+                classify_by_name(_devices[idx]);
             }
         } else if (_device_count < BLE_SCANNER_MAX_DEVICES) {
             BleDevice& d = _devices[_device_count];
@@ -670,6 +878,10 @@ class ScanCallbacks : public NimBLEScanCallbacks {
                     parse_manufacturer_data(dev, d);
                 }
             }
+            // Fallback classification: BLE appearance value
+            classify_by_appearance(dev, d);
+            // Fallback classification: name pattern matching
+            classify_by_name(d);
 
             const char* label = nullptr;
             d.is_known = is_known_device(raw, &label);
