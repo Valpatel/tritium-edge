@@ -42,4 +42,8 @@ int get_visible_count();
 int get_networks_json(char* buf, size_t size);
 int get_summary_json(char* buf, size_t size);
 
+// Channel utilization: for each 2.4 GHz channel (1-14), report how many APs.
+// Output: JSON object like {"1":3,"6":5,"11":2} (only channels with APs)
+int get_channel_utilization_json(char* buf, size_t size);
+
 }  // namespace hal_wifi_scanner

@@ -14,6 +14,18 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-15 — Wave 119: WiFi Channel Utilization Reporting
+
+| Change | Verification |
+|--------|-------------|
+| hal_wifi_scanner: get_channel_utilization_json() — reports AP count per 2.4 GHz channel (1-14) as JSON | Build Verified |
+| Heartbeat wifi_scan object now includes channel_util field with per-channel AP counts | Build Verified |
+| Example output: {"1":3,"6":5,"11":2} — helps identify congested vs clear channels | Build Verified |
+| Simulator stub returns empty object for channel utilization | Build Verified |
+| Build: RAM 49.9%, Flash 29.4% — well within limits | Build Verified |
+
+---
+
 ## 2026-03-14 — Wave 116: WiFi Scan Deduplication
 
 | Change | Verification |

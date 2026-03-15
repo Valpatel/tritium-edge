@@ -14,6 +14,7 @@ int get_networks(WifiNetwork*, int) { return 0; }
 int get_visible_count() { return 0; }
 int get_networks_json(char* buf, size_t size) { return snprintf(buf, size, "[]"); }
 int get_summary_json(char* buf, size_t size) { return snprintf(buf, size, "{}"); }
+int get_channel_utilization_json(char* buf, size_t size) { return snprintf(buf, size, "{}"); }
 }
 
 #else
@@ -353,6 +354,38 @@ int get_summary_json(char* buf, size_t size) {
 
     xSemaphoreGive(_mutex);
     return written;
+}
+
+int get_channel_utilization_json(char* buf, size_t size) {
+    if (!_mutex) return snprintf(buf, size, "{}");
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+
+    uint32_t now = millis();
+    // 2.4 GHz channels 1-14
+    uint8_t ch_counts[15] = {};  // index 0 unused, 1-14 = channel counts
+
+    for (int i = 0; i < _network_count; i++) {
+        if ((now - _networks[i].last_seen) >= WIFI_NETWORK_TIMEOUT_MS) continue;
+        uint8_t ch = _networks[i].channel;
+        if (ch >= 1 && ch <= 14) {
+            ch_counts[ch]++;
+        }
+    }
+
+    xSemaphoreGive(_mutex);
+
+    // Build JSON — only include channels with at least 1 AP
+    int pos = 0;
+    pos += snprintf(buf + pos, size - pos, "{");
+    bool first = true;
+    for (int ch = 1; ch <= 14 && pos < (int)size - 16; ch++) {
+        if (ch_counts[ch] == 0) continue;
+        if (!first) pos += snprintf(buf + pos, size - pos, ",");
+        first = false;
+        pos += snprintf(buf + pos, size - pos, "\"%d\":%u", ch, (unsigned)ch_counts[ch]);
+    }
+    pos += snprintf(buf + pos, size - pos, "}");
+    return pos;
 }
 
 }  // namespace hal_wifi_scanner

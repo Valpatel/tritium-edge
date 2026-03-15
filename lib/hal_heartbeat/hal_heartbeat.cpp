@@ -550,16 +550,21 @@ bool send_now() {
             int tid = (int)cl.type;
             if (tid >= 0 && tid < 12) type_counts[tid]++;
         }
+        // Channel utilization report
+        char ch_util[128];
+        hal_wifi_scanner::get_channel_utilization_json(ch_util, sizeof(ch_util));
         pos += snprintf(body + pos, BODY_SIZE - pos,
             ",\"wifi_scan\":{\"count\":%d,\"home\":%d,\"hotspot\":%d,"
-            "\"iot\":%d,\"corporate\":%d,\"public\":%d,\"hidden\":%d}",
+            "\"iot\":%d,\"corporate\":%d,\"public\":%d,\"hidden\":%d,"
+            "\"channel_util\":%s}",
             wifi_count,
             type_counts[(int)wifi_classifier::NetworkType::HOME_ROUTER],
             type_counts[(int)wifi_classifier::NetworkType::MOBILE_HOTSPOT],
             type_counts[(int)wifi_classifier::NetworkType::IOT_DEVICE],
             type_counts[(int)wifi_classifier::NetworkType::CORPORATE],
             type_counts[(int)wifi_classifier::NetworkType::PUBLIC_OPEN],
-            type_counts[(int)wifi_classifier::NetworkType::HIDDEN]);
+            type_counts[(int)wifi_classifier::NetworkType::HIDDEN],
+            ch_util);
     }
 #endif
 
