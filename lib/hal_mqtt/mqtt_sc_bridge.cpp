@@ -182,7 +182,36 @@ void on_command(CommandCallback) {}
 #define HAS_SLEEP 0
 #endif
 
+// Tamper detection — sighting dropout monitoring
+#if __has_include("hal_tamper_detect.h")
+#include "hal_tamper_detect.h"
+#define HAS_TAMPER_DETECT 1
+#else
+#define HAS_TAMPER_DETECT 0
+#endif
+
+// Sensor self-test — periodic diagnostics
+#if __has_include("sensor_self_test.h")
+#include "sensor_self_test.h"
+#define HAS_SELF_TEST 1
+#else
+#define HAS_SELF_TEST 0
+#endif
+
+// Diagnostic dump — included at top level so namespace resolves correctly
+#if __has_include("hal_diag_dump.h")
+#include "hal_diag_dump.h"
+#define HAS_DIAG_DUMP 1
+#else
+#define HAS_DIAG_DUMP 0
+#endif
+
 namespace mqtt_sc_bridge {
+
+// Forward declarations
+#if HAS_DIAG_DUMP
+static void hal_diag_dump_publish_via_bridge(const char* device_id);
+#endif
 
 // Internal state
 static bool _initialized = false;
@@ -249,7 +278,7 @@ static void mqtt_cmd_callback(const char* topic, const uint8_t* payload, size_t 
 
         // Diagnostic dump — publish full device snapshot for remote troubleshooting
         if (strcmp(cmd_part, "dump") == 0) {
-#if __has_include("hal_diag_dump.h")
+#if HAS_DIAG_DUMP
             DBG_INFO(TAG, "Diagnostic dump requested via MQTT");
             hal_diag_dump_publish_via_bridge(_device_id);
 #else
@@ -292,8 +321,7 @@ static void mqtt_cmd_callback(const char* topic, const uint8_t* payload, size_t 
 // ---------------------------------------------------------------------------
 // Diagnostic dump helper — uses internal _mqtt directly
 // ---------------------------------------------------------------------------
-#if __has_include("hal_diag_dump.h")
-#include "hal_diag_dump.h"
+#if HAS_DIAG_DUMP
 
 static void hal_diag_dump_publish_via_bridge(const char* device_id) {
     if (!_active || !_mqtt.isConnected()) {
@@ -535,6 +563,24 @@ bool publish_heartbeat() {
                             ",\"device_group\":\"%s\"", grp);
         }
     }
+
+    // Append self-test results if available
+#if HAS_SELF_TEST
+    if (sensor_self_test::get_result().run_count > 0 && pos < (int)JSON_BUF_SIZE - 256) {
+        char st_json[256];
+        sensor_self_test::to_json(st_json, sizeof(st_json));
+        pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos, ",\"self_test\":%s", st_json);
+    }
+#endif
+
+    // Append tamper detection status
+#if HAS_TAMPER_DETECT
+    if (pos < (int)JSON_BUF_SIZE - 128) {
+        char tamper_json[128];
+        hal_tamper_detect::to_json(tamper_json, sizeof(tamper_json));
+        pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos, ",\"tamper\":%s", tamper_json);
+    }
+#endif
 
     // Append transports
     pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,

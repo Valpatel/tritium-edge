@@ -149,9 +149,17 @@ const char* get_group() { return ""; }
 #define HAS_POWER_TRACKER 0
 #endif
 
-// Sensor self-test — periodic WiFi/BLE/heap diagnostics
+// Sensor self-test — periodic WiFi/BLE/heap/NTP diagnostics
 #include "sensor_self_test.h"
 #define HAS_SELF_TEST 1
+
+// Optional tamper detection — sighting dropout monitoring
+#if __has_include("hal_tamper_detect.h")
+#include "hal_tamper_detect.h"
+#define HAS_TAMPER_DETECT 1
+#else
+#define HAS_TAMPER_DETECT 0
+#endif
 
 namespace hal_heartbeat {
 
@@ -379,6 +387,11 @@ bool init(const HeartbeatConfig& config) {
     sensor_self_test::init(3600000);  // 1 hour
 #endif
 
+    // Initialize tamper detection (5-minute silence threshold)
+#if HAS_TAMPER_DETECT
+    hal_tamper_detect::init();
+#endif
+
     _active = true;
     _last_send_ms = 0;  // Send first heartbeat on next tick()
     DBG_INFO(TAG, "Initialized: server=%s device=%s interval=%lums",
@@ -597,10 +610,20 @@ bool send_now() {
     // Tick sensor self-test and append results
 #if HAS_SELF_TEST
     sensor_self_test::tick();  // Runs test if interval has elapsed
-    if (sensor_self_test::get_result().run_count > 0 && pos < (int)BODY_SIZE - 200) {
-        char st_json[192];
+    if (sensor_self_test::get_result().run_count > 0 && pos < (int)BODY_SIZE - 256) {
+        char st_json[256];
         sensor_self_test::to_json(st_json, sizeof(st_json));
         pos += snprintf(body + pos, BODY_SIZE - pos, ",\"self_test\":%s", st_json);
+    }
+#endif
+
+    // Tick tamper detection and append status
+#if HAS_TAMPER_DETECT
+    hal_tamper_detect::tick();
+    if (pos < (int)BODY_SIZE - 128) {
+        char tamper_json[128];
+        hal_tamper_detect::to_json(tamper_json, sizeof(tamper_json));
+        pos += snprintf(body + pos, BODY_SIZE - pos, ",\"tamper\":%s", tamper_json);
     }
 #endif
 

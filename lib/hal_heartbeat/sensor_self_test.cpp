@@ -40,7 +40,7 @@ const SelfTestResult& get_result() { return _result; }
 int to_json(char* buf, size_t buf_size) {
     return snprintf(buf, buf_size,
         "{\"pass\":true,\"wifi_ok\":true,\"ble_ok\":true,"
-        "\"heap_ok\":true,\"free_heap\":200000,\"runs\":0}");
+        "\"heap_ok\":true,\"ntp_ok\":true,\"free_heap\":200000,\"runs\":0}");
 }
 
 }  // namespace sensor_self_test
@@ -53,6 +53,7 @@ int to_json(char* buf, size_t buf_size) {
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <sys/time.h>
 
 // Optional BLE scanner
 #if __has_include("hal_ble_scanner.h")
@@ -70,6 +71,14 @@ int to_json(char* buf, size_t buf_size) {
 #define HAS_WIFI_SCANNER_FOR_TEST 0
 #endif
 
+// Optional NTP for sync age tracking
+#if __has_include("hal_ntp.h")
+#include "hal_ntp.h"
+#define HAS_NTP_FOR_TEST 1
+#else
+#define HAS_NTP_FOR_TEST 0
+#endif
+
 namespace sensor_self_test {
 
 static SelfTestResult _result = {};
@@ -79,6 +88,8 @@ static bool _initialized = false;
 
 // Minimum heap threshold — below this is unhealthy
 static constexpr uint32_t MIN_HEAP_THRESHOLD = 30000;  // 30KB
+// Maximum heap fragmentation before flagging as unhealthy
+static constexpr float MAX_FRAGMENTATION_PCT = 70.0f;
 
 void init(uint32_t interval_ms) {
     _interval_ms = interval_ms;
@@ -129,23 +140,49 @@ static void _run_test() {
     _result.ble_scan_ok = true;  // N/A — not compiled in, not a failure
 #endif
 
-    // --- Heap health test ---
+    // --- Heap health test (with fragmentation) ---
     _result.free_heap = (uint32_t)ESP.getFreeHeap();
     _result.min_free_heap = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
-    _result.heap_ok = (_result.free_heap >= MIN_HEAP_THRESHOLD);
+    _result.largest_block = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    if (_result.free_heap > 0) {
+        _result.fragmentation_pct = (1.0f - (float)_result.largest_block / (float)_result.free_heap) * 100.0f;
+    } else {
+        _result.fragmentation_pct = 100.0f;
+    }
+    _result.heap_ok = (_result.free_heap >= MIN_HEAP_THRESHOLD) &&
+                      (_result.fragmentation_pct <= MAX_FRAGMENTATION_PCT);
     if (!_result.heap_ok) {
         _result.overall_pass = false;
-        DBG_WARN(TAG, "Heap FAIL: free=%u min=%u threshold=%u",
-                 _result.free_heap, _result.min_free_heap, MIN_HEAP_THRESHOLD);
+        DBG_WARN(TAG, "Heap FAIL: free=%u min=%u largest=%u frag=%.0f%%",
+                 _result.free_heap, _result.min_free_heap,
+                 _result.largest_block, _result.fragmentation_pct);
     }
 
-    DBG_INFO(TAG, "Self-test #%lu: %s (wifi=%s[%d] ble=%s heap=%u/%u)",
+    // --- NTP sync check ---
+    _result.ntp_sync_ok = false;
+    _result.ntp_age_s = 0;
+    {
+        struct timeval tv;
+        gettimeofday(&tv, nullptr);
+        // If epoch is after Jan 1 2024, NTP has synced at some point
+        if (tv.tv_sec > 1704067200) {
+            _result.ntp_sync_ok = true;
+        }
+    }
+    if (!_result.ntp_sync_ok) {
+        _result.overall_pass = false;
+        DBG_WARN(TAG, "NTP FAIL: system time not synchronized");
+    }
+
+    DBG_INFO(TAG, "Self-test #%lu: %s (wifi=%s[%d] ble=%s heap=%u/%u/%.0f%% ntp=%s)",
              (unsigned long)_result.run_count,
              _result.overall_pass ? "PASS" : "FAIL",
              _result.wifi_scan_ok ? "ok" : "FAIL",
              _result.wifi_scan_count,
              _result.ble_scan_ok ? "ok" : "n/a",
-             _result.free_heap, _result.min_free_heap);
+             _result.free_heap, _result.min_free_heap,
+             _result.fragmentation_pct,
+             _result.ntp_sync_ok ? "ok" : "FAIL");
 }
 
 bool tick() {
@@ -172,7 +209,9 @@ int to_json(char* buf, size_t buf_size) {
     return snprintf(buf, buf_size,
         "{\"pass\":%s,\"wifi_ok\":%s,\"wifi_count\":%d,"
         "\"ble_ok\":%s,\"heap_ok\":%s,"
-        "\"free_heap\":%u,\"min_free_heap\":%u,\"runs\":%u}",
+        "\"free_heap\":%u,\"min_free_heap\":%u,"
+        "\"largest_block\":%u,\"frag_pct\":%.1f,"
+        "\"ntp_ok\":%s,\"ntp_age_s\":%lu,\"runs\":%u}",
         _result.overall_pass ? "true" : "false",
         _result.wifi_scan_ok ? "true" : "false",
         _result.wifi_scan_count,
@@ -180,6 +219,10 @@ int to_json(char* buf, size_t buf_size) {
         _result.heap_ok ? "true" : "false",
         _result.free_heap,
         _result.min_free_heap,
+        _result.largest_block,
+        _result.fragmentation_pct,
+        _result.ntp_sync_ok ? "true" : "false",
+        (unsigned long)_result.ntp_age_s,
         _result.run_count);
 }
 

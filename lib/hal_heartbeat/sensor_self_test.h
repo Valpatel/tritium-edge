@@ -8,6 +8,7 @@
 // Runs every hour (configurable) and caches results for heartbeat inclusion.
 
 #include <cstdint>
+#include <cstddef>
 
 namespace sensor_self_test {
 
