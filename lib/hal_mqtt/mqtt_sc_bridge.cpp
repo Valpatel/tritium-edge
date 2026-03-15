@@ -20,6 +20,7 @@ bool publish_heartbeat() { return false; }
 bool publish_compact_heartbeat() { return false; }
 bool publish_sightings() { return false; }
 bool publish_capabilities() { return false; }
+bool publish_cmd_ack(const char*, const char*, const char*, const char*) { return false; }
 bool is_connected() { return false; }
 bool is_active() { return false; }
 void on_command(CommandCallback) {}
@@ -233,6 +234,7 @@ static char _topic_heartbeat[128] = {};
 static char _topic_sighting[128] = {};
 static char _topic_capabilities[128] = {};
 static char _topic_cmd[128] = {};
+static char _topic_cmd_ack[128] = {};
 
 // PSRAM JSON buffer
 static char* _json_buf = nullptr;
@@ -270,16 +272,33 @@ static void mqtt_cmd_callback(const char* topic, const uint8_t* payload, size_t 
         if (cmd_part) cmd_part++;
         else cmd_part = "unknown";
 
+        // Extract command_id from payload if present (lightweight string search)
+        const char* cid_key = "\"command_id\":\"";
+        const char* cid_start = strstr(cmd_buf, cid_key);
+        static char _ack_command_id[64] = {};
+        _ack_command_id[0] = '\0';
+        if (cid_start) {
+            cid_start += strlen(cid_key);
+            int ci = 0;
+            while (cid_start[ci] != '\0' && cid_start[ci] != '"' && ci < 63) {
+                _ack_command_id[ci] = cid_start[ci];
+                ci++;
+            }
+            _ack_command_id[ci] = '\0';
+        }
+
         // Handle built-in commands before forwarding to user callback
         if (strcmp(cmd_part, "set_group") == 0) {
             hal_heartbeat::set_group(cmd_buf);
             DBG_INFO(TAG, "Group set via MQTT: '%s'", cmd_buf);
+            publish_cmd_ack(_ack_command_id, "set_group", "success");
         }
 
         // Lifecycle state change via MQTT command
         if (strcmp(cmd_part, "set_lifecycle_state") == 0) {
             hal_heartbeat::set_lifecycle_state(cmd_buf);
             DBG_INFO(TAG, "Lifecycle state set via MQTT: '%s'", cmd_buf);
+            publish_cmd_ack(_ack_command_id, "set_lifecycle_state", "success");
         }
 
         // Diagnostic dump — publish full device snapshot for remote troubleshooting
@@ -287,8 +306,10 @@ static void mqtt_cmd_callback(const char* topic, const uint8_t* payload, size_t 
 #if HAS_DIAG_DUMP
             DBG_INFO(TAG, "Diagnostic dump requested via MQTT");
             hal_diag_dump_publish_via_bridge(_device_id);
+            publish_cmd_ack(_ack_command_id, "dump", "success");
 #else
             DBG_WARN(TAG, "Diagnostic dump requested but hal_diag_dump not available");
+            publish_cmd_ack(_ack_command_id, "dump", "failure", "hal_diag_dump not available");
 #endif
         }
 
@@ -417,6 +438,7 @@ bool init(const BridgeConfig& config) {
     snprintf(_topic_heartbeat, sizeof(_topic_heartbeat), "tritium/%s/heartbeat", _device_id);
     snprintf(_topic_sighting, sizeof(_topic_sighting), "tritium/%s/sighting", _device_id);
     snprintf(_topic_cmd, sizeof(_topic_cmd), "tritium/%s/cmd/#", _device_id);
+    snprintf(_topic_cmd_ack, sizeof(_topic_cmd_ack), "tritium/%s/cmd/ack", _device_id);
     snprintf(_topic_capabilities, sizeof(_topic_capabilities), "tritium/%s/capabilities", _device_id);
 
     // Allocate JSON buffer in PSRAM
@@ -870,6 +892,40 @@ bool publish_capabilities() {
         DBG_INFO(TAG, "Capabilities published (%d bytes, %s)", pos, _topic_capabilities);
     } else {
         DBG_WARN(TAG, "Capabilities publish failed");
+    }
+    return ok;
+}
+
+bool publish_cmd_ack(const char* command_id, const char* command, const char* result, const char* error_msg) {
+    if (!_active || !_mqtt.isConnected() || !_json_buf) return false;
+
+    int pos = snprintf(_json_buf, JSON_BUF_SIZE,
+        "{\"device_id\":\"%s\",\"command\":\"%s\",\"result\":\"%s\",\"timestamp\":%lu",
+        _device_id,
+        command ? command : "unknown",
+        result ? result : "unknown",
+        (unsigned long)(millis() / 1000));
+
+    if (command_id && command_id[0] != '\0') {
+        pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,
+            ",\"command_id\":\"%s\"", command_id);
+    }
+
+    if (error_msg && error_msg[0] != '\0') {
+        pos += snprintf(_json_buf + pos, JSON_BUF_SIZE - pos,
+            ",\"error\":\"%s\"", error_msg);
+    }
+
+    if (pos < (int)JSON_BUF_SIZE - 1) {
+        _json_buf[pos++] = '}';
+        _json_buf[pos] = '\0';
+    }
+
+    bool ok = _mqtt.publish(_topic_cmd_ack, _json_buf, false, 1);
+    if (ok) {
+        DBG_DEBUG(TAG, "Cmd ACK published: %s -> %s", command, result);
+    } else {
+        DBG_WARN(TAG, "Cmd ACK publish failed for: %s", command);
     }
     return ok;
 }

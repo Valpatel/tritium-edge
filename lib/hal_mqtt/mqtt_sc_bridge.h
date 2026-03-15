@@ -62,4 +62,9 @@ bool publish_capabilities();
 typedef void (*CommandCallback)(const char* command, const char* payload, size_t len);
 void on_command(CommandCallback cb);
 
+// Publish a command acknowledgement to tritium/{device_id}/cmd/ack.
+// Call this after executing a received command to report success/failure.
+// result should be "success", "failure", or "unsupported".
+bool publish_cmd_ack(const char* command_id, const char* command, const char* result, const char* error_msg = nullptr);
+
 }  // namespace mqtt_sc_bridge
