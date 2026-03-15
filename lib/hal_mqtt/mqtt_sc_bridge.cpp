@@ -247,6 +247,16 @@ static void mqtt_cmd_callback(const char* topic, const uint8_t* payload, size_t 
             DBG_INFO(TAG, "Group set via MQTT: '%s'", cmd_buf);
         }
 
+        // Diagnostic dump — publish full device snapshot for remote troubleshooting
+        if (strcmp(cmd_part, "dump") == 0) {
+#if __has_include("hal_diag_dump.h")
+            DBG_INFO(TAG, "Diagnostic dump requested via MQTT");
+            hal_diag_dump_publish_via_bridge(_device_id);
+#else
+            DBG_WARN(TAG, "Diagnostic dump requested but hal_diag_dump not available");
+#endif
+        }
+
         // For fleet group commands, verify membership before executing.
         // The payload may contain a JSON "target_group" field — parse it
         // with a lightweight string search (no full JSON parser needed).
@@ -278,6 +288,45 @@ static void mqtt_cmd_callback(const char* topic, const uint8_t* payload, size_t 
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Diagnostic dump helper — uses internal _mqtt directly
+// ---------------------------------------------------------------------------
+#if __has_include("hal_diag_dump.h")
+#include "hal_diag_dump.h"
+
+static void hal_diag_dump_publish_via_bridge(const char* device_id) {
+    if (!_active || !_mqtt.isConnected()) {
+        DBG_WARN(TAG, "Cannot publish dump: MQTT not connected");
+        return;
+    }
+
+    // Allocate buffer in PSRAM
+    constexpr size_t DUMP_SIZE = 4096;
+    char* buf = (char*)heap_caps_malloc(DUMP_SIZE, MALLOC_CAP_SPIRAM);
+    if (!buf) buf = (char*)malloc(DUMP_SIZE);
+    if (!buf) {
+        DBG_ERROR(TAG, "Failed to allocate dump buffer");
+        return;
+    }
+
+    int len = hal_diag_dump::collect_diagnostic_json(buf, DUMP_SIZE);
+
+    char topic[128];
+    snprintf(topic, sizeof(topic), "tritium/%s/diagnostics", device_id);
+
+    DBG_INFO(TAG, "Publishing diagnostic dump (%d bytes) to %s", len, topic);
+    bool ok = _mqtt.publish(topic, buf, false, 1);
+
+    free(buf);
+
+    if (ok) {
+        DBG_INFO(TAG, "Diagnostic dump published");
+    } else {
+        DBG_ERROR(TAG, "Diagnostic dump publish failed");
+    }
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Public API

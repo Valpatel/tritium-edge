@@ -14,6 +14,16 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 89: Diagnostic Dump Command
+
+### hal_diag_dump (Code Review)
+- Full diagnostic dump on MQTT `cmd/dump` command
+- Publishes comprehensive JSON to `tritium/{device_id}/diagnostics`
+- Includes: heap info, PSRAM stats, task list with stack watermarks, WiFi state, system info, HAL statuses
+- PSRAM-allocated buffer for large dumps
+- Simulator stub for desktop builds
+- Integrated into mqtt_sc_bridge command handler
+
 ## 2026-03-14 — Wave 88: Autonomous Scan Optimization
 
 ### hal_scan_optimizer (Code Review)
