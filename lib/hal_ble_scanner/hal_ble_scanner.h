@@ -190,6 +190,32 @@ int get_rotation_group_count();
 // Returns bytes written to buf, or 0 if device not found.
 int get_device_extended_json(const uint8_t addr[6], char* buf, size_t buf_size);
 
+// --- Scan statistics ---
+
+struct ScanStats {
+    uint32_t total_scans;           // Total scan cycles completed
+    uint32_t total_unique_devices;  // Unique MACs ever seen this session
+    uint32_t total_devices_found;   // Sum of devices found per scan (for averaging)
+    uint32_t scan_failures;         // Scans that returned 0 devices or failed
+    uint32_t last_scan_devices;     // Devices found in most recent scan
+    uint32_t last_scan_duration_ms; // Duration of most recent scan in ms
+
+    float avg_devices_per_scan() const {
+        return total_scans > 0 ? (float)total_devices_found / total_scans : 0.0f;
+    }
+    float success_rate() const {
+        return total_scans > 0 ? (float)(total_scans - scan_failures) / total_scans : 0.0f;
+    }
+};
+
+// Get current scan statistics.
+ScanStats get_scan_stats();
+
+// Get scan statistics as JSON for heartbeat.
+// Format: {"total_scans":N,"unique_devices":N,"avg_devices":1.5,"success_rate":0.95,...}
+// Returns bytes written to buf.
+int get_scan_stats_json(char* buf, size_t buf_size);
+
 // Is scanner running?
 bool is_active();
 

@@ -24,6 +24,8 @@ int get_rssi_history_json(const uint8_t[6], char* buf, size_t buf_size) { return
 int get_rssi_history_json_by_mac(const char*, char* buf, size_t buf_size) { return 0; }
 int get_rotation_group_count() { return 0; }
 int get_device_extended_json(const uint8_t[6], char* buf, size_t buf_size) { return 0; }
+ScanStats get_scan_stats() { return {}; }
+int get_scan_stats_json(char* buf, size_t buf_size) { return snprintf(buf, buf_size, "{}"); }
 bool is_active() { return false; }
 bool start_burst() { return false; }
 bool is_burst_active() { return false; }
@@ -75,6 +77,40 @@ struct DepartedRandomMac {
 };
 static DepartedRandomMac _departed[MAC_ROTATION_MAX_GROUPS];
 static int _departed_count = 0;
+
+// --- Scan statistics ---
+static ScanStats _scan_stats = {};
+// Track unique MACs ever seen (use a simple hash set with linear probing)
+static constexpr int UNIQUE_MAC_TABLE_SIZE = 256;
+static uint32_t _unique_mac_hashes[UNIQUE_MAC_TABLE_SIZE] = {};
+static int _unique_mac_count = 0;
+
+static uint32_t _hash_mac(const uint8_t addr[6]) {
+    // FNV-1a hash of 6-byte MAC address
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < 6; i++) {
+        h ^= addr[i];
+        h *= 16777619u;
+    }
+    return h | 1;  // Ensure non-zero
+}
+
+static bool _is_mac_new(const uint8_t addr[6]) {
+    uint32_t h = _hash_mac(addr);
+    for (int i = 0; i < UNIQUE_MAC_TABLE_SIZE; i++) {
+        int idx = (h + i) % UNIQUE_MAC_TABLE_SIZE;
+        if (_unique_mac_hashes[idx] == 0) {
+            // Empty slot — MAC not seen before, insert
+            _unique_mac_hashes[idx] = h;
+            _unique_mac_count++;
+            return true;
+        }
+        if (_unique_mac_hashes[idx] == h) {
+            return false;  // Already seen
+        }
+    }
+    return false;  // Table full
+}
 
 // --- Helpers ---
 
@@ -895,6 +931,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             }
 
             _device_count++;
+            _is_mac_new(raw);  // Track unique MAC for scan stats
 
             if (d.is_known) {
                 Serial.printf("[ble_scan] Known device: %s (%02X:%02X:%02X:%02X:%02X:%02X) RSSI=%d\n",
@@ -922,18 +959,33 @@ static void scan_task(void* param) {
         scan->setInterval(_config.scan_interval_ms);
         scan->setWindow(_config.scan_window_ms);
 
+        uint32_t scan_start_ms = millis();
         Serial.printf("[ble_scan] Scanning for %lus...\n", (unsigned long)_config.scan_duration_s);
         scan->start(_config.scan_duration_s, false);
+        uint32_t scan_end_ms = millis();
 
         // Prune stale devices and mark cache as fresh
+        int visible_after_scan = 0;
         if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             prune_stale();
             _last_scan_complete_ms = millis();
+            visible_after_scan = get_visible_count();
+
+            // Update scan statistics
+            _scan_stats.total_scans++;
+            _scan_stats.last_scan_devices = (uint32_t)visible_after_scan;
+            _scan_stats.last_scan_duration_ms = scan_end_ms - scan_start_ms;
+            _scan_stats.total_devices_found += (uint32_t)visible_after_scan;
+            _scan_stats.total_unique_devices = (uint32_t)_unique_mac_count;
+            if (visible_after_scan == 0) {
+                _scan_stats.scan_failures++;
+            }
+
             xSemaphoreGive(_mutex);
         }
 
         Serial.printf("[ble_scan] %d devices visible (%d known)\n",
-            get_visible_count(), get_known_visible_count());
+            visible_after_scan, get_known_visible_count());
 
         vTaskDelay(pdMS_TO_TICKS(_config.pause_between_ms));
     }
@@ -1323,6 +1375,28 @@ int get_device_extended_json(const uint8_t addr[6], char* buf, size_t buf_size) 
 
     xSemaphoreGive(_mutex);
     return pos;
+}
+
+// --- Scan statistics API ---
+
+ScanStats get_scan_stats() {
+    return _scan_stats;
+}
+
+int get_scan_stats_json(char* buf, size_t buf_size) {
+    const auto& s = _scan_stats;
+    return snprintf(buf, buf_size,
+        "{\"total_scans\":%lu,\"unique_devices\":%lu,"
+        "\"avg_devices\":%.1f,\"success_rate\":%.2f,"
+        "\"scan_failures\":%lu,\"last_scan_devices\":%lu,"
+        "\"last_scan_duration_ms\":%lu}",
+        (unsigned long)s.total_scans,
+        (unsigned long)s.total_unique_devices,
+        s.avg_devices_per_scan(),
+        s.success_rate(),
+        (unsigned long)s.scan_failures,
+        (unsigned long)s.last_scan_devices,
+        (unsigned long)s.last_scan_duration_ms);
 }
 
 bool is_active() {

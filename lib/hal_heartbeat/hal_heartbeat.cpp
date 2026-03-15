@@ -534,6 +534,12 @@ bool send_now() {
             hal_ble_scanner::get_devices_json(devs_json, sizeof(devs_json));
             pos += snprintf(body + pos, BODY_SIZE - pos, ",\"ble_devices\":%s", devs_json);
         }
+        // Append BLE scan statistics for fleet-wide scan health monitoring
+        if (pos < (int)BODY_SIZE - 200) {
+            char stats_json[192];
+            hal_ble_scanner::get_scan_stats_json(stats_json, sizeof(stats_json));
+            pos += snprintf(body + pos, BODY_SIZE - pos, ",\"ble_scan_stats\":%s", stats_json);
+        }
     }
 #endif
 
