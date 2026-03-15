@@ -20,6 +20,8 @@ struct WifiNetwork {
     uint32_t first_seen;  // millis()
     uint32_t last_seen;
     uint16_t seen_count;
+    uint8_t snr;           // Estimated SNR (RSSI - noise floor estimate), 0-90
+    uint8_t channel_load;  // Channel congestion: count of APs on same channel this scan
 };
 
 struct ScanConfig {

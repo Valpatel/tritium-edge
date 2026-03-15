@@ -88,12 +88,34 @@ static void prune_stale() {
     _network_count = write;
 }
 
+// Estimate SNR from RSSI. ESP32 noise floor is typically around -95 to -100 dBm.
+// We use -95 as the noise floor estimate for a clean 2.4 GHz environment.
+static constexpr int8_t NOISE_FLOOR_DBM = -95;
+
+static uint8_t estimate_snr(int8_t rssi) {
+    int snr = (int)rssi - NOISE_FLOOR_DBM;
+    if (snr < 0) snr = 0;
+    if (snr > 90) snr = 90;
+    return (uint8_t)snr;
+}
+
+// Count how many APs share the same primary channel in current scan results
+static uint8_t count_channel_peers(wifi_ap_record_t* ap_records, uint16_t ap_count, uint8_t channel) {
+    uint8_t count = 0;
+    for (uint16_t i = 0; i < ap_count; i++) {
+        if (ap_records[i].primary == channel) count++;
+    }
+    return count;
+}
+
 static void process_scan_results(wifi_ap_record_t* ap_records, uint16_t ap_count) {
     uint32_t now = millis();
 
     if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         for (uint16_t i = 0; i < ap_count; i++) {
             wifi_ap_record_t& ap = ap_records[i];
+            uint8_t snr = estimate_snr(ap.rssi);
+            uint8_t ch_load = count_channel_peers(ap_records, ap_count, ap.primary);
 
             int idx = find_by_bssid(ap.bssid);
             if (idx >= 0) {
@@ -102,6 +124,8 @@ static void process_scan_results(wifi_ap_record_t* ap_records, uint16_t ap_count
                 _networks[idx].channel = ap.primary;
                 _networks[idx].last_seen = now;
                 _networks[idx].seen_count++;
+                _networks[idx].snr = snr;
+                _networks[idx].channel_load = ch_load;
                 // Update SSID in case it changed (hidden -> visible)
                 if (ap.ssid[0]) {
                     strncpy(_networks[idx].ssid, (const char*)ap.ssid, sizeof(_networks[idx].ssid) - 1);
@@ -118,6 +142,8 @@ static void process_scan_results(wifi_ap_record_t* ap_records, uint16_t ap_count
                 net.first_seen = now;
                 net.last_seen = now;
                 net.seen_count = 1;
+                net.snr = snr;
+                net.channel_load = ch_load;
 
                 strncpy(net.ssid, (const char*)ap.ssid, sizeof(net.ssid) - 1);
                 net.ssid[sizeof(net.ssid) - 1] = '\0';
@@ -246,11 +272,13 @@ int get_networks_json(char* buf, size_t size) {
         first = false;
         pos += snprintf(buf + pos, size - pos,
             "{\"ssid\":\"%s\",\"bssid\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
-            "\"rssi\":%d,\"ch\":%u,\"auth\":\"%s\",\"seen\":%u}",
+            "\"rssi\":%d,\"snr\":%u,\"ch\":%u,\"ch_load\":%u,"
+            "\"auth\":\"%s\",\"seen\":%u}",
             _networks[i].ssid,
             _networks[i].bssid[0], _networks[i].bssid[1], _networks[i].bssid[2],
             _networks[i].bssid[3], _networks[i].bssid[4], _networks[i].bssid[5],
-            _networks[i].rssi, (unsigned)_networks[i].channel,
+            _networks[i].rssi, (unsigned)_networks[i].snr,
+            (unsigned)_networks[i].channel, (unsigned)_networks[i].channel_load,
             authStr(_networks[i].auth_type),
             (unsigned)_networks[i].seen_count);
     }
