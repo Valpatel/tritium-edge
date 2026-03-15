@@ -1099,6 +1099,19 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
+    // Tritium ASCII art boot banner — identifies the device as Tritium-OS
+    Serial.printf("\n");
+    Serial.printf("\033[36m");  // Cyan color (ANSI escape)
+    Serial.printf("  _______ ____  _____ _______ _____ _    _ __  __ \n");
+    Serial.printf(" |__   __|  _ \\|_   _|__   __|_   _| |  | |  \\/  |\n");
+    Serial.printf("    | |  | |_) | | |    | |    | | | |  | | \\  / |\n");
+    Serial.printf("    | |  |  _ <  | |    | |    | | | |  | | |\\/| |\n");
+    Serial.printf("    | |  | |_) |_| |_   | |   _| |_| |__| | |  | |\n");
+    Serial.printf("    |_|  |____/|_____|  |_|  |_____|\\____/|_|  |_|\n");
+    Serial.printf("\033[35m");  // Magenta
+    Serial.printf("         Unified Operating Picture  v%s\n", TRITIUM_VERSION);
+    Serial.printf("\033[0m");   // Reset
+    Serial.printf("\n");
     Serial.printf("[tritium] Tritium-Edge booting...\n");
 
     // Auto-rollback: if firmware fails to boot 3 times, revert to previous
