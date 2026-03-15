@@ -14,6 +14,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 116: WiFi Scan Deduplication
+
+| Change | Verification |
+|--------|-------------|
+| WiFi scanner BSSID deduplication: same AP seen on multiple channels collapsed to one entry with strongest RSSI | Code Reviewed |
+| dedup_scan_results() — O(n*m) pre-pass before process_scan_results, removes multi-channel duplicates | Code Reviewed |
+| Prefers non-hidden SSID when merging duplicate BSSIDs | Code Reviewed |
+| Diagnostic log message when dedup reduces AP count | Code Reviewed |
+
+---
+
 ## 2026-03-14 — Wave 111: Compact Heartbeat Mode
 
 | Change | Verification |

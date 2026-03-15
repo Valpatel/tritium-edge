@@ -108,20 +108,63 @@ static uint8_t count_channel_peers(wifi_ap_record_t* ap_records, uint16_t ap_cou
     return count;
 }
 
+// Deduplicate scan results by BSSID — same AP seen on multiple channels
+// is reported as one entry with the stronger RSSI.
+static uint16_t dedup_scan_results(wifi_ap_record_t* ap_records, uint16_t ap_count) {
+    if (ap_count <= 1) return ap_count;
+
+    uint16_t write = 0;
+    for (uint16_t i = 0; i < ap_count; i++) {
+        // Check if this BSSID already exists in the deduplicated portion
+        bool found = false;
+        for (uint16_t j = 0; j < write; j++) {
+            if (memcmp(ap_records[j].bssid, ap_records[i].bssid, 6) == 0) {
+                // Same BSSID — keep the stronger signal
+                if (ap_records[i].rssi > ap_records[j].rssi) {
+                    ap_records[j].rssi = ap_records[i].rssi;
+                    ap_records[j].primary = ap_records[i].primary;
+                    // Prefer non-hidden SSID
+                    if (ap_records[i].ssid[0] && !ap_records[j].ssid[0]) {
+                        memcpy(ap_records[j].ssid, ap_records[i].ssid, sizeof(ap_records[j].ssid));
+                    }
+                }
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (write != i) {
+                ap_records[write] = ap_records[i];
+            }
+            write++;
+        }
+    }
+    return write;
+}
+
 static void process_scan_results(wifi_ap_record_t* ap_records, uint16_t ap_count) {
     uint32_t now = millis();
 
+    // Deduplicate: same BSSID on multiple channels = one AP, keep strongest RSSI
+    uint16_t deduped_count = dedup_scan_results(ap_records, ap_count);
+    if (deduped_count < ap_count) {
+        WIFI_SCAN_LOG("INFO", "Deduplicated %d -> %d APs (removed %d multi-channel dupes)",
+            (int)ap_count, (int)deduped_count, (int)(ap_count - deduped_count));
+    }
+
     if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        for (uint16_t i = 0; i < ap_count; i++) {
+        for (uint16_t i = 0; i < deduped_count; i++) {
             wifi_ap_record_t& ap = ap_records[i];
             uint8_t snr = estimate_snr(ap.rssi);
-            uint8_t ch_load = count_channel_peers(ap_records, ap_count, ap.primary);
+            uint8_t ch_load = count_channel_peers(ap_records, deduped_count, ap.primary);
 
             int idx = find_by_bssid(ap.bssid);
             if (idx >= 0) {
-                // Update existing entry
-                _networks[idx].rssi = ap.rssi;
-                _networks[idx].channel = ap.primary;
+                // Update existing entry — keep strongest RSSI
+                if (ap.rssi > _networks[idx].rssi) {
+                    _networks[idx].rssi = ap.rssi;
+                    _networks[idx].channel = ap.primary;
+                }
                 _networks[idx].last_seen = now;
                 _networks[idx].seen_count++;
                 _networks[idx].snr = snr;
