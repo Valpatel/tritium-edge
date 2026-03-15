@@ -14,6 +14,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 88: Autonomous Scan Optimization
+
+### hal_scan_optimizer (Code Review)
+- Autonomous BLE/WiFi scan interval adjustment based on sighting rates
+- Activity levels: quiet, normal, busy, spike with configurable thresholds
+- Sliding window sighting rate calculation with circular buffers
+- Spike detection via rate increase ratio and absolute threshold
+- Oscillation prevention with hold time and spike cooldown
+- JSON status output for heartbeat payload
+- Respects power-saver overrides (interval clamping)
+
 ## 2026-03-14 — Wave 82: ESP-NOW Device Classification Relay
 
 ### hal_espnow classification relay (Build Verified — 49.6% RAM, 29.2% Flash)
