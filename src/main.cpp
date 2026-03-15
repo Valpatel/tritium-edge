@@ -186,6 +186,24 @@ static AcousticModem _acoustic_modem;
 static bool _acoustic_modem_ok = false;
 #endif
 
+// TinyML inference — on-device model loading + inference from SD card
+#if defined(HAS_TINYML) && __has_include("hal_tinyml.h")
+#include "hal_tinyml.h"
+#define TINYML_AVAILABLE 1
+#else
+#define TINYML_AVAILABLE 0
+#endif
+
+// Voice command detection — VAD + keyword spotting on boards with audio
+#if defined(HAS_VOICE) && defined(HAS_AUDIO_CODEC) && HAS_AUDIO_CODEC && __has_include("hal_voice.h")
+#include "hal_voice.h"
+static VoiceHAL _voice;
+static bool _voice_ok = false;
+#define VOICE_AVAILABLE 1
+#else
+#define VOICE_AVAILABLE 0
+#endif
+
 // --- App selection via build flag ---
 #if defined(APP_STARFIELD)
 #include "starfield_app.h"
@@ -801,6 +819,45 @@ static void services_init() {
     }
 #endif
 
+// TinyML inference — load models from SD card for on-device ML
+#if TINYML_AVAILABLE
+    {
+        hal_tinyml::TinyMLConfig ml_cfg;
+        ml_cfg.model_dir = "/sd/models";
+        ml_cfg.use_psram = true;
+        ml_cfg.log_timing = true;
+        if (hal_tinyml::init(ml_cfg)) {
+            int n = hal_tinyml::count_available_models();
+            Serial.printf("[tritium] TinyML: active (%d models available)\n", n);
+            boot_show("TinyML", "ok");
+        } else {
+            Serial.printf("[tritium] TinyML: init failed\n");
+            boot_show("TinyML", "fail");
+        }
+    }
+#endif
+
+// Voice command detection — keyword spotting on boards with audio codec
+#if VOICE_AVAILABLE
+    {
+        if (_audio_ok && _voice.init(&_audio)) {
+            // Register default commands
+            _voice.addCommand("yes", VOICE_CMD_YES);
+            _voice.addCommand("no", VOICE_CMD_NO);
+            _voice.addCommand("stop", VOICE_CMD_STOP);
+            _voice.addCommand("go", VOICE_CMD_GO);
+            _voice_ok = true;
+            Serial.printf("[tritium] Voice HAL: active (%d commands)\n",
+                          _voice.getCommandCount());
+            boot_show("Voice", "ok");
+        } else {
+            Serial.printf("[tritium] Voice HAL: init failed (audio=%s)\n",
+                          _audio_ok ? "ok" : "fail");
+            boot_show("Voice", "fail");
+        }
+    }
+#endif
+
 }
 
 // Deferred WiFi connect + WiFi-dependent services.
@@ -1089,6 +1146,16 @@ static void services_tick() {
 #endif
 #if defined(ENABLE_COT)
     hal_cot::tick();
+#endif
+#if VOICE_AVAILABLE
+    if (_voice_ok) {
+        _voice.process();
+        if (_voice.hasCommand()) {
+            auto cmd = _voice.getCommand();
+            Serial.printf("[voice] Command: %s (conf=%.2f)\n",
+                          cmd.label, cmd.confidence);
+        }
+    }
 #endif
     // Debug log housekeeping: TCP client handling + SD card flush
     DebugLog::poll();
