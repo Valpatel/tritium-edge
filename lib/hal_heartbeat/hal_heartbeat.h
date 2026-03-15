@@ -49,6 +49,15 @@ bool is_active();
 // Get the server-recommended interval (may differ from config).
 uint32_t get_interval_ms();
 
+// Compact heartbeat mode — alternates between full and compact heartbeats.
+// A compact heartbeat contains only the essential fields (<200 bytes):
+//   version, uptime_s, free_heap, rssi, caps
+// Full heartbeats contain all optional sensor data, transports, etc.
+// When enabled, odd-numbered heartbeats send compact, even send full.
+// Default: disabled (all heartbeats are full).
+void set_compact_mode(bool enabled);
+bool is_compact_mode();
+
 // Set device group assignment. Valid groups: perimeter, interior, mobile, reserve.
 // Persists to NVS so it survives reboot. Included in heartbeat JSON.
 void set_group(const char* group);

@@ -36,6 +36,8 @@ void set_group(const char*) {}
 const char* get_group() { return ""; }
 void set_lifecycle_state(const char*) {}
 const char* get_lifecycle_state() { return "active"; }
+void set_compact_mode(bool) {}
+bool is_compact_mode() { return false; }
 
 }  // namespace hal_heartbeat
 
@@ -219,6 +221,10 @@ static char _device_group[32] = {};
 
 // Device lifecycle state (provisioning, active, maintenance, retired, error)
 static char _lifecycle_state[16] = "active";
+
+// Compact heartbeat mode — alternates full/compact to reduce bandwidth
+static bool _compact_mode = false;
+static uint32_t _heartbeat_seq = 0;  // sequence counter for alternating
 
 // Provisioning instance (shared, lightweight)
 static ProvisionHAL _provision;
@@ -450,6 +456,9 @@ bool send_now() {
     http.addHeader("Content-Type", "application/json");
     http.setTimeout(5000);
 
+    _heartbeat_seq++;
+    bool is_compact = _compact_mode && (_heartbeat_seq % 2 == 1);
+
     // Build JSON payload — matches the format used by OtaApp::sendHeartbeat()
     const char* partition = "unknown";
     const esp_partition_t* running = esp_ota_get_running_partition();
@@ -462,7 +471,26 @@ bool send_now() {
         body = (char*)heap_caps_malloc(BODY_SIZE, MALLOC_CAP_SPIRAM);
         if (!body) body = (char*)malloc(BODY_SIZE);
     }
-    int pos = snprintf(body, BODY_SIZE,
+
+    int pos;
+
+    if (is_compact) {
+        // COMPACT HEARTBEAT — essential fields only, target <200 bytes
+        // Fields: version, uptime_s, free_heap, rssi, caps, compact flag
+        pos = snprintf(body, BODY_SIZE,
+                 "{\"v\":\"%s\",\"up\":%lu,\"heap\":%u,"
+                 "\"rssi\":%d,\"caps\":%u,\"compact\":true}",
+                 _fw_version,
+                 (unsigned long)(millis() / 1000),
+                 (unsigned)ESP.getFreeHeap(),
+                 WiFi.RSSI(),
+                 (unsigned)get_capabilities());
+        // Compact heartbeat is complete — skip all optional sections
+        goto send_heartbeat;
+    }
+
+    // FULL HEARTBEAT — all fields
+    pos = snprintf(body, BODY_SIZE,
              "{\"version\":\"%s\",\"board\":\"%s\",\"partition\":\"%s\","
              "\"ip\":\"%s\",\"mac\":\"%s\",\"uptime_s\":%lu,\"free_heap\":%u,"
              "\"rssi\":%d,\"fw_hash\":\"%s\","
@@ -682,6 +710,9 @@ bool send_now() {
         body[pos] = '\0';
     }
 
+send_heartbeat:
+    DBG_DEBUG(TAG, "Heartbeat size: %d bytes (%s)", pos, is_compact ? "compact" : "full");
+
     int code = http.POST(body);
     if (code == 200) {
         DBG_DEBUG(TAG, "Sent to %s - %d", _server_url, code);
@@ -888,6 +919,15 @@ void set_lifecycle_state(const char* state) {
 
 const char* get_lifecycle_state() {
     return _lifecycle_state;
+}
+
+void set_compact_mode(bool enabled) {
+    _compact_mode = enabled;
+    DBG_INFO(TAG, "Compact heartbeat mode: %s", enabled ? "ON" : "OFF");
+}
+
+bool is_compact_mode() {
+    return _compact_mode;
 }
 
 }  // namespace hal_heartbeat
