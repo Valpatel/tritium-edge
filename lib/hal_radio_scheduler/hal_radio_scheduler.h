@@ -20,6 +20,7 @@
 // to radio mode changes (e.g., MQTT bridge pauses during BLE slot).
 
 #include <cstdint>
+#include <cstddef>
 
 namespace hal_radio_scheduler {
 

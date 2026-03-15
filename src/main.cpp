@@ -149,6 +149,22 @@ static bool _espnow_enabled = false;
 #define HAS_RF_MONITOR 0
 #endif
 
+// Radio scheduler — BLE/WiFi time-division multiplexing for coexistence
+#if defined(ENABLE_WIFI) && __has_include("hal_radio_scheduler.h")
+#include "hal_radio_scheduler.h"
+#define HAS_RADIO_SCHEDULER 1
+#else
+#define HAS_RADIO_SCHEDULER 0
+#endif
+
+// Tamper detection — monitors sighting counts for RF jamming / obstruction
+#if __has_include("hal_tamper_detect.h")
+#include "hal_tamper_detect.h"
+#define HAS_TAMPER_DETECT 1
+#else
+#define HAS_TAMPER_DETECT 0
+#endif
+
 // GIS offline map tiles from SD card
 #if defined(HAS_SDCARD) && HAS_SDCARD && __has_include("hal_gis.h")
 #include "hal_gis.h"
@@ -858,6 +874,56 @@ static void services_init() {
     }
 #endif
 
+// Radio scheduler — BLE/WiFi time-division coexistence
+// When both BLE and WiFi are needed, the scheduler alternates between them
+// to avoid the ESP32-S3 shared-radio memory conflict.
+#if HAS_RADIO_SCHEDULER
+    {
+        hal_radio_scheduler::Config radio_cfg;
+        radio_cfg.wifi_slot_ms = 25000;   // WiFi for 25s (MQTT, OTA, heartbeats)
+        radio_cfg.ble_slot_ms  = 10000;   // BLE scan for 10s
+        radio_cfg.transition_ms = 2000;   // Graceful teardown/startup
+        radio_cfg.wifi_first = true;      // Start with WiFi (connect first)
+#if defined(ENABLE_BLE_SCANNER)
+        radio_cfg.enable_ble = true;
+#else
+        radio_cfg.enable_ble = false;     // No BLE scanner, WiFi-only mode
+#endif
+        radio_cfg.enable_wifi = true;
+        if (hal_radio_scheduler::init(radio_cfg)) {
+            Serial.printf("[tritium] Radio Scheduler: active (wifi=%ums, ble=%ums)\n",
+                          radio_cfg.wifi_slot_ms, radio_cfg.ble_slot_ms);
+            boot_show("Radio", "ok");
+        } else {
+            Serial.printf("[tritium] Radio Scheduler: init failed\n");
+            boot_show("Radio", "fail");
+        }
+    }
+#endif
+
+// Tamper detection — monitors WiFi/BLE sighting counts for jamming
+#if HAS_TAMPER_DETECT
+    {
+        hal_tamper_detect::TamperConfig tamper_cfg;
+        tamper_cfg.silence_threshold_ms = 300000;  // 5 minutes of silence
+        tamper_cfg.check_interval_ms = 30000;      // Check every 30s
+#if defined(ENABLE_BLE_SCANNER)
+        tamper_cfg.alert_on_ble = true;
+#else
+        tamper_cfg.alert_on_ble = false;
+#endif
+        tamper_cfg.alert_on_wifi = true;
+        if (hal_tamper_detect::init(tamper_cfg)) {
+            Serial.printf("[tritium] Tamper Detect: active (threshold=%lus)\n",
+                          (unsigned long)(tamper_cfg.silence_threshold_ms / 1000));
+            boot_show("Tamper", "ok");
+        } else {
+            Serial.printf("[tritium] Tamper Detect: init failed\n");
+            boot_show("Tamper", "fail");
+        }
+    }
+#endif
+
 }
 
 // Deferred WiFi connect + WiFi-dependent services.
@@ -1147,6 +1213,9 @@ static void services_tick() {
 #if defined(ENABLE_COT)
     hal_cot::tick();
 #endif
+#if HAS_TAMPER_DETECT
+    hal_tamper_detect::tick();
+#endif
 #if VOICE_AVAILABLE
     if (_voice_ok) {
         _voice.process();
@@ -1291,6 +1360,12 @@ void setup() {
     Serial.printf("  CoT/TAK  : %s\n", _cot_enabled ? "enabled" : "disabled");
     Serial.printf("  Webserver: %s\n", _webserver_enabled ? "enabled" : "disabled");
     Serial.printf("  Diag     : %s\n", _diag_enabled ? "enabled" : "disabled");
+#if HAS_RADIO_SCHEDULER
+    Serial.printf("  Radio Sch: %s\n", hal_radio_scheduler::is_active() ? "active" : "inactive");
+#endif
+#if HAS_TAMPER_DETECT
+    Serial.printf("  Tamper   : enabled\n");
+#endif
     Serial.printf("========================================\n\n");
 }
 

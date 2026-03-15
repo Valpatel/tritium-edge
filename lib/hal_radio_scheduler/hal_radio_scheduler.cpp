@@ -30,12 +30,9 @@ int get_status_json(char* buf, size_t s) { return snprintf(buf, s, "{}"); }
 #include "debug_log.h"
 #endif
 
-#if __has_include("os_events.h")
-#include "os_events.h"
-#define HAS_OS_EVENTS 1
-#else
+// os_events uses TritiumEventBus class API, not namespace — disable for now
+// until radio mode event IDs are added to the EventId enum.
 #define HAS_OS_EVENTS 0
-#endif
 
 static constexpr const char* TAG = "radio_sched";
 

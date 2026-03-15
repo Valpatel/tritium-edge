@@ -14,6 +14,19 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 105: Radio Scheduler + Tamper Detect Integration
+
+| Change | Verification |
+|--------|-------------|
+| Wired hal_radio_scheduler into main.cpp — BLE/WiFi time-division coexistence (#1 blocker) | Build Verified |
+| Added hal_radio_scheduler to platformio.ini build paths and src_filter | Build Verified |
+| Fixed hal_radio_scheduler.h missing `<cstddef>` include for `size_t` | Build Verified |
+| Fixed hal_radio_scheduler.cpp os_events API mismatch (disabled until event IDs added) | Build Verified |
+| Wired hal_tamper_detect into main.cpp with conditional compilation | Build Verified |
+| Added tamper detect tick() to services_tick() loop | Build Verified |
+| Added radio scheduler + tamper detect status to boot summary | Build Verified |
+| Build: RAM 49.8%, Flash 29.4% | Build Verified |
+
 ## 2026-03-14 — Wave 101: Network Quality Reporting
 
 | Change | Verification |
