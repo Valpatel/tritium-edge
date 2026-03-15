@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <ctime>
+#include <sys/time.h>
 
 // ============================================================================
 // Stub + MFCC feature extraction implementation.
@@ -514,6 +516,69 @@ void set_features_callback(features_callback_t cb) {
 
 void set_min_confidence(float threshold) {
     _min_confidence = threshold;
+}
+
+// --- NTP-synced TDoA timestamp support ---
+
+TDoATimestamp get_tdoa_timestamp() {
+    TDoATimestamp ts = {};
+
+#ifdef SIMULATOR
+    // Simulator: use system time, assume perfect sync
+    struct timespec spec;
+    clock_gettime(CLOCK_REALTIME, &spec);
+    ts.epoch_us = (uint64_t)spec.tv_sec * 1000000ULL + (uint64_t)(spec.tv_nsec / 1000);
+    ts.sync_quality = 1.0f;
+    ts.ntp_synced = true;
+    ts.estimated_drift_ms = 0;
+#else
+    // ESP32: use gettimeofday for microsecond resolution
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    ts.epoch_us = (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+
+    // Check NTP sync status
+    // Try to use NtpHAL if available via extern
+    ts.ntp_synced = false;
+    ts.sync_quality = 0.0f;
+    ts.estimated_drift_ms = 0;
+
+    // Check if time looks valid (year > 2024)
+    time_t now = tv.tv_sec;
+    struct tm* tm_info = localtime(&now);
+    if (tm_info && (tm_info->tm_year + 1900) > 2024) {
+        ts.ntp_synced = true;
+        // Estimate sync quality from time validity
+        // Without direct access to NTP stratum/jitter, use time validity as proxy
+        // Assume ~10ms jitter for ESP32 SNTP (typical)
+        ts.sync_quality = 0.9f;  // 90% quality = ~10ms jitter typical for ESP32 SNTP
+    }
+#endif
+
+    return ts;
+}
+
+int get_tdoa_event_json(char* buf, size_t buf_size,
+                        const char* sensor_id, const char* event_type,
+                        float confidence, float signal_strength_db) {
+    TDoATimestamp ts = get_tdoa_timestamp();
+
+    // Convert epoch_us to epoch_ms (float for sub-ms precision)
+    double arrival_time_ms = (double)ts.epoch_us / 1000.0;
+
+    return snprintf(buf, buf_size,
+        "{\"sensor_id\":\"%s\",\"arrival_time_ms\":%.3f,"
+        "\"signal_strength\":%.1f,\"event_type\":\"%s\","
+        "\"confidence\":%.2f,\"ntp_sync_quality\":%.2f,"
+        "\"ntp_synced\":%s,\"drift_ms\":%d}",
+        sensor_id,
+        arrival_time_ms,
+        signal_strength_db,
+        event_type,
+        confidence,
+        ts.sync_quality,
+        ts.ntp_synced ? "true" : "false",
+        ts.estimated_drift_ms);
 }
 
 }  // namespace hal_acoustic

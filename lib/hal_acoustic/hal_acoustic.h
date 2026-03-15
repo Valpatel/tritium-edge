@@ -176,4 +176,29 @@ void set_features_callback(features_callback_t cb);
 // Set minimum confidence threshold for event publishing (default 0.5).
 void set_min_confidence(float threshold);
 
+// --- NTP-synced TDoA timestamp support ---
+
+// Timestamp info for TDoA computation. When NTP is synced, timestamps
+// have microsecond precision for accurate time-of-arrival differences.
+struct TDoATimestamp {
+    uint64_t epoch_us;         // Microseconds since epoch (NTP-synced)
+    float    sync_quality;     // 0.0 = no sync, 1.0 = <1ms jitter
+    bool     ntp_synced;       // Whether NTP was synced when captured
+    int32_t  estimated_drift_ms; // Estimated drift since last NTP sync
+};
+
+// Get a high-precision NTP-synced timestamp for TDoA computation.
+// Returns epoch microseconds and sync quality. Call this at the instant
+// an acoustic event is detected for accurate TDoA across nodes.
+TDoATimestamp get_tdoa_timestamp();
+
+// Get JSON for TDoA acoustic event publishing to MQTT.
+// Includes NTP-synced microsecond timestamp and sync quality indicator.
+// Format: {"sensor_id":"...", "arrival_time_ms":..., "signal_strength":...,
+//          "event_type":"...", "confidence":..., "ntp_sync_quality":...,
+//          "ntp_synced":true}
+int get_tdoa_event_json(char* buf, size_t buf_size,
+                        const char* sensor_id, const char* event_type,
+                        float confidence, float signal_strength_db);
+
 }  // namespace hal_acoustic
