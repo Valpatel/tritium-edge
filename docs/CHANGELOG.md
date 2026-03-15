@@ -14,6 +14,16 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 101: Network Quality Reporting
+
+| Change | Verification |
+|--------|-------------|
+| network_quality.h/.cpp — WiFi latency, packet loss, reconnect count, DNS failure tracking | Build Verified |
+| TCP connect-time latency measurement to MQTT broker with 10-sample rolling window | Build Verified |
+| Network stability flag (loss < 5%, latency < 500ms) | Build Verified |
+| Integrated into heartbeat JSON as "network_quality" field | Build Verified |
+| Build: RAM 49.8%, Flash 29.3% | Build Verified |
+
 ## 2026-03-14 — Wave 97: Sensor Self-Test
 
 | Change | Verification |

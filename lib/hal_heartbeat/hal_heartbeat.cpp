@@ -155,6 +155,10 @@ const char* get_lifecycle_state() { return "active"; }
 #include "sensor_self_test.h"
 #define HAS_SELF_TEST 1
 
+// Network quality monitoring — latency, packet loss, stability
+#include "network_quality.h"
+#define HAS_NET_QUALITY 1
+
 // Optional tamper detection — sighting dropout monitoring
 #if __has_include("hal_tamper_detect.h")
 #include "hal_tamper_detect.h"
@@ -409,6 +413,11 @@ bool init(const HeartbeatConfig& config) {
     hal_tamper_detect::init();
 #endif
 
+    // Initialize network quality monitoring
+#if HAS_NET_QUALITY
+    network_quality::init();
+#endif
+
     _active = true;
     _last_send_ms = 0;  // Send first heartbeat on next tick()
     DBG_INFO(TAG, "Initialized: server=%s device=%s interval=%lums",
@@ -641,6 +650,18 @@ bool send_now() {
         char tamper_json[128];
         hal_tamper_detect::to_json(tamper_json, sizeof(tamper_json));
         pos += snprintf(body + pos, BODY_SIZE - pos, ",\"tamper\":%s", tamper_json);
+    }
+#endif
+
+    // Append network quality metrics (latency, packet loss, stability)
+#if HAS_NET_QUALITY
+    network_quality::tick();  // Run measurement on each heartbeat
+    if (pos < (int)BODY_SIZE - 256) {
+        char nq_json[256];
+        int nq_n = network_quality::to_json(nq_json, sizeof(nq_json));
+        if (nq_n > 0) {
+            pos += snprintf(body + pos, BODY_SIZE - pos, ",\"network_quality\":%s", nq_json);
+        }
     }
 #endif
 
