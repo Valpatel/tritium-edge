@@ -14,6 +14,15 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 97: Sensor Self-Test
+
+| Change | Verification |
+|--------|-------------|
+| sensor_self_test.h/.cpp — hourly self-test: WiFi scan count, BLE scan success, heap health check | Code Review |
+| Self-test results included in heartbeat JSON as "self_test" object with pass/fail, counts, heap stats | Code Review |
+| Configurable interval (default 1 hour), run_now() for on-demand testing | Code Review |
+| Simulator stub included for desktop builds | Code Review |
+
 ## 2026-03-14 — Wave 91: Autonomous Alert HAL
 
 | Change | Verification |

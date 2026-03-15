@@ -149,6 +149,10 @@ const char* get_group() { return ""; }
 #define HAS_POWER_TRACKER 0
 #endif
 
+// Sensor self-test — periodic WiFi/BLE/heap diagnostics
+#include "sensor_self_test.h"
+#define HAS_SELF_TEST 1
+
 namespace hal_heartbeat {
 
 // --- Capabilities bitfield — computed at compile time via HAS_* flags ---
@@ -370,6 +374,11 @@ bool init(const HeartbeatConfig& config) {
     }
 #endif
 
+    // Initialize sensor self-test (runs every hour)
+#if HAS_SELF_TEST
+    sensor_self_test::init(3600000);  // 1 hour
+#endif
+
     _active = true;
     _last_send_ms = 0;  // Send first heartbeat on next tick()
     DBG_INFO(TAG, "Initialized: server=%s device=%s interval=%lums",
@@ -582,6 +591,16 @@ bool send_now() {
             }
             _ota_result_reported = true;
         }
+    }
+#endif
+
+    // Tick sensor self-test and append results
+#if HAS_SELF_TEST
+    sensor_self_test::tick();  // Runs test if interval has elapsed
+    if (sensor_self_test::get_result().run_count > 0 && pos < (int)BODY_SIZE - 200) {
+        char st_json[192];
+        sensor_self_test::to_json(st_json, sizeof(st_json));
+        pos += snprintf(body + pos, BODY_SIZE - pos, ",\"self_test\":%s", st_json);
     }
 #endif
 
