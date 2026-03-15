@@ -14,6 +14,17 @@ Changes tracked with verification status. All changes on `dev` branch.
 
 ---
 
+## 2026-03-14 — Wave 82: ESP-NOW Device Classification Relay
+
+### hal_espnow classification relay (Build Verified — 49.6% RAM, 29.2% Flash)
+- `MeshDataType` enum with CLASSIFY subtype for application-level message routing
+- `ClassifyRelay` packed struct: device MAC, RSSI, class_id, confidence, device name
+- `DeviceClassId` enum: 21 device class types (phone, watch, tablet, laptop, etc.)
+- `broadcastClassification()` method: broadcasts device class to all mesh peers
+- `onClassifyRelay()` callback: receives classification data from other nodes
+- Mesh DATA handler routes CLASSIFY subtype to `handleClassifyRelay()`
+- Simulator stubs for all new methods
+
 ## 2026-03-14 — Wave 79: Acoustic Feature Extraction (MFCC)
 
 ### hal_acoustic MFCC + spectral feature extraction (Build Verified — 49.6% RAM, 29.2% Flash)

@@ -616,7 +616,12 @@ void EspNowHAL::handleMeshPacket(const uint8_t* senderMac,
                              hdr->src[0], hdr->src[1], hdr->src[2],
                              hdr->src[3], hdr->src[4], hdr->src[5],
                              hdr->hop_count, payloadLen);
-                if (_meshCb) {
+
+                // Check for classification relay subtype (first byte)
+                if (payloadLen >= sizeof(ClassifyRelay) &&
+                    payload[0] == (uint8_t)MeshDataType::CLASSIFY) {
+                    handleClassifyRelay(payload, payloadLen);
+                } else if (_meshCb) {
                     _meshCb(hdr->src, payload, payloadLen, hdr->hop_count);
                 }
                 // Send ACK back to source for unicast messages
@@ -745,6 +750,71 @@ bool EspNowHAL::relayPacket(const uint8_t* rawPacket, uint8_t rawLen) {
 
 void EspNowHAL::onReceive(EspNowRecvCb cb) { _recvCb = cb; }
 void EspNowHAL::onMeshReceive(EspNowMeshCb cb) { _meshCb = cb; }
+void EspNowHAL::onClassifyRelay(ClassifyRelayCallback cb) { _classifyCb = cb; }
+
+bool EspNowHAL::broadcastClassification(const uint8_t device_mac[6], int8_t rssi,
+                                          DeviceClassId class_id, uint8_t confidence,
+                                          const char* device_name) {
+    if (!_ready) return false;
+
+    // Build compact classification relay payload
+    uint8_t name_len = 0;
+    if (device_name) {
+        name_len = (uint8_t)strlen(device_name);
+        if (name_len > 30) name_len = 30;  // Cap name length for packet size
+    }
+
+    uint8_t payload[sizeof(ClassifyRelay) + 31];  // relay struct + max name + null
+    ClassifyRelay* relay = (ClassifyRelay*)payload;
+    relay->subtype = MeshDataType::CLASSIFY;
+    memcpy(relay->device_mac, device_mac, 6);
+    relay->rssi = rssi;
+    relay->class_id = (uint8_t)class_id;
+    relay->confidence = confidence;
+    relay->name_len = name_len;
+
+    if (name_len > 0 && device_name) {
+        memcpy(payload + sizeof(ClassifyRelay), device_name, name_len);
+        payload[sizeof(ClassifyRelay) + name_len] = '\0';
+    }
+
+    uint8_t total_len = sizeof(ClassifyRelay) + name_len + (name_len > 0 ? 1 : 0);
+
+    DBG_DEBUG(TAG, "Broadcasting classification: MAC=%02X:%02X:%02X:%02X:%02X:%02X class=%d conf=%d",
+              device_mac[0], device_mac[1], device_mac[2],
+              device_mac[3], device_mac[4], device_mac[5],
+              (int)class_id, (int)confidence);
+
+    return meshBroadcast(payload, total_len);
+}
+
+void EspNowHAL::handleClassifyRelay(const uint8_t* payload, uint8_t len) {
+    if (len < sizeof(ClassifyRelay)) return;
+
+    const ClassifyRelay* relay = (const ClassifyRelay*)payload;
+    if (relay->subtype != MeshDataType::CLASSIFY) return;
+
+    // Extract device name if present
+    const char* name = nullptr;
+    char name_buf[32] = {};
+    if (relay->name_len > 0 && len >= sizeof(ClassifyRelay) + relay->name_len) {
+        uint8_t copy_len = relay->name_len;
+        if (copy_len > 30) copy_len = 30;
+        memcpy(name_buf, payload + sizeof(ClassifyRelay), copy_len);
+        name_buf[copy_len] = '\0';
+        name = name_buf;
+    }
+
+    DBG_DEBUG(TAG, "Received classification relay: MAC=%02X:%02X:%02X:%02X:%02X:%02X class=%d conf=%d name=%s",
+              relay->device_mac[0], relay->device_mac[1], relay->device_mac[2],
+              relay->device_mac[3], relay->device_mac[4], relay->device_mac[5],
+              (int)relay->class_id, (int)relay->confidence,
+              name ? name : "(none)");
+
+    if (_classifyCb) {
+        _classifyCb(*relay, name);
+    }
+}
 
 // ---- Process (call from loop) ----
 
@@ -1056,6 +1126,9 @@ bool EspNowHAL::isPeerKnown(const uint8_t[6]) const { return false; }
 
 void EspNowHAL::onReceive(EspNowRecvCb cb) { _recvCb = cb; }
 void EspNowHAL::onMeshReceive(EspNowMeshCb cb) { _meshCb = cb; }
+void EspNowHAL::onClassifyRelay(ClassifyRelayCallback cb) { _classifyCb = cb; }
+bool EspNowHAL::broadcastClassification(const uint8_t[6], int8_t, DeviceClassId, uint8_t, const char*) { return false; }
+void EspNowHAL::handleClassifyRelay(const uint8_t*, uint8_t) {}
 
 void EspNowHAL::process() {}
 

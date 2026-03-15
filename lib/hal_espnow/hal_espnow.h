@@ -15,12 +15,60 @@ enum class EspNowRole : uint8_t {
 };
 
 // Message types for mesh protocol
+// Message types for mesh protocol
 enum class MeshMsgType : uint8_t {
     DATA = 0x01,        // Application data
     PING = 0x02,        // Mesh discovery ping
     PONG = 0x03,        // Mesh discovery response
     ROUTE = 0x04,       // Route advertisement
     ACK = 0x05,         // Delivery acknowledgment
+};
+
+// Application-level data subtypes (first byte of DATA payload)
+enum class MeshDataType : uint8_t {
+    RAW         = 0x00, // Untyped application data
+    SIGHTING    = 0x10, // BLE/WiFi sighting relay
+    CLASSIFY    = 0x11, // Device classification result
+    CHAT        = 0x20, // Text chat message
+    COMMAND     = 0x30, // Remote command
+};
+
+// Compact classification relay packet (fits in ESP-NOW payload)
+// Broadcasts a device classification result so other nodes benefit
+// without needing to re-classify the same device.
+struct __attribute__((packed)) ClassifyRelay {
+    MeshDataType subtype;       // = MeshDataType::CLASSIFY
+    uint8_t  device_mac[6];     // MAC of classified device
+    int8_t   rssi;              // RSSI when classified
+    uint8_t  class_id;          // Device class enum (phone=1, watch=2, etc.)
+    uint8_t  confidence;        // 0-100 confidence percentage
+    uint8_t  name_len;          // Length of device name (0 if none)
+    // Followed by name_len bytes of device name (null-terminated)
+};
+
+// Device class IDs for compact relay (matches BLE classifier categories)
+enum class DeviceClassId : uint8_t {
+    UNKNOWN         = 0,
+    PHONE           = 1,
+    WATCH           = 2,
+    TABLET          = 3,
+    LAPTOP          = 4,
+    DESKTOP         = 5,
+    EARBUDS         = 6,
+    HEADPHONES      = 7,
+    SPEAKER         = 8,
+    TRACKER         = 9,
+    CAMERA          = 10,
+    SMART_HOME      = 11,
+    VEHICLE         = 12,
+    GAME_CONSOLE    = 13,
+    PRINTER         = 14,
+    MICROCONTROLLER = 15,
+    MESH_RADIO      = 16,
+    LIGHT           = 17,
+    MEDIA_PLAYER    = 18,
+    HOTSPOT         = 19,
+    WEARABLE        = 20,
 };
 
 // Mesh packet header (prepended to all messages)
@@ -82,6 +130,17 @@ public:
     // Callbacks
     void onReceive(EspNowRecvCb cb);      // Raw ESP-NOW receive
     void onMeshReceive(EspNowMeshCb cb);  // Mesh-routed data
+
+    // Classification relay — broadcast device classification to mesh peers
+    // so other nodes don't need to re-classify the same BLE device.
+    bool broadcastClassification(const uint8_t device_mac[6], int8_t rssi,
+                                  DeviceClassId class_id, uint8_t confidence,
+                                  const char* device_name = nullptr);
+
+    // Callback for received classification relays from other nodes
+    using ClassifyRelayCallback = std::function<void(const ClassifyRelay& relay,
+                                                      const char* name)>;
+    void onClassifyRelay(ClassifyRelayCallback cb);
 
     // Mesh maintenance -- call in loop()
     void process();
@@ -163,6 +222,7 @@ private:
     // Callbacks
     EspNowRecvCb _recvCb = nullptr;
     EspNowMeshCb _meshCb = nullptr;
+    ClassifyRelayCallback _classifyCb = nullptr;
 
     // Stats
     Stats _stats = {};
@@ -236,6 +296,7 @@ private:
     void buildMeshHeader(MeshHeader& hdr, MeshMsgType type, const uint8_t dst[6], uint8_t payloadLen);
     bool relayPacket(const uint8_t* rawPacket, uint8_t rawLen);
     void handleMeshPacket(const uint8_t* senderMac, const uint8_t* data, int len, int8_t rssi);
+    void handleClassifyRelay(const uint8_t* payload, uint8_t len);
 
     // Static callback trampolines (ESP-NOW requires C function pointers)
     static EspNowHAL* _instance;
